@@ -1,0 +1,129 @@
+# fuse-channels
+
+A PyTorch implementation of the **padding-free channel-fusion front-end** for a
+high-content-imaging (HCI) foundation model, plus a channel-aware Masked
+Autoencoder (MAE) built on top of it.
+
+It implements the design in the handoff message *"Padding-Free Channel-Fusion
+Module for an HCI Foundation Model"* and its MAE follow-up.
+
+## What problem it solves
+
+An HCI image is a set of per-channel embeddings `{E_c ∈ R^D}` where the channel
+count `C` varies from 1 to 20–60+, channel order is meaningless, and panels
+differ across labs. We need
+
+```
+f({E_1 .. E_C}) -> R^{k x D},   output size independent of C,
+```
+
+without concatenation blow-up, with channel identity preserved, data-dependent
+weighting, and **no padding tokens**.
+
+## Design (settled in the handoff)
+
+```
+per-channel (tied) patch embed
+    + additive channel-identity embedding (learnable OR text/sequence)
+    + shared spatial positional embedding
+    -> padding-free channel-axis attention pooling (PMA) to a fixed bottleneck
+    -> memory-augmented spatial transformer
+    -> (MAE) channel-aware shared decoder conditioned on channel identity
+```
+
+* **Channel-tied projection** — one shared filter across channels (ChannelViT).
+* **Additive channel identity** — learnable ids for a closed panel, or
+  text/sequence conditioned vectors for an open panel. Never normalized across
+  the channel axis.
+* **Padding-free** — tokens are flattened `[ΣC, D]` with segment ids; no
+  `[B, C_max, D]` tensor and no attention masks for cardinality. Masking is
+  token *omission*, never zeroing.
+* **PMA pooling** — a learned query cross-attends over the channel set at each
+  spatial location (`ChannelFusion`), or a cheaper `O(C)` hypernetwork-weighted
+  sum (`HypernetworkWeightedSum`).
+* **MAE** — DCP masking (independently per-channel spatial masks + dynamic
+  channel masking), fixed-count memory tokens, and a shared decoder that is
+  conditioned on the *target* channel's identity.
+
+## Install
+
+Managed with [uv](https://docs.astral.sh/uv/):
+
+```bash
+uv sync --extra dev
+uv run pytest
+```
+
+## Usage
+
+```python
+import torch
+from fuse_channels import ChannelFusionMAE
+
+model = ChannelFusionMAE(
+    image_size=16, patch_size=8, dim=192,
+    encoder_depth=4, decoder_depth=2, n_heads=6,
+    n_memory=4, num_markers=32,        # learnable identity table
+    # text_dim=512, use_learnable_identity=False,  # open vocabulary
+)
+
+# a batch is a list of variable-channel images: [C_b, 1, H, W]
+images = [torch.randn(3, 1, 16, 16), torch.randn(7, 1, 16, 16)]
+ids = [torch.randint(0, 32, (3,)), torch.randint(0, 32, (7,))]
+
+out = model(images, ids)
+out["loss"].backward()
+
+# inference representation (no masking)
+mem, descriptor = model.encode(images, ids)   # descriptor: [B, D]
+```
+
+### Just the fusion module
+
+```python
+from fuse_channels import ChannelFrontend, ChannelIdentity, ChannelFusion, ChannelSet
+
+frontend = ChannelFrontend(image_size=16, patch_size=8, dim=192,
+                           identity=ChannelIdentity(192, num_markers=32))
+fusion = ChannelFusion(192, n_heads=6, n_queries=1, n_patches=4)
+
+cs: ChannelSet = frontend(images, ids)      # real tokens only
+fused, present = fusion(cs)                 # [B, 4, 192]; no channel padding
+```
+
+## Layout
+
+| file | contents |
+| --- | --- |
+| `ops.py` | varlen grouped attention primitives (`cu_seqlens`-style, no padding) |
+| `container.py` | `ChannelSet`: flattened variable-channel token batch |
+| `identity.py` | learnable / text-conditioned channel identities |
+| `patch_embed.py` | channel-tied patch embedding + front-end |
+| `fusion.py` | `ChannelFusion` (PMA), `HypernetworkWeightedSum`, dense reference |
+| `encoder.py` | memory-augmented spatial transformer |
+| `decoder.py` | channel-aware shared decoder |
+| `masking.py` | DCP masking (spatial-per-channel + dynamic channel) |
+| `losses.py` | per-channel normalized pixel loss |
+| `mae.py` | `ChannelFusionMAE` end-to-end |
+
+## Acceptance criteria
+
+Covered by `tests/`:
+
+- cardinality invariance for `C ∈ {1,3,6,20,60}` (`test_fusion.py`)
+- exact padding-free vs masked-padded equivalence (`test_padding_free_equivalence`)
+- omission correctness, permutation invariance, identity ablation
+- open-vocabulary identity with no table resizing
+- no pad artifacts in the fusion path
+- DCP masking never masks all channels; spatial masks are per channel
+- MAE encoder sees only visible tokens; loss decreases on a fixed batch
+- cost comparison: `examples/benchmark_fusion.py`
+
+## Notes
+
+* `flash-attn` is optional (`uv sync --extra flash`); the grouped-kernel
+  fallbacks in `ops.py` are pure PyTorch and produce numerically identical
+  results.
+* `examples/train_mae.py` overfits a synthetic variable-channel dataset.
+* `examples/benchmark_fusion.py` reports throughput for attention vs.
+  hypernetwork-weighted-sum fusion at `C = 60`.
