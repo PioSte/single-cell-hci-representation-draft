@@ -127,3 +127,28 @@ Covered by `tests/`:
 * `examples/train_mae.py` overfits a synthetic variable-channel dataset.
 * `examples/benchmark_fusion.py` reports throughput for attention vs.
   hypernetwork-weighted-sum fusion at `C = 60`.
+
+## Visualizations
+
+There are two, because they answer different questions — see
+[`viz/README.md`](viz/README.md) for details.
+
+**Interactive behaviour (recommended).** The marimo dashboard runs the real
+modules and recomputes every invariant as you move the controls:
+
+```bash
+uv sync --extra viz
+uv run marimo edit viz/dashboard.py          # or: marimo run viz/dashboard.py
+uv run marimo export html viz/dashboard.py -o viz/out/dashboard.html
+```
+
+It shows the live measurements table (padding-free ≡ masked-padded, permutation
+invariance, omission correctness, identity ablation), a per-location attention
+heatmap over channels, a fixed-size-descriptor-vs-`C` curve, and a
+masked-channel reconstruction (virtual-staining) demo.
+
+**Structure.** Generate the traced graph and the padding-free flow schematic:
+
+```bash
+uv run python viz/draw_architecture.py      # -> viz/out/{architecture_torchview,padding_free_flow}.{png,svg}
+```

@@ -230,7 +230,7 @@ def dense_fusion_reference(fusion: ChannelFusion, cs: ChannelSet) -> torch.Tenso
     device = cs.tokens.device
 
     counts = torch.bincount(cs.sample_idx, minlength=B)
-    Cmax = int(counts.max().item())
+    Cmax = int(cs.channel_idx.max().item()) + 1 if cs.channel_idx.numel() else 1
 
     x = cs.tokens.new_zeros(B, Cmax, N, D)
     mask = torch.zeros(B, Cmax, N, dtype=torch.bool, device=device)
