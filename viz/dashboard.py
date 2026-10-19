@@ -19,9 +19,6 @@ __generated_with = "0.25.2"
 app = marimo.App(width="medium")
 
 
-# --------------------------------------------------------------------------- #
-# Imports
-# --------------------------------------------------------------------------- #
 @app.cell
 def _():
     import math
@@ -59,26 +56,24 @@ def _():
 
 @app.cell
 def _(__version__, mo):
-    mo.md(
-        f"""
-        # Padding-free channel fusion — live behaviour
+    mo.md(f"""
+    # Padding-free channel fusion — live behaviour
 
-        `fuse-channels` v{__version__}.  This notebook drives the **real**
-        modules.  Move the controls and every number below is recomputed.
+    `fuse-channels` v{__version__}.  This notebook drives the **real**
+    modules.  Move the controls and every number below is recomputed.
 
-        The claims being tested:
+    The claims being tested:
 
-        1. **Cardinality invariance** — output shape is fixed for any `C`.
-        2. **Padding-free ≡ masked-padded** — varlen attention equals the dense
-           reference.
-        3. **Permutation invariance** — shuffling channel order changes nothing.
-        4. **Omission correctness** — dropping a channel is exact.
-        5. **Identity-aware, data-dependent routing** — attention over channels
-           changes when marker identities change.
-        6. **Channel-masked MAE** — masked channels are reconstructed
-           (virtual staining / marker imputation).
-        """
-    )
+    1. **Cardinality invariance** — output shape is fixed for any `C`.
+    2. **Padding-free ≡ masked-padded** — varlen attention equals the dense
+       reference.
+    3. **Permutation invariance** — shuffling channel order changes nothing.
+    4. **Omission correctness** — dropping a channel is exact.
+    5. **Identity-aware, data-dependent routing** — attention over channels
+       changes when marker identities change.
+    6. **Channel-masked MAE** — masked channels are reconstructed
+       (virtual staining / marker imputation).
+    """)
     return
 
 
@@ -102,9 +97,6 @@ def _(mo):
     return
 
 
-# --------------------------------------------------------------------------- #
-# Helpers
-# --------------------------------------------------------------------------- #
 @app.cell
 def _(ChannelSet, math, torch):
     DIM = 64
@@ -193,7 +185,7 @@ def _(ChannelSet, math, torch):
         att = (qq @ kv.transpose(-1, -2)) / math.sqrt(dh)
         return att.softmax(-1).mean(dim=(1, 2)).detach()
 
-    return DIM, NP, N_MARKERS, attention_maps, make_set, permute_set, select_channels
+    return DIM, NP, attention_maps, make_set, permute_set, select_channels
 
 
 @app.cell
@@ -204,9 +196,6 @@ def _(ChannelFusion, DIM, NP, torch):
     return (fusion,)
 
 
-# --------------------------------------------------------------------------- #
-# Controls
-# --------------------------------------------------------------------------- #
 @app.cell
 def _(mo):
     C_slider = mo.ui.slider(1, 60, value=8, step=1, label="channel count C")
@@ -226,9 +215,6 @@ def _(C_slider, mo):
     return C, drop_slider, ident_check, permute_check
 
 
-# --------------------------------------------------------------------------- #
-# Core computation
-# --------------------------------------------------------------------------- #
 @app.cell
 def _(
     C,
@@ -277,10 +263,8 @@ def _(
     # spread of routing weights across channels (per location)
     routing_std = att.std(dim=1).mean().item()
     output_shape = tuple(fused_full.shape)
-
     return (
         att,
-        fused_full,
         identity_effect,
         omission_diff,
         output_shape,
@@ -324,9 +308,6 @@ def _(
     return
 
 
-# --------------------------------------------------------------------------- #
-# Attention heatmap
-# --------------------------------------------------------------------------- #
 @app.cell
 def _(C, att, go, mo):
     fig_att = go.Figure(
@@ -345,14 +326,11 @@ def _(C, att, go, mo):
         height=320,
     )
     mo.ui.plotly(fig_att)
-    return (fig_att,)
+    return
 
 
-# --------------------------------------------------------------------------- #
-# Cardinality sweep
-# --------------------------------------------------------------------------- #
 @app.cell
-def _(DIM, fusion, go, make_set, mo, np, select_channels, torch):
+def _(fusion, go, make_set, mo, np, select_channels, torch):
     base = make_set(60, seed=7)
     descriptors = []
     with torch.no_grad():
@@ -408,28 +386,23 @@ def _(DIM, fusion, go, make_set, mo, np, select_channels, torch):
 
 
 @app.cell
-def _(mo, np):
-    mo.md(
-        """
-        ## What to look for above
+def _(mo):
+    mo.md("""
+    ## What to look for above
 
-        * Slide **C** from 1 to 60: the output row in the table never changes
-          shape — that is the "no concatenation blow-up" property.
-        * Toggle **permute channel order**: the permutation-invariance row must
-          stay exact.  The model is order-independent but marker-aware.
-        * Toggle **use channel identity**: the identity-ablation row changes and
-          the heatmap routing shifts — the additive identity embedding is doing
-          real work (as required by the ChannelViT / ChAda-ViT ablations).
-        * Move **channel index to omit**: omission matches the reference exactly;
-          the dropped channel simply is not in the set.
-        """
-    )
+    * Slide **C** from 1 to 60: the output row in the table never changes
+      shape — that is the "no concatenation blow-up" property.
+    * Toggle **permute channel order**: the permutation-invariance row must
+      stay exact.  The model is order-independent but marker-aware.
+    * Toggle **use channel identity**: the identity-ablation row changes and
+      the heatmap routing shifts — the additive identity embedding is doing
+      real work (as required by the ChannelViT / ChAda-ViT ablations).
+    * Move **channel index to omit**: omission matches the reference exactly;
+      the dropped channel simply is not in the set.
+    """)
     return
 
 
-# --------------------------------------------------------------------------- #
-# MAE: channel-masked reconstruction (virtual staining)
-# --------------------------------------------------------------------------- #
 @app.cell
 def _(mo, torch):
     def structured_batch(B, seed, H=16, c_min=2, c_max=5, n_markers=16):
@@ -485,7 +458,7 @@ def _(ChannelFusionMAE, mae_steps, mo, structured_batch, torch):
         f"loss **{losses[0]:.3f} → {losses[-1]:.3f}** "
         f"(masked channel-patches are the supervision target)."
     )
-    return (losses, mae)
+    return losses, mae
 
 
 @app.cell
@@ -503,7 +476,7 @@ def _(go, losses, mo):
 
 @app.cell
 def _(mae, np, plt, structured_batch, torch):
-    test_imgs, test_ids = structured_batch(1, seed=999, c_max=5)
+    test_imgs, test_ids = structured_batch(1, seed=999, c_min=5, c_max=5)
     Ctest = test_imgs[0].shape[0]
     visible = torch.ones(1, Ctest, 4, dtype=torch.bool)
     first_masked = min(2, Ctest - 1)
@@ -516,7 +489,6 @@ def _(mae, np, plt, structured_batch, torch):
     n_masked = Ctest - first_masked
     pred = recon["pred"].detach().reshape(n_masked, 4, 8, 8).numpy()  # [C, N, P, P]
     target = recon["target"].detach().reshape(n_masked, 4, 8, 8).numpy()
-    gt = test_imgs[0][first_masked:].squeeze(1).numpy()  # original pixels
 
     def tile(patches):
         grid = np.zeros((16, 16))
@@ -537,22 +509,21 @@ def _(mae, np, plt, structured_batch, torch):
         ax.axis("off")
     fig.suptitle("Fully masked channels reconstructed from the remaining set", y=0.98)
     fig.tight_layout()
-    return (fig,)
+
+    return
 
 
 @app.cell
 def _(mo):
-    mo.md(
-        """
-        ## Conclusion
+    mo.md("""
+    ## Conclusion
 
-        *The fusion module behaves like a **set function**: arbitrary channel
-        count, order-free, identity-aware, data-dependently weighted, and exact
-        against the masked-padded reference — with **no padding tensor** anywhere
-        in the path.* The MAE extends the same property so that missing channels
-        become a reconstruction target rather than an inference edge case.
-        """
-    )
+    *The fusion module behaves like a **set function**: arbitrary channel
+    count, order-free, identity-aware, data-dependently weighted, and exact
+    against the masked-padded reference — with **no padding tensor** anywhere
+    in the path.* The MAE extends the same property so that missing channels
+    become a reconstruction target rather than an inference edge case.
+    """)
     return
 
 
