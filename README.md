@@ -130,7 +130,7 @@ Covered by `tests/`:
 
 ## Visualizations
 
-There are two, because they answer different questions — see
+There are three, because they answer different questions — see
 [`viz/README.md`](viz/README.md) for details.
 
 **Interactive behaviour (recommended).** The marimo dashboard runs the real
@@ -151,4 +151,12 @@ masked-channel reconstruction (virtual-staining) demo.
 
 ```bash
 uv run python viz/draw_architecture.py      # -> viz/out/{architecture_torchview,padding_free_flow}.{png,svg}
+```
+
+**Paper figure.** The hand-authored, module-level submission figure (vector
+PDF/SVG + PNG, colour-blind-safe, tensor shapes on every block):
+
+```bash
+uv run python viz/paper_figure.py            # -> viz/out/architecture.{pdf,svg,png}
+uv run python viz/cardinality_figure.py      # -> viz/out/cardinality.{pdf,svg,png}
 ```

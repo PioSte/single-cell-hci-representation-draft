@@ -11,3 +11,6 @@ __marimo__/
 *.ckpt
 wandb/
 runs/
+
+# rendered figure output (regenerate with viz/*_figure.py, draw_architecture.py, dashboard.py)
+viz/out/
