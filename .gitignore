@@ -14,3 +14,11 @@ runs/
 
 # rendered figure output (regenerate with viz/*_figure.py, draw_architecture.py, dashboard.py)
 viz/out/
+
+# paper source PDFs and extracted figure images (reproduce via references/README.md)
+references/*.pdf
+references/*/images/
+
+# local MinerU parse artifacts
+.mineru-service.lock
+blobs/
