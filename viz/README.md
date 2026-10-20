@@ -1,6 +1,6 @@
 # Visualizations
 
-Five kinds of artifact, because they answer different questions.
+Six kinds of artifact, because they answer different questions.
 
 ## 1. Interactive behaviour — `dashboard.py` (marimo)
 
@@ -112,6 +112,31 @@ uv run kinemo render viz/shape_flow.py --format gif --size 720p --out viz/out/sh
 This needs the `kinemo` package (in the `viz` extra). The scene is written for
 agents: `kinemo check --strict` passes, so `kinemo snap --at <t>` can be used to
 inspect any instant without watching the video.
+
+## 6. Fusion internals (animated) — `fusion_flow.py` (kinemo)
+
+A deeper animation of the **default** fusion path (`ChannelFusion`,
+`mode="per_location"`). It zooms into one `(sample, patch)` location and follows
+its channel tokens through every operation, one at a time:
+
+`x_c` → `LayerNorm` (`k = v`) → per-head `q_h · k_{c,h} / √D_h` → `softmax` over
+the `C` channels → `Σ_c α_c v_c` → `concat` heads → `proj_out` Linear →
+scatter into `[B, N, Q·D]`.
+
+The two dot-product steps are drawn with `k.matrix_product` (each score/entry is
+shown cell by cell while its query row and key/value column are highlighted), and
+the numbers come from a real forward pass at `dim=4, n_heads=2` — small enough to
+read; the model default is `dim=192, n_heads=6`. It makes three structural points
+explicit: keys and values are the *same* tensor (`k = v = norm_kv(x)`), there is
+no `W_Q/W_K/W_V` (the query is a learned per-patch parameter, so it is shared
+across samples), and the softmax axis is the channel axis — never patches or
+samples.
+
+```bash
+uv run kinemo check --strict viz/fusion_flow.py
+uv run kinemo render viz/fusion_flow.py --format mp4 --out viz/out/fusion_flow.mp4
+uv run kinemo render viz/fusion_flow.py --format gif --size 720p --out viz/out/fusion_flow.gif
+```
 
 ## Why this combination
 
