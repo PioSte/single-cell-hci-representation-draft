@@ -3,7 +3,7 @@ name = "fuse-channels"
 version = "0.1.0"
 description = "Padding-free channel-set fusion front-end for high-content-imaging foundation models"
 readme = "README.md"
-requires-python = ">=3.10,<3.13"
+requires-python = ">=3.11,<3.13"
 authors = [{ name = "fuse-channels" }]
 dependencies = [
     "torch>=2.2",
