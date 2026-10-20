@@ -1,6 +1,6 @@
 # Visualizations
 
-Four kinds of artifact, because they answer different questions.
+Five kinds of artifact, because they answer different questions.
 
 ## 1. Interactive behaviour — `dashboard.py` (marimo)
 
@@ -83,6 +83,35 @@ number of channels. Written to `viz/out/cardinality.{pdf,svg,png}`.
 ```bash
 uv run python viz/cardinality_figure.py
 ```
+
+## 5. Shape flow (animated) — `shape_flow.py` (kinemo)
+
+A [kinemo](https://github.com/m4nd0r4s/kinemo) animation of the **tensor-shape
+transformations** from the raw image set to the final output, walking the shapes
+of `ChannelFusionMAE`. A grid of cells is a literal picture of the tensor
+axes (rows = channels grouped by sample, columns = spatial patches, `D` = depth)
+and the channel axis is the thing you watch collapse:
+
+`[C_b, 1, H, W]` → `[ΣC, 1, H, W]` → `[ΣC, N, D]` → `[B, N, D]` → `[B, D]` →
+`[Kt, P²]`, with the DCP masking `[B, N, D] → [Kf, D]` and the memory
+`[B·M + Kf, D]` in between. The point the animation makes visually: `C` appears
+only in the input length and is **summed away** by the channel fusion, never
+padded to a `C_max`. Two simplifications: the DCP masking is drawn as
+location-level removal, whereas the real masker selects per channel-patch token
+*before* the fusion; and `[B, D]` is the inference-time `encode()` descriptor,
+which the training forward does not materialise as an intermediate.
+
+```bash
+# check, preview in the browser, or render (MP4 / GIF / frames)
+uv run kinemo check --strict viz/shape_flow.py
+uv run kinemo dev viz/shape_flow.py
+uv run kinemo render viz/shape_flow.py --format mp4 --out viz/out/shape_flow.mp4
+uv run kinemo render viz/shape_flow.py --format gif --size 720p --out viz/out/shape_flow.gif
+```
+
+This needs the `kinemo` package (in the `viz` extra). The scene is written for
+agents: `kinemo check --strict` passes, so `kinemo snap --at <t>` can be used to
+inspect any instant without watching the video.
 
 ## Why this combination
 

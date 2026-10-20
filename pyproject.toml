@@ -19,6 +19,7 @@ viz = [
     "pillow>=10",
     "torchview>=0.2.6",
     "graphviz>=0.20",
+    "kinemo>=0.19",
 ]
 flash = ["flash-attn>=2.5; platform_system != 'Darwin'"]
 text = ["transformers>=4.40"]
