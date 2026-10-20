@@ -125,12 +125,15 @@ scatter into `[B, N, Q·D]`.
 
 The two dot-product steps are drawn with `k.matrix_product` (each score/entry is
 shown cell by cell while its query row and key/value column are highlighted), and
-the numbers come from a real forward pass at `dim=4, n_heads=2` — small enough to
-read; the model default is `dim=192, n_heads=6`. It makes three structural points
-explicit: keys and values are the *same* tensor (`k = v = norm_kv(x)`), there is
-no `W_Q/W_K/W_V` (the query is a learned per-patch parameter, so it is shared
-across samples), and the softmax axis is the channel axis — never patches or
-samples.
+every element group at each step is **named, highlighted and pointed at with a
+callout** — the channel block, the keys/values, the query, each head, the query /
+keys / scores, the attention weights, the values, the head output, the projection,
+the concat and the fused vector, plus present vs. absent locations. The numbers
+come from a real forward pass at `dim=4, n_heads=2` — small enough to read; the
+model default is `dim=192, n_heads=6`. It makes three structural points explicit:
+keys and values are the *same* tensor (`k = v = norm_kv(x)`), there is no
+`W_Q/W_K/W_V` (the query is a learned per-patch parameter, so it is shared across
+samples), and the softmax axis is the channel axis — never patches or samples.
 
 ```bash
 uv run kinemo check --strict viz/fusion_flow.py
