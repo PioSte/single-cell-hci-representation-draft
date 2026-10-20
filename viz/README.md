@@ -41,7 +41,7 @@ Writes into `viz/out/`:
   forward pass with [torchview](https://github.com/mert-kurttutan/torchview).
   Needs the Graphviz `dot` binary (the script finds it on `PATH` or in a Nix
   store).
-* `padding_free_flow.png/.svg` — a hand-drawn schematic of the set/varlen data
+* `padding_free_flow.png/.svg` — a hand-drawn schematic of the set-native data
   flow: the flattened `[ΣC·N, D]` token layout, the per-`(sample, patch)`
   attention group, and the "masking = token omission" rule. Generic graph
   tracers cannot express this.
@@ -64,7 +64,7 @@ uv run python viz/paper_figure.py --formats pdf svg  # subset
 ```
 
 Why not a tracer for this one? A tracer shows ops; a paper figure must show
-*modules* and make the set/varlen semantics explicit — that is exactly what
+*modules* and make the set-native semantics explicit — that is exactly what
 `architecture_torchview` cannot express.
 
 ## 4. Cardinality invariance — `cardinality_figure.py`

@@ -7,7 +7,7 @@ additive identity -> padding-free channel fusion -> memory-augmented spatial
 transformer -> channel-aware shared decoder -> per-channel normalized pixel
 loss.
 
-Masking omits rows from the varlen tensor; no mask tokens and no attention masks
+Masking omits rows from the flattened token tensor; no mask tokens and no attention masks
 are used for masking.  The encoder only ever sees *visible* tokens.
 """
 

@@ -1,4 +1,4 @@
-"""Padding-free (varlen) attention primitives.
+"""Padding-free attention primitives over flattened token sets.
 
 Everything in this module operates on *flattened, real* tokens plus integer
 segment ids, so no ``[B, C_max, D]`` padded tensor and no attention mask is ever

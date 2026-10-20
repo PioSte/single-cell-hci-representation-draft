@@ -8,7 +8,7 @@ One hand-authored, vector-first figure (PDF/SVG/PNG) with two panels:
 
 Unlike ``draw_architecture.py`` (a traced op graph + a diagnostic schematic),
 this file is the *submission* figure: modules, not ops; tensor shapes on every
-block; the set/varlen semantics made visually explicit.
+block; the set-native semantics made visually explicit.
 
 Usage::
 

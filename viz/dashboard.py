@@ -65,8 +65,8 @@ def _(__version__, mo):
     The claims being tested:
 
     1. **Cardinality invariance** — output shape is fixed for any `C`.
-    2. **Padding-free ≡ masked-padded** — varlen attention equals the dense
-       reference.
+    2. **Padding-free ≡ masked-padded** — attention over the flattened token set
+       equals the dense reference.
     3. **Permutation invariance** — shuffling channel order changes nothing.
     4. **Omission correctness** — dropping a channel is exact.
     5. **Identity-aware, data-dependent routing** — attention over channels
@@ -300,7 +300,7 @@ def _(
         | identity ablation (mean abs change) | `{identity_effect:.3f}` | {"✓ routing is identity-aware" if identity_effect > 1e-3 else "— not distinguishable"} |
         | routing spread across channels | `{routing_std:.3f}` | {"✓ data-dependent (not mean pooling)" if routing_std > 1e-3 else "— uniform"} |
 
-        > "Padding-free" here is not an approximation: the varlen path is compared
+        > "Padding-free" here is not an approximation: the flattened path is compared
         > against a dense `[B, C_max, N, D]` + attention-mask reference and must
         > agree to numerical precision.
         """

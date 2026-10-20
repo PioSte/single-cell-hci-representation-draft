@@ -37,7 +37,7 @@ def test_cardinality_invariance():
 
 
 def test_padding_free_equivalence():
-    """Varlen fusion == masked-padded reference (exact math)."""
+    """Padding-free fusion == masked-padded reference (exact math)."""
     fusion = _fusion(seed=1)
     fusion.eval()
     # mixed channel counts

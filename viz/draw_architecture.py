@@ -3,7 +3,7 @@
 Produces (into ``viz/out/``):
 
 * ``architecture_torchview.png/.svg`` -- the traced ``ChannelFusionMAE`` graph.
-* ``padding_free_flow.png/.svg`` -- a schematic of the set/varlen data flow,
+* ``padding_free_flow.png/.svg`` -- a schematic of the set-native data flow,
   which generic graph tracers cannot express.
 
 Usage::

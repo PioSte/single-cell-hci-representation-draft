@@ -99,7 +99,7 @@ fused, present = fusion(cs)                 # [B, 4, 192]; no channel padding
 
 | file | contents |
 | --- | --- |
-| `ops.py` | varlen grouped attention primitives (`cu_seqlens`-style, no padding) |
+| `ops.py` | padding-free grouped attention primitives |
 | `container.py` | `ChannelSet`: flattened variable-channel token batch |
 | `identity.py` | learnable / text-conditioned channel identities |
 | `patch_embed.py` | channel-tied patch embedding + front-end |
