@@ -4,7 +4,9 @@ import torch
 from fuse_channels import (
     ChannelFusion,
     ChannelIdentity,
+    ChannelSet,
     HypernetworkWeightedSum,
+    MultiheadAttentionPooling,
     dense_fusion_reference,
 )
 from helpers import make_channel_set, permute_channels
@@ -14,9 +16,9 @@ N = 4
 HEADS = 4
 
 
-def _fusion(seed=0, mode="per_location"):
+def _fusion(seed=0):
     torch.manual_seed(seed)
-    return ChannelFusion(D, n_heads=HEADS, n_queries=1, n_patches=N, mode=mode)
+    return ChannelFusion(D, n_heads=HEADS, n_queries=1, n_patches=N)
 
 
 # ---------------------------------------------------------------- #
@@ -112,26 +114,61 @@ def test_open_vocabulary_identity():
         ident(torch.zeros(5, dtype=torch.long))
 
 
-def test_global_mode():
-    fusion = _fusion(seed=5, mode="global")
-    cs = make_channel_set([1, 4, 7], N, D)
-    out, present = fusion(cs)
-    assert out.shape == (3, D)
-    assert present.all()
+def test_pooling_queries_are_shared_across_locations():
+    """ChannelFusion uses one query set for every spatial location."""
+    fusion = _fusion(seed=7)
+    fusion.eval()
+    assert tuple(fusion.queries.shape) == (1, fusion.n_queries, D)
+
+    # identical channel tokens at two locations must fuse identically, which
+    # only holds if the pooling query is shared across locations.
+    C = 2
+    tok = torch.randn(C, D)
+    cs = ChannelSet(
+        tokens=tok.repeat_interleave(N, dim=0),
+        sample_idx=torch.zeros(C * N, dtype=torch.long),
+        channel_idx=torch.arange(C).repeat_interleave(N),
+        patch_idx=torch.arange(N).repeat(C),
+        channel_id=torch.zeros(C * N, dtype=torch.long),
+        n_samples=1,
+        n_patches=N,
+    )
+    fused, _ = fusion(cs)
+    for n in range(1, N):
+        assert torch.allclose(fused[0, 0], fused[0, n], atol=1e-6)
+
+
+def test_multihead_attention_pooling():
+    """PMA descriptor pool: padding-free, permutation-invariant, empty->0."""
+    torch.manual_seed(0)
+    pool = MultiheadAttentionPooling(D, n_heads=HEADS, n_queries=1)
+    pool.eval()
+    x = torch.randn(7, D)
+    seg = torch.tensor([0, 0, 0, 1, 2, 2, 2])
+    out = pool(x, seg, 4)
+    assert out.shape == (4, D)
+    assert torch.isfinite(out).all()
+    # a segment with no tokens pools to zeros (not NaN)
+    assert torch.equal(out[3], torch.zeros(D))
+
+    # pooling is invariant to the order of tokens inside a segment
+    perm = torch.tensor([2, 0, 1, 3, 6, 4, 5])
+    out_perm = pool(x[perm], seg[perm], 4)
+    assert torch.allclose(out, out_perm, atol=1e-5, rtol=1e-4)
+
+    # n_queries>1 returns a wider fixed-size descriptor
+    pool_multi = MultiheadAttentionPooling(D, n_heads=HEADS, n_queries=3)
+    out_multi = pool_multi(x, seg, 4)
+    assert out_multi.shape == (4, 3 * D)
 
 
 def test_hypernetwork_weighted_sum():
-    net = HypernetworkWeightedSum(D, n_queries=1, n_patches=N, mode="per_location")
+    net = HypernetworkWeightedSum(D, n_queries=1, n_patches=N)
     cs = make_channel_set([2, 5, 9], N, D)
     out, present = net(cs)
     assert out.shape == (3, N, D)
     assert torch.isfinite(out).all()
     assert present.all()
-
-    net_g = HypernetworkWeightedSum(D, n_queries=1, mode="global")
-    out_g, present_g = net_g(cs)
-    assert out_g.shape == (3, D)
-    assert present_g.all()
 
 
 def test_no_pad_artifacts():

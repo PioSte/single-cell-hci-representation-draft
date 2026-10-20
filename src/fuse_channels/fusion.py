@@ -31,7 +31,13 @@ def _unique_segments(seg: torch.Tensor):
 
 
 class ChannelFusion(nn.Module):
-    """Attention pooling of the channel axis into fixed learned queries.
+    """Attention pooling of the channel axis at every spatial location.
+
+    Channels are fused *within* each ``(sample, patch)`` location into a fixed
+    number of learned queries and the result is scattered back to
+    ``[B, N, n_queries*dim]``.  The queries are shared across locations (the
+    canonical PMA form): position enters through the shared spatial positional
+    embedding on the tokens, not through per-location query parameters.
 
     Parameters
     ----------
@@ -40,15 +46,10 @@ class ChannelFusion(nn.Module):
     n_heads:
         attention heads (``dim`` must be divisible by it).
     n_queries:
-        number of PMA queries per location/sample (usually 1).  Output feature
-        size is ``n_queries * dim``.
+        number of PMA queries per location (usually 1).  Output feature size is
+        ``n_queries * dim``.
     n_patches:
-        spatial patch count, required for ``mode="per_location"``.
-    mode:
-        ``"per_location"`` fuses channels *at each spatial location* and returns
-        ``[B, N, n_queries*dim]`` (the front-end for a spatial transformer).
-        ``"global"`` fuses the whole token set per sample and returns
-        ``[B, n_queries*dim]``.
+        spatial patch count.
     """
 
     def __init__(
@@ -57,44 +58,32 @@ class ChannelFusion(nn.Module):
         n_heads: int = 8,
         n_queries: int = 1,
         n_patches: int = 0,
-        mode: str = "per_location",
         dropout: float = 0.0,
     ) -> None:
         super().__init__()
         assert dim % n_heads == 0, "dim must be divisible by n_heads"
-        assert mode in ("per_location", "global")
+        assert n_patches > 0, "n_patches is required"
         self.dim = dim
         self.n_heads = n_heads
         self.n_queries = n_queries
         self.n_patches = n_patches
-        self.mode = mode
         self.dropout = dropout
 
         self.norm_q = nn.LayerNorm(dim)
         self.norm_kv = nn.LayerNorm(dim)
         self.proj_out = nn.Linear(dim, dim)
 
-        if mode == "per_location":
-            assert n_patches > 0, "n_patches is required for per_location mode"
-            self.queries = nn.Parameter(torch.zeros(n_patches, n_queries, dim))
-        else:
-            self.queries = nn.Parameter(torch.zeros(1, n_queries, dim))
+        # one shared query set, applied at every spatial location
+        self.queries = nn.Parameter(torch.zeros(1, n_queries, dim))
         nn.init.trunc_normal_(self.queries, std=0.02)
 
     # ------------------------------------------------------------------ #
     def forward(self, cs: ChannelSet):
         """Return ``(fused, present)``.
 
-        ``fused`` is ``[B, N, n_queries*dim]`` (per_location) or
-        ``[B, n_queries*dim]`` (global).  ``present`` is a boolean mask marking
-        locations/samples that had at least one channel.
+        ``fused`` is ``[B, N, n_queries*dim]`` and ``present`` is a boolean mask
+        marking locations that had at least one channel.
         """
-        if self.mode == "per_location":
-            return self._forward_per_location(cs)
-        return self._forward_global(cs)
-
-    # ------------------------------------------------------------------ #
-    def _forward_per_location(self, cs: ChannelSet):
         B, N, D = cs.n_samples, cs.n_patches, self.dim
         Q, H = self.n_queries, self.n_heads
         Dh = D // H
@@ -104,8 +93,7 @@ class ChannelFusion(nn.Module):
         n_seg = uniq.numel()
 
         tok = self.norm_kv(cs.tokens[order]).view(-1, H, Dh)
-        patch_of_seg = uniq % N
-        q = self.norm_q(self.queries[patch_of_seg]).view(n_seg, Q, H, Dh)
+        q = self.norm_q(self.queries).reshape(1, Q, H, Dh).expand(n_seg, Q, H, Dh)
 
         out = grouped_pool_attention(q, tok, tok, lookup, n_seg, self.dropout)
         out = self.proj_out(out.reshape(n_seg, Q, D))  # [n_seg, Q, D]
@@ -113,35 +101,92 @@ class ChannelFusion(nn.Module):
 
         fused = out.new_zeros(B, N, Q * D)
         sample_of_seg = uniq // N
+        patch_of_seg = uniq % N
         fused[sample_of_seg, patch_of_seg] = out
 
         present = torch.zeros(B, N, dtype=torch.bool, device=cs.tokens.device)
         present[sample_of_seg, patch_of_seg] = True
         return fused, present
 
-    def _forward_global(self, cs: ChannelSet):
-        B, D = cs.n_samples, self.dim
-        Q, H = self.n_queries, self.n_heads
-        Dh = D // H
-
-        seg = cs.channel_segments()
-        _, _, order, lookup = _unique_segments(seg)
-
-        tok = self.norm_kv(cs.tokens[order]).view(-1, H, Dh)
-        q = self.norm_q(self.queries).reshape(1, Q, H, Dh).expand(B, Q, H, Dh)
-
-        out = grouped_pool_attention(q, tok, tok, lookup, B, self.dropout)
-        out = self.proj_out(out.reshape(B, Q, D)).reshape(B, Q * D)
-
-        present = torch.bincount(seg, minlength=B) > 0
-        return out, present
-
     # ------------------------------------------------------------------ #
     def extra_repr(self) -> str:
-        return (
-            f"dim={self.dim}, n_heads={self.n_heads}, n_queries={self.n_queries}, "
-            f"mode={self.mode}"
+        return f"dim={self.dim}, n_heads={self.n_heads}, n_queries={self.n_queries}"
+
+
+class MultiheadAttentionPooling(nn.Module):
+    """Pooling by multi-head attention (PMA) over a padding-free token set.
+
+    A learned query (``n_queries`` of them) cross-attends to every real token
+    of each segment and emits a fixed-size descriptor per segment.  This is the
+    same padding-free grouped-attention primitive as :class:`ChannelFusion`,
+    factored out so the inference-time descriptor of
+    :class:`~fuse_channels.mae.ChannelFusionMAE` can pool across all of a
+    sample's tokens instead of taking a mean.
+
+    Parameters
+    ----------
+    dim:
+        token feature dimension.
+    n_heads:
+        attention heads (``dim`` must be divisible by it).
+    n_queries:
+        number of learned pooling queries; output is ``n_queries * dim``.
+    dropout:
+        attention dropout.
+
+    Inputs
+    ------
+    x:
+        ``[T, D]`` real tokens (no padding).
+    seg:
+        ``[T]`` segment id of each token, in ``[0, n_segments)``.
+    n_segments:
+        total number of segments.  Segments without any token pool to zeros.
+    """
+
+    def __init__(
+        self,
+        dim: int,
+        n_heads: int = 8,
+        n_queries: int = 1,
+        dropout: float = 0.0,
+    ) -> None:
+        super().__init__()
+        assert dim % n_heads == 0, "dim must be divisible by n_heads"
+        self.dim = dim
+        self.n_heads = n_heads
+        self.n_queries = n_queries
+        self.dropout = dropout
+
+        self.norm_q = nn.LayerNorm(dim)
+        self.norm_kv = nn.LayerNorm(dim)
+        self.proj_out = nn.Linear(dim, dim)
+        self.queries = nn.Parameter(torch.zeros(1, n_queries, dim))
+        nn.init.trunc_normal_(self.queries, std=0.02)
+
+    def forward(
+        self, x: torch.Tensor, seg: torch.Tensor, n_segments: int
+    ) -> torch.Tensor:
+        """Return ``[n_segments, n_queries * dim]`` attention-pooled descriptors."""
+        H, Dh, Q = self.n_heads, self.dim // self.n_heads, self.n_queries
+        out = x.new_zeros(n_segments, Q * self.dim)
+        if x.numel() == 0:
+            return out
+
+        uniq, _, order, lookup = _unique_segments(seg)
+        n_uniq = uniq.numel()
+        tok = self.norm_kv(x[order]).view(-1, H, Dh)
+        q = self.norm_q(self.queries).reshape(1, Q, H, Dh).expand(n_uniq, Q, H, Dh)
+
+        pooled = grouped_pool_attention(q, tok, tok, lookup, n_uniq, self.dropout)
+        pooled = self.proj_out(pooled.reshape(n_uniq, Q, self.dim)).reshape(
+            n_uniq, Q * self.dim
         )
+        out[uniq] = pooled
+        return out
+
+    def extra_repr(self) -> str:
+        return f"dim={self.dim}, n_heads={self.n_heads}, n_queries={self.n_queries}"
 
 
 class HypernetworkWeightedSum(nn.Module):
@@ -157,15 +202,13 @@ class HypernetworkWeightedSum(nn.Module):
         dim: int,
         n_queries: int = 1,
         n_patches: int = 0,
-        mode: str = "per_location",
         hidden: int | None = None,
     ) -> None:
         super().__init__()
-        assert mode in ("per_location", "global")
+        assert n_patches > 0, "n_patches is required"
         self.dim = dim
         self.n_queries = n_queries
         self.n_patches = n_patches
-        self.mode = mode
 
         hidden = hidden or dim
         self.weight_net = nn.Sequential(
@@ -182,24 +225,15 @@ class HypernetworkWeightedSum(nn.Module):
         logits = self.weight_net(w_in)  # [T, Q]
         values = self.out_norm(self.value_proj(cs.tokens))  # [T, D]
 
-        if self.mode == "per_location":
-            seg = cs.location_segments()
-            uniq, _, _, lookup = _unique_segments(seg)
-            n_seg = uniq.numel()
-        else:
-            seg = cs.channel_segments()
-            uniq, _, _, lookup = _unique_segments(seg)
-            n_seg = cs.n_samples
+        seg = cs.location_segments()
+        uniq, _, _, lookup = _unique_segments(seg)
+        n_seg = uniq.numel()
 
         weights = segment_softmax(logits, lookup, n_seg)  # [T, Q]
         contrib = weights.unsqueeze(-1) * values.unsqueeze(1)  # [T, Q, D]
         out = values.new_zeros(n_seg, self.n_queries, self.dim)
         out.index_add_(0, lookup, contrib)
         out = out.reshape(n_seg, self.n_queries * self.dim)
-
-        if self.mode == "global":
-            present = torch.bincount(seg, minlength=cs.n_samples) > 0
-            return out, present
 
         N = cs.n_patches
         fused = out.new_zeros(cs.n_samples, N, self.n_queries * self.dim)
@@ -220,10 +254,9 @@ class HypernetworkWeightedSum(nn.Module):
 def dense_fusion_reference(fusion: ChannelFusion, cs: ChannelSet) -> torch.Tensor:
     """Dense ``[B, C_max, N, D]`` + mask reference for ``ChannelFusion``.
 
-    Implements the exact same math as :meth:`ChannelFusion._forward_per_location`
-    but materialises the padded channel axis and an attention mask.
+    Implements the exact same math as :meth:`ChannelFusion.forward` but
+    materialises the padded channel axis and an attention mask.
     """
-    assert fusion.mode == "per_location"
     B, N, D = cs.n_samples, cs.n_patches, fusion.dim
     Q, H = fusion.n_queries, fusion.n_heads
     Dh = D // H
@@ -239,8 +272,8 @@ def dense_fusion_reference(fusion: ChannelFusion, cs: ChannelSet) -> torch.Tenso
     present = mask.any(dim=1)  # [B, N]
 
     kv = fusion.norm_kv(x).permute(0, 2, 1, 3).reshape(B * N, Cmax, D)
-    q = fusion.norm_q(fusion.queries)  # [N, Q, D]
-    q = q.unsqueeze(0).expand(B, N, Q, D).reshape(B * N, Q, D)
+    q = fusion.norm_q(fusion.queries)  # [1, Q, D]
+    q = q.expand(B * N, Q, D)
     m = mask.permute(0, 2, 1).reshape(B * N, Cmax)
 
     qh = q.view(B * N, Q, H, Dh).permute(0, 2, 1, 3)

@@ -115,8 +115,8 @@ inspect any instant without watching the video.
 
 ## 6. Fusion internals (animated) — `fusion_flow.py` (kinemo)
 
-A deeper animation of the **default** fusion path (`ChannelFusion`,
-`mode="per_location"`). It zooms into one `(sample, patch)` location and follows
+A deeper animation of the **default** fusion path (`ChannelFusion`). It zooms
+into one `(sample, patch)` location and follows
 its channel tokens through every operation, one at a time:
 
 `x_c` → `LayerNorm` (`k = v`) → per-head `q_h · k_{c,h} / √D_h` → `softmax` over

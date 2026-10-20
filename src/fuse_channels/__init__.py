@@ -6,6 +6,7 @@ from .encoder import SpatialTransformer, TransformerBlock
 from .fusion import (
     ChannelFusion,
     HypernetworkWeightedSum,
+    MultiheadAttentionPooling,
     dense_fusion_reference,
 )
 from .identity import ChannelIdentity
@@ -24,6 +25,7 @@ __all__ = [
     "ChannelSet",
     "ChannelFusion",
     "HypernetworkWeightedSum",
+    "MultiheadAttentionPooling",
     "dense_fusion_reference",
     "ChannelIdentity",
     "ChannelFrontend",

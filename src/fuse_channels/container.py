@@ -67,7 +67,3 @@ class ChannelSet:
     def location_segments(self) -> torch.Tensor:
         """Segment id per token for *per-spatial-location* channel attention."""
         return self.sample_idx * self.n_patches + self.patch_idx
-
-    def channel_segments(self) -> torch.Tensor:
-        """Segment id per token for *per-sample* (global) channel attention."""
-        return self.sample_idx

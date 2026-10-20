@@ -97,6 +97,25 @@ def test_encode_inference():
     assert torch.isfinite(pooled).all()
 
 
+def test_encode_attention_pool_replaces_mean():
+    """The descriptor is attention-pooled by default (no longer a mean pool)."""
+    model = _model()
+    model.eval()
+    images, ids = _batch()
+    _, pooled_attn = model.encode(images, ids, pool="attention")
+    _, pooled_mean = model.encode(images, ids, pool="mean")
+    assert pooled_attn.shape == pooled_mean.shape == (3, 32)
+    assert torch.isfinite(pooled_attn).all()
+    assert not torch.allclose(pooled_attn, pooled_mean)
+
+    # pooling still works with no memory tokens
+    model0 = _model(n_memory=0)
+    model0.eval()
+    _, pooled0 = model0.encode(images, ids, pool="attention")
+    assert pooled0.shape == (3, 32)
+    assert torch.isfinite(pooled0).all()
+
+
 def test_open_vocab_text_conditioned():
     model = _model(num_markers=0, text_dim=12, use_learnable_identity=False)
     images = [torch.randn(C, 1, 8, 8) for C in (2, 5)]

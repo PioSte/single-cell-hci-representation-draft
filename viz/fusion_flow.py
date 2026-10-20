@@ -1,8 +1,7 @@
 """kinemo animation: what the channel-fusion module actually computes.
 
-The default fusion is :class:`fuse_channels.fusion.ChannelFusion` in
-``mode="per_location"`` -- PMA-style pooling of the channel axis at every
-spatial location.  This scene zooms into **one** location (one sample, one
+The default fusion is :class:`fuse_channels.fusion.ChannelFusion` -- PMA-style
+pooling of the channel axis at every spatial location.  This scene zooms into **one** location (one sample, one
 patch) and follows its channel tokens through every operation:
 
     gather channels -> LayerNorm (k = v) -> per-head query · key / sqrt(Dh)

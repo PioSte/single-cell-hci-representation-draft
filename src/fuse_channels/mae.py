@@ -21,7 +21,7 @@ import torch.nn as nn
 from .container import ChannelSet
 from .decoder import ChannelAwareDecoder
 from .encoder import SpatialTransformer
-from .fusion import ChannelFusion, HypernetworkWeightedSum
+from .fusion import ChannelFusion, HypernetworkWeightedSum, MultiheadAttentionPooling
 from .identity import ChannelIdentity
 from .losses import per_channel_normalized_mse
 from .masking import DCPMasker
@@ -75,6 +75,7 @@ class ChannelFusionMAE(nn.Module):
         self.encoder = SpatialTransformer(
             dim, encoder_depth, n_heads, n_memory=n_memory
         )
+        self.pooler = MultiheadAttentionPooling(dim, n_heads=n_heads, n_queries=1)
         self.decoder = ChannelAwareDecoder(
             dim, decoder_depth, n_heads, patch_dim=patch_size * patch_size,
             n_patches=n_patches,
@@ -169,12 +170,20 @@ class ChannelFusionMAE(nn.Module):
         images: Sequence[torch.Tensor],
         channel_ids: Sequence[torch.Tensor],
         text_embeds: Optional[Sequence[torch.Tensor]] = None,
-        pool: str = "mean",
+        pool: str = "attention",
     ):
         """Inference-time representation (no masking).
 
         Returns ``(memory, pooled_descriptor)`` where ``pooled_descriptor`` is
         ``[B, D]`` -- the fixed-size joint embedding for the whole batch.
+
+        ``pool`` selects how the padding-free encoder outputs are reduced to
+        ``[B, D]``:
+
+        * ``"attention"`` (default) -- pooling by multi-head attention (PMA),
+          a learned query cross-attends to the memory + visible tokens;
+        * ``"mean"`` -- mean over the visible tokens;
+        * ``"memory"`` -- mean over the fixed-count memory tokens.
         """
         visible = [
             torch.ones(im.shape[0], self.n_patches, dtype=torch.bool, device=im.device)
@@ -189,10 +198,21 @@ class ChannelFusionMAE(nn.Module):
             present.sum(1)
         )
         mem_out, tok_out = self.encoder(enc_tokens, enc_seg, B)
-        if pool == "mean":
+        if pool == "attention":
+            mem_seg = torch.arange(B, device=images[0].device).repeat_interleave(
+                self.encoder.n_memory
+            )
+            pooled = self.pooler(
+                torch.cat([mem_out, tok_out], dim=0),
+                torch.cat([mem_seg, enc_seg], dim=0),
+                B,
+            )
+        elif pool == "mean":
             pooled = tok_out.new_zeros(B, D)
             pooled.index_add_(0, enc_seg, tok_out)
             pooled = pooled / present.sum(1).clamp_min(1).unsqueeze(-1)
-        else:  # mean over memory tokens
+        elif pool == "memory":  # mean over memory tokens
             pooled = mem_out.reshape(B, self.encoder.n_memory, D).mean(1)
+        else:
+            raise ValueError(f"unknown pool '{pool}'")
         return mem_out, pooled

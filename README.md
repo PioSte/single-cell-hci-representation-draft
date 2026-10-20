@@ -41,6 +41,9 @@ per-channel (tied) patch embed
 * **PMA pooling** — a learned query cross-attends over the channel set at each
   spatial location (`ChannelFusion`), or a cheaper `O(C)` hypernetwork-weighted
   sum (`HypernetworkWeightedSum`).
+* **PMA descriptor** — at inference the encoder output is reduced to a fixed
+  `[B, D]` joint embedding by pooling by multi-head attention
+  (`MultiheadAttentionPooling`), not a variable-length mean.
 * **MAE** — DCP masking (independently per-channel spatial masks + dynamic
   channel masking), fixed-count memory tokens, and a shared decoder that is
   conditioned on the *target* channel's identity.
@@ -74,8 +77,9 @@ ids = [torch.randint(0, 32, (3,)), torch.randint(0, 32, (7,))]
 out = model(images, ids)
 out["loss"].backward()
 
-# inference representation (no masking)
+# inference representation (no masking); descriptor is attention-pooled
 mem, descriptor = model.encode(images, ids)   # descriptor: [B, D]
+# model.encode(images, ids, pool="mean")  # or the old mean pool
 ```
 
 ### Just the fusion module
@@ -99,7 +103,7 @@ fused, present = fusion(cs)                 # [B, 4, 192]; no channel padding
 | `container.py` | `ChannelSet`: flattened variable-channel token batch |
 | `identity.py` | learnable / text-conditioned channel identities |
 | `patch_embed.py` | channel-tied patch embedding + front-end |
-| `fusion.py` | `ChannelFusion` (PMA), `HypernetworkWeightedSum`, dense reference |
+| `fusion.py` | `ChannelFusion` (PMA), `MultiheadAttentionPooling`, `HypernetworkWeightedSum`, dense reference |
 | `encoder.py` | memory-augmented spatial transformer |
 | `decoder.py` | channel-aware shared decoder |
 | `masking.py` | DCP masking (spatial-per-channel + dynamic channel) |
