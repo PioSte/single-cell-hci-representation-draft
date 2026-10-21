@@ -179,3 +179,34 @@ def test_no_pad_artifacts():
     assert fused.dim() == 3 and fused.shape[1] == N  # spatial axis, not channel
     # no NaNs / -inf leaking from masking
     assert torch.isfinite(fused).all()
+
+
+def test_dropout_disabled_in_eval():
+    """Attention dropout must be a no-op after `.eval()` (both pooling modules)."""
+    cs = make_channel_set([3, 5], N, D)
+
+    fusion = ChannelFusion(D, n_heads=HEADS, n_queries=1, n_patches=N, dropout=0.5)
+    fusion.eval()
+    with torch.no_grad():
+        a, _ = fusion(cs)
+        b, _ = fusion(cs)
+    assert torch.equal(a, b)
+
+    pool = MultiheadAttentionPooling(D, n_heads=HEADS, n_queries=1, dropout=0.5)
+    pool.eval()
+    x = torch.randn(7, D)
+    seg = torch.tensor([0, 0, 0, 1, 2, 2, 2])
+    with torch.no_grad():
+        p1 = pool(x, seg, 4)
+        p2 = pool(x, seg, 4)
+    assert torch.equal(p1, p2)
+
+
+def test_dropout_active_in_train():
+    """In training mode, dropout > 0 must actually make the output stochastic."""
+    cs = make_channel_set([3, 5], N, D)
+    fusion = ChannelFusion(D, n_heads=HEADS, n_queries=1, n_patches=N, dropout=0.5)
+    fusion.train()
+    a, _ = fusion(cs)
+    b, _ = fusion(cs)
+    assert not torch.equal(a, b)

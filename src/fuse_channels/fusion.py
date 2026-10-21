@@ -77,6 +77,10 @@ class ChannelFusion(nn.Module):
         self.queries = nn.Parameter(torch.zeros(1, n_queries, dim))
         nn.init.trunc_normal_(self.queries, std=0.02)
 
+    def _attention_dropout(self) -> float:
+        """Attention dropout probability, disabled in eval mode."""
+        return self.dropout if self.training else 0.0
+
     # ------------------------------------------------------------------ #
     def forward(self, cs: ChannelSet):
         """Return ``(fused, present)``.
@@ -95,7 +99,9 @@ class ChannelFusion(nn.Module):
         tok = self.norm_kv(cs.tokens[order]).view(-1, H, Dh)
         q = self.norm_q(self.queries).reshape(1, Q, H, Dh).expand(n_seg, Q, H, Dh)
 
-        out = grouped_pool_attention(q, tok, tok, lookup, n_seg, self.dropout)
+        out = grouped_pool_attention(
+            q, tok, tok, lookup, n_seg, self._attention_dropout()
+        )
         out = self.proj_out(out.reshape(n_seg, Q, D))  # [n_seg, Q, D]
         out = out.reshape(n_seg, Q * D)
 
@@ -164,6 +170,10 @@ class MultiheadAttentionPooling(nn.Module):
         self.queries = nn.Parameter(torch.zeros(1, n_queries, dim))
         nn.init.trunc_normal_(self.queries, std=0.02)
 
+    def _attention_dropout(self) -> float:
+        """Attention dropout probability, disabled in eval mode."""
+        return self.dropout if self.training else 0.0
+
     def forward(
         self, x: torch.Tensor, seg: torch.Tensor, n_segments: int
     ) -> torch.Tensor:
@@ -178,7 +188,9 @@ class MultiheadAttentionPooling(nn.Module):
         tok = self.norm_kv(x[order]).view(-1, H, Dh)
         q = self.norm_q(self.queries).reshape(1, Q, H, Dh).expand(n_uniq, Q, H, Dh)
 
-        pooled = grouped_pool_attention(q, tok, tok, lookup, n_uniq, self.dropout)
+        pooled = grouped_pool_attention(
+            q, tok, tok, lookup, n_uniq, self._attention_dropout()
+        )
         pooled = self.proj_out(pooled.reshape(n_uniq, Q, self.dim)).reshape(
             n_uniq, Q * self.dim
         )
