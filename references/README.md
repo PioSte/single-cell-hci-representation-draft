@@ -18,6 +18,11 @@ commands below are enough to reproduce the conversion.
 | Panopticon: Advancing Any-Sensor Foundation Models for Earth Observation | [2503.10845](https://arxiv.org/abs/2503.10845) | [`panopticon/paper.md`](panopticon/paper.md) | 8 | `doc:127996d` |
 | Perceiver: General Perception with Iterative Attention | [2103.03206](https://arxiv.org/abs/2103.03206) | [`perceiver/paper.md`](perceiver/paper.md) | 37 | `doc:edbfd63` |
 | Perceiver IO: A General Architecture for Structured Inputs & Outputs | [2107.14795](https://arxiv.org/abs/2107.14795) | [`perceiver-io/paper.md`](perceiver-io/paper.md) | 7 | `doc:3b5a822` |
+| ChA-MAEViT: Unifying Channel-Aware Masked Autoencoders and Multi-Channel Vision Transformers | [2503.19331](https://arxiv.org/abs/2503.19331) | [`cha-maevit/paper.md`](cha-maevit/paper.md) | 25 | `doc:762255e` |
+| Set Transformer: A Framework for Attention-based Permutation-Invariant Neural Networks | [1810.00825](https://arxiv.org/abs/1810.00825) | [`set-transformer/paper.md`](set-transformer/paper.md) | 6 | `doc:36b5dc3` |
+| Neural Plasticity-Inspired Multimodal Foundation Model for Earth Observation (DOFA) | [2403.15356](https://arxiv.org/abs/2403.15356) | [`dofa/paper.md`](dofa/paper.md) | 45 | `doc:5a8fed9` |
+| HyperFree: A Channel-adaptive and Tuning-free Foundation Model for Hyperspectral Remote Sensing Imagery | [2503.21841](https://arxiv.org/abs/2503.21841) | [`hyperfree/paper.md`](hyperfree/paper.md) | 107 | `doc:1e4e58f` |
+| Evolutionary-scale prediction of atomic level protein structure with a language model (ESM-2) | [bioRxiv 2022.07.20.500902](https://doi.org/10.1101/2022.07.20.500902) | [`esm-2/paper.md`](esm-2/paper.md) | 31 | `doc:23c994c` |
 
 Tables are inline in each `paper.md` (markdown and/or HTML). Figure blocks that
 MinerU marked as images/charts are exported as PNG from the PDF, and the
@@ -25,22 +30,18 @@ markdown links are rewritten to local `images/*.png` paths.
 
 ## Cited but not yet extracted
 
-These sources are referenced in repo prose but do not have a `paper.md` here.
-URLs are the ones found in `chat-export-1792446787674.json`; canonical arXiv
-abstract/PDF links are added where the export only had an HTML variant.
+The ESM-2 marker-token claim comes from **VirTues**, which is still not
+extracted. PMA terminology is now covered by `set-transformer/paper.md`.
 
 | Source | Used for | Links |
 |---|---|---|
-| ChA-MAEViT (2503.19331) | DCP masking / MAE follow-up | [HTML v1](https://arxiv.org/html/2503.19331v1) · [HTML v3](https://arxiv.org/html/2503.19331v3) · [abs](https://arxiv.org/abs/2503.19331) · [PDF](https://arxiv.org/pdf/2503.19331) |
-| Set Transformer / PMA | PMA terminology | No direct link in the chat export. The export cites SetONet [2505.04738](https://arxiv.org/html/2505.04738v2) for the PMA comparison; the canonical Set Transformer source still needs to be added. |
-| DOFA (2403.15356) | Wavelength-hypernetwork baseline | [abs](https://arxiv.org/abs/2403.15356) · [PDF](https://arxiv.org/pdf/2403.15356) · [HTML](https://arxiv.org/html/2403.15356) · [code](https://github.com/zhu-xlab/DOFA) |
-| HyperFree (2503.21841) | Wavelength-hypernetwork baseline | [abs](https://arxiv.org/abs/2503.21841) · [PDF](https://arxiv.org/pdf/2503.21841) · [HTML](https://arxiv.org/html/2503.21841) · [code](https://github.com/Jingtao-Li-CVer/HyperFree) · [project](https://rsidea.whu.edu.cn/hyperfree.htm) |
-| ESM-2 | Sequence-grounded identity | No direct ESM-2 link in the chat export. The export links VirTues, which uses ESM-2 marker embeddings: [DOI](https://doi.org/10.21203/rs.3.rs-8865586/v1) · [model page](https://bio.rodeo/models/virtues) |
+| VirTues (ESM-2 marker tokens) | Sequence-grounded identity / zero-shot new markers | [DOI](https://doi.org/10.21203/rs.3.rs-8865586/v1) · [model page](https://bio.rodeo/models/virtues) |
 
 ## Reproduce
 
-All source PDFs are public arXiv papers. The directories are named after the
-papers, so the download loop maps arXiv id to directory explicitly:
+All source PDFs are public. Most are arXiv papers; ESM-2 is a bioRxiv
+preprint. The directories are named after the papers, so the download loop maps
+arXiv id to directory explicitly:
 
 ```bash
 mkdir -p references
@@ -53,7 +54,14 @@ done <<'IDS'
 2503.10845 panopticon
 2103.03206 perceiver
 2107.14795 perceiver-io
+2503.19331 cha-maevit
+1810.00825 set-transformer
+2403.15356 dofa
+2503.21841 hyperfree
 IDS
+# ESM-2 is a bioRxiv preprint, not arXiv:
+curl -L --fail -o references/esm-2/esm-2.pdf \
+  'https://www.biorxiv.org/content/10.1101/2022.07.20.500902v3.full.pdf'
 ```
 
 Set up local MinerU `standard` parsing (one-time; ~2 GB models):
@@ -80,6 +88,11 @@ done <<'IDS'
 2503.10845 panopticon
 2103.03206 perceiver
 2107.14795 perceiver-io
+2503.19331 cha-maevit
+1810.00825 set-transformer
+2403.15356 dofa
+2503.21841 hyperfree
+23c994c esm-2
 IDS
 ```
 

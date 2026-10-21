@@ -139,10 +139,13 @@ Train the backbone as a **channel-aware MAE**:
   unmasked channel tokens + memory tokens, and **conditioned on the target
   channel's identity embedding**.
 - **Per-channel normalized pixel loss** (so heterogeneous intensity ranges do
-  not bias the objective).
+  not bias the objective). This is a repo extension: ChA-MAEViT uses plain
+  pixel L2 plus a Fourier L1 term, not per-channel normalization.
 - **Sequence/text-grounded identity** (ESM-2 / prompt) enables zero-shot new
   markers; optional novel-channel protocol: freeze model, adapt only identity
-  vectors.
+  vectors. The text/sequence grounding is VirTues-style and is not part of
+  ChA-MAEViT, which instead randomly initializes new channel tokens and
+  fine-tunes only those tokens.
 
 Extra acceptance criteria: channel-masked reconstruction beats spatial-only
 masking; memory-token ablation degrades reconstruction; zero-shot novel-channel
