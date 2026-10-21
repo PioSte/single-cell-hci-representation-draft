@@ -5,8 +5,8 @@ Combines the two masking axes required for multi-channel-imaging MAE:
 1. **Spatial patch masking** sampled *independently per channel* (not a single
    mask replicated across channels).
 2. **Dynamic channel masking** -- sample how many channels to mask, then which
-   ones (Hierarchical Channel Sampling repurposed from a regularizer into a
-   supervision target).
+   ones (count-then-subset sampling; using the masked channels as MAE
+   reconstruction targets is a repo-specific extension).
 
 Per sample, one of the two modes is chosen (``p_patch`` / ``p_channel``).  The
 returned boolean mask marks *visible* tokens; masked tokens are omitted from the

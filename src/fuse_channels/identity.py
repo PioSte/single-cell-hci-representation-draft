@@ -1,12 +1,12 @@
 """Channel-identity embeddings.
 
-Channel identity is non-negotiable for this architecture: removing the additive
-identity embedding destroys performance in the ChannelViT / ChAda-ViT ablations.
-Two paths are supported:
+Channel identity matters for this architecture: ChannelViT's channel-embedding
+ablation shows that replacing per-channel embeddings with a shared mean
+embedding severely degrades performance.  Two paths are supported:
 
 * **learnable** per-marker embeddings for a closed/fixed panel;
-* **text/sequence conditioned** embeddings (PhenoPLIFT-style text prompts or
-  ESM-2 protein embeddings) for open / multiplexed panels.  These never need a
+* **text/sequence conditioned** embeddings (text prompts or ESM-2 protein
+  embeddings) for open / multiplexed panels.  These never need a
   fixed lookup table, so ``C`` can grow without bound and there is no pad slot.
 """
 

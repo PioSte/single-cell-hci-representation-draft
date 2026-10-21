@@ -32,21 +32,26 @@ We need `f({E_c}) → R^{k×D}` (k learned queries, typically k=1) such that:
 ## 2. Design decisions (settled — implement these)
 
 **Chosen family: attention pooling over channel embeddings**
-(ChannelViT / ChAda-ViT / Panopticon pattern), made set-native. Explicitly
-**rejected**: Deep Sets mean/max as the *primary* mechanism (channel identity
-required); wavelength-hypernetwork conditioning (DOFA/HyperFree) because
-emission wavelength does not determine biology — a hypernetwork is only valid
-with **marker identity** as the key.
+(Panopticon-style learned-query pooling), made set-native. ChannelViT and
+ChAda-ViT are precedents for tied per-channel projection, additive channel
+identity, and cross-channel attention; both use dense padded attention, so they
+inform the design but are not padding-free and do not pool to a fixed-query
+bottleneck. Explicitly **rejected**: Deep Sets mean/max as the *primary*
+mechanism (channel identity required); wavelength-hypernetwork conditioning
+(DOFA/HyperFree) because emission wavelength does not determine biology — a
+hypernetwork is only valid with **marker identity** as the key.
 
 Pipeline, in order:
 
 1. **Per-channel patch embedding, channel-tied.** Shared/tied linear projection
    across channels (ChannelViT: tied > untied, more robust to varying channel
    sets).
-2. **Additive channel-identity embedding** per token — **critical, do not
-   omit**. Closed panel → learnable per-marker embeddings; open/multiplexed
-   panel → text-prompt-conditioned channel embeddings (PhenoPLIFT-style), which
-   is what makes `C` truly unbounded and removes any pad slot. Add a **shared
+2. **Additive channel-identity embedding** per token — **do not omit**.
+   ChannelViT's channel-embedding ablation (replacing per-channel embeddings
+   with a shared mean) severely degrades accuracy. Closed panel → learnable
+   per-marker embeddings; open/multiplexed panel → text-prompt-conditioned
+   channel embeddings, which is what makes `C` truly unbounded and removes any
+   pad slot. Add a **shared
    spatial positional embedding** so position ≠ channel identity.
 3. **Channel-axis attention / pooling** to a fixed query bottleneck (PMA-style
    cross-attention), placed **before** the main spatial transformer to bound
@@ -107,9 +112,8 @@ instead of `O(C²)`, preferred if 20–60-channel quadratic cost is a concern.
 ## 7. Reference implementations to adapt
 
 ChannelViT (2309.16108) · ChAda-ViT (2311.15264) · Panopticon (2503.10845) ·
-Perceiver / Perceiver IO (2103.03206 / 2107.14795) · PhenoPLIFT (text-prompt
-channel conditioning) · FlashAttention `varlen` (`cu_seqlens`) / HF
-padding-free path / PyTorch nested tensors.
+Perceiver / Perceiver IO (2103.03206 / 2107.14795) · FlashAttention
+`varlen` (`cu_seqlens`) / HF padding-free path / PyTorch nested tensors.
 
 ## 8. Deliverable summary
 

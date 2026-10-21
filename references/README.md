@@ -23,6 +23,20 @@ Tables are inline in each `paper.md` (markdown and/or HTML). Figure blocks that
 MinerU marked as images/charts are exported as PNG from the PDF, and the
 markdown links are rewritten to local `images/*.png` paths.
 
+## Cited but not yet extracted
+
+These sources are referenced in repo prose but do not have a `paper.md` here.
+URLs are the ones found in `chat-export-1792446787674.json`; canonical arXiv
+abstract/PDF links are added where the export only had an HTML variant.
+
+| Source | Used for | Links |
+|---|---|---|
+| ChA-MAEViT (2503.19331) | DCP masking / MAE follow-up | [HTML v1](https://arxiv.org/html/2503.19331v1) · [HTML v3](https://arxiv.org/html/2503.19331v3) · [abs](https://arxiv.org/abs/2503.19331) · [PDF](https://arxiv.org/pdf/2503.19331) |
+| Set Transformer / PMA | PMA terminology | No direct link in the chat export. The export cites SetONet [2505.04738](https://arxiv.org/html/2505.04738v2) for the PMA comparison; the canonical Set Transformer source still needs to be added. |
+| DOFA (2403.15356) | Wavelength-hypernetwork baseline | [abs](https://arxiv.org/abs/2403.15356) · [PDF](https://arxiv.org/pdf/2403.15356) · [HTML](https://arxiv.org/html/2403.15356) · [code](https://github.com/zhu-xlab/DOFA) |
+| HyperFree (2503.21841) | Wavelength-hypernetwork baseline | [abs](https://arxiv.org/abs/2503.21841) · [PDF](https://arxiv.org/pdf/2503.21841) · [HTML](https://arxiv.org/html/2503.21841) · [code](https://github.com/Jingtao-Li-CVer/HyperFree) · [project](https://rsidea.whu.edu.cn/hyperfree.htm) |
+| ESM-2 | Sequence-grounded identity | No direct ESM-2 link in the chat export. The export links VirTues, which uses ESM-2 marker embeddings: [DOI](https://doi.org/10.21203/rs.3.rs-8865586/v1) · [model page](https://bio.rodeo/models/virtues) |
+
 ## Reproduce
 
 All source PDFs are public arXiv papers. The directories are named after the

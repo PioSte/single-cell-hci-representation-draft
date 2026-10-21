@@ -4,9 +4,12 @@ embedding, with **no padding tokens**.
 Two interchangeable pooling mechanisms are provided:
 
 * :class:`ChannelFusion` -- PMA-style attention pooling over the channel axis
-  (the default; ChannelViT / ChAda-ViT / Panopticon pattern).
+  (the default; the same single-query per-location pattern used by Panopticon).
 * :class:`HypernetworkWeightedSum` -- ``O(C)`` hypernetwork-weighted sum, the
   cheap alternative flagged in the handoff for 20-60 channel panels.
+
+ChannelViT and ChAda-ViT are precedents for cross-channel attention, but they
+use dense padded self-attention rather than fixed-query pooling.
 
 Both are set-native: they consume a :class:`~fuse_channels.container.ChannelSet`
 built from real tokens only and never create a ``[B, C_max, D]`` tensor.

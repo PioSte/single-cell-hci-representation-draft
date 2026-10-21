@@ -396,7 +396,7 @@ def _(mo):
       stay exact.  The model is order-independent but marker-aware.
     * Toggle **use channel identity**: the identity-ablation row changes and
       the heatmap routing shifts — the additive identity embedding is doing
-      real work (as required by the ChannelViT / ChAda-ViT ablations).
+      real work (as shown by the ChannelViT channel-embedding ablation).
     * Move **channel index to omit**: omission matches the reference exactly;
       the dropped channel simply is not in the set.
     """)
