@@ -1,6 +1,42 @@
 # Visualizations
 
-Six kinds of artifact, because they answer different questions.
+Several kinds of artifact, because they answer different questions.
+
+## 0. The level ladder — L0–L8
+
+A coherent set of hand-authored, vector-first figures (PDF/SVG/PNG) that walk
+from *where the model sits in the literature* down to *the attention primitive*.
+They share one design system so they read as one authored set:
+
+* `figure_style.py` — the palette (Okabe-Ito), module-box / arrow / array-stack
+  primitives, the marker colour table, and the `save_figure` helper.
+* `figure_facts.md` — the authoritative tensor shapes and semantics each figure
+  must draw, read from `src/fuse_channels/`. Every figure is built from this.
+
+| level | file | what it shows | reference idiom |
+| --- | --- | --- | --- |
+| **L0** | `level0_positioning.py` | padded dense ViT · dense cross-channel attention · ours | ChAda-ViT Fig 13 |
+| **L1** | `level1_system.py` | end-to-end system: training path + `encode()` branch | Panopticon Fig 1 / Perceiver-IO Fig 2 |
+| **L2** | `level2_layout.py` | axis-labelled tensor layout (the hero figure) | Perceiver-IO Fig 2 |
+| **L3** | `level3_frontend.py` | tied patch embed + shared pos + additive identity | ChannelViT Fig 1 / ChAda-ViT Fig 2 |
+| **L4** | `level4_fusion.py` | fusion internals (k=v, no W_Q/K/V) + hypernetwork variant | Perceiver-IO Fig 5 inset |
+| **L5** | `level5_masking.py` | DCP masking = token omission | ChAda-ViT Fig 2 MASK row |
+| **L6** | `level6_objective.py` | MAE objective: encoder/decoder asymmetry | Panopticon teacher–student |
+| **L7** | `level7_invariance.py` | measured invariance & cost (runs the real model) | ChAda-ViT scaling panels |
+| **L8** | `level8_segment_ops.py` | the padding-free segmented-attention primitive | Perceiver-IO Fig 5 |
+
+Run any level (writes into the git-ignored `viz/out/`):
+
+```bash
+uv run --extra viz python viz/level2_layout.py                 # pdf + svg + png
+uv run --extra viz python viz/level7_invariance.py             # measures the real model
+uv run --extra viz python viz/level4_fusion.py --formats pdf svg
+```
+
+Two visual rules carry the paper's thesis across every level: the ragged token
+list `[ΣC·N, D]` is always the solid primary object, and the padded tensor
+`[B, C_max, N, D]` only ever appears as a dashed **ghost** marked
+*never materialised*.
 
 ## 1. Interactive behaviour — `dashboard.py` (marimo)
 
