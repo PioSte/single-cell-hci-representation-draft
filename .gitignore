@@ -16,7 +16,7 @@ runs/
 viz/out/
 
 # paper source PDFs and extracted figure images (reproduce via references/README.md)
-references/*.pdf
+references/**/*.pdf
 references/*/images/
 
 # local MinerU parse artifacts

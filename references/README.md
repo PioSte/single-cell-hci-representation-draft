@@ -5,18 +5,19 @@ extracted figure images are git-ignored; the markdown, this README, and the
 commands below are enough to reproduce the conversion.
 
 ```
-<arxiv-id>/
-├── paper.md      # full markdown, tables included, figures referenced locally
-└── images/       # figure/plot blocks extracted as PNG (git-ignored)
+<paper-name>/
+├── <paper-name>.pdf   # source paper (git-ignored)
+├── paper.md           # full markdown, tables included, figures referenced locally
+└── images/            # figure/plot blocks extracted as PNG (git-ignored)
 ```
 
 | Paper | arXiv | Extraction | Figures | MinerU doc |
 |---|---|---|---|---|
-| Channel Vision Transformers: An Image Is Worth 1 x 16 x 16 Words | [2309.16108](https://arxiv.org/abs/2309.16108) | [`2309.16108/paper.md`](2309.16108/paper.md) | 14 | `doc:b89d1b5` |
-| ChAda-ViT: Channel Adaptive Attention for Joint Representation Learning of Heterogeneous Microscopy Images | [2311.15264](https://arxiv.org/abs/2311.15264) | [`2311.15264/paper.md`](2311.15264/paper.md) | 18 | `doc:4d707b7` |
-| Panopticon: Advancing Any-Sensor Foundation Models for Earth Observation | [2503.10845](https://arxiv.org/abs/2503.10845) | [`2503.10845/paper.md`](2503.10845/paper.md) | 8 | `doc:127996d` |
-| Perceiver: General Perception with Iterative Attention | [2103.03206](https://arxiv.org/abs/2103.03206) | [`2103.03206/paper.md`](2103.03206/paper.md) | 37 | `doc:edbfd63` |
-| Perceiver IO: A General Architecture for Structured Inputs & Outputs | [2107.14795](https://arxiv.org/abs/2107.14795) | [`2107.14795/paper.md`](2107.14795/paper.md) | 7 | `doc:3b5a822` |
+| Channel Vision Transformers: An Image Is Worth 1 x 16 x 16 Words | [2309.16108](https://arxiv.org/abs/2309.16108) | [`channelvit/paper.md`](channelvit/paper.md) | 14 | `doc:b89d1b5` |
+| ChAda-ViT: Channel Adaptive Attention for Joint Representation Learning of Heterogeneous Microscopy Images | [2311.15264](https://arxiv.org/abs/2311.15264) | [`chada-vit/paper.md`](chada-vit/paper.md) | 18 | `doc:4d707b7` |
+| Panopticon: Advancing Any-Sensor Foundation Models for Earth Observation | [2503.10845](https://arxiv.org/abs/2503.10845) | [`panopticon/paper.md`](panopticon/paper.md) | 8 | `doc:127996d` |
+| Perceiver: General Perception with Iterative Attention | [2103.03206](https://arxiv.org/abs/2103.03206) | [`perceiver/paper.md`](perceiver/paper.md) | 37 | `doc:edbfd63` |
+| Perceiver IO: A General Architecture for Structured Inputs & Outputs | [2107.14795](https://arxiv.org/abs/2107.14795) | [`perceiver-io/paper.md`](perceiver-io/paper.md) | 7 | `doc:3b5a822` |
 
 Tables are inline in each `paper.md` (markdown and/or HTML). Figure blocks that
 MinerU marked as images/charts are exported as PNG from the PDF, and the
@@ -24,13 +25,21 @@ markdown links are rewritten to local `images/*.png` paths.
 
 ## Reproduce
 
-All source PDFs are public arXiv papers:
+All source PDFs are public arXiv papers. The directories are named after the
+papers, so the download loop maps arXiv id to directory explicitly:
 
 ```bash
 mkdir -p references
-for id in 2309.16108 2311.15264 2503.10845 2103.03206 2107.14795; do
-  curl -L --fail -o "references/$id.pdf" "https://arxiv.org/pdf/$id"
-done
+while read -r id name; do
+  mkdir -p "references/$name"
+  curl -L --fail -o "references/$name/$name.pdf" "https://arxiv.org/pdf/$id"
+done <<'IDS'
+2309.16108 channelvit
+2311.15264 chada-vit
+2503.10845 panopticon
+2103.03206 perceiver
+2107.14795 perceiver-io
+IDS
 ```
 
 Set up local MinerU `standard` parsing (one-time; ~2 GB models):
@@ -48,10 +57,16 @@ mineru server status --json   # wait for parse_server.local.healthy == true
 Parse each paper to markdown:
 
 ```bash
-for id in 2309.16108 2311.15264 2503.10845 2103.03206 2107.14795; do
-  mineru parse "references/$id.pdf" --pages all --tier standard \
-    --output "references/$id/paper.md"
-done
+while read -r id name; do
+  mineru parse "references/$name/$name.pdf" --pages all --tier standard \
+    --output "references/$name/paper.md"
+done <<'IDS'
+2309.16108 channelvit
+2311.15264 chada-vit
+2503.10845 panopticon
+2103.03206 perceiver
+2107.14795 perceiver-io
+IDS
 ```
 
 Materialize figure blocks and rewrite the `doc:` image placeholders to local
