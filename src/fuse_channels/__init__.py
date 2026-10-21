@@ -10,7 +10,7 @@ from .fusion import (
     dense_fusion_reference,
 )
 from .identity import ChannelIdentity
-from .losses import per_channel_normalized_mse
+from .losses import normalized_patch_mse
 from .mae import ChannelFusionMAE
 from .masking import DCPMasker, visible_to_masked
 from .ops import (
@@ -37,7 +37,7 @@ __all__ = [
     "DCPMasker",
     "visible_to_masked",
     "ChannelFusionMAE",
-    "per_channel_normalized_mse",
+    "normalized_patch_mse",
     "grouped_cross_attention",
     "grouped_pool_attention",
     "grouped_self_attention",

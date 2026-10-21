@@ -323,7 +323,7 @@ def shape_flow(s: k.Scene):
     # 9 -- the objective.
     # ===================================================================== #
     nxt("9 / 10")
-    loss = k.Text("loss = masked MSE, normalised per channel", size=0.36, color=k.YELLOW, x=-1.6, y=-1.55)
+    loss = k.Text("loss = masked MSE, normalised per patch", size=0.36, color=k.YELLOW, x=-1.6, y=-1.55)
     s.play(k.write(loss))
     cap(
         "the only place C appears is the input length — summed, not padded",

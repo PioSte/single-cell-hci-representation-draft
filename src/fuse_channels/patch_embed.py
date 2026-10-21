@@ -105,8 +105,7 @@ class ChannelTiedPatchEmbed(nn.Module):
 class ChannelFrontend(nn.Module):
     """Patch embed -> additive channel identity -> :class:`ChannelSet`.
 
-    The identity path can be learnable (closed panel) or text/sequence
-    conditioned (open vocabulary).
+    Channel identity is a learnable per-marker table.
     """
 
     def __init__(
@@ -114,30 +113,25 @@ class ChannelFrontend(nn.Module):
         image_size: int,
         patch_size: int,
         dim: int,
-        identity: Optional[ChannelIdentity] = None,
+        identity: ChannelIdentity,
     ) -> None:
         super().__init__()
         self.patch_embed = ChannelTiedPatchEmbed(image_size, patch_size, dim)
         self.n_patches = self.patch_embed.n_patches
-        self.identity = identity if identity is not None else ChannelIdentity(dim, 0)
+        self.identity = identity
 
     def forward(
         self,
         images: Sequence[torch.Tensor],
         channel_ids: Sequence[torch.Tensor],
         visible: Optional[Sequence[torch.Tensor]] = None,
-        text_embeds: Optional[Sequence[torch.Tensor]] = None,
     ) -> ChannelSet:
         n_samples = len(images)
         tokens, meta = self.patch_embed(images, channel_ids, visible)
         channel_global = meta["channel_global"]
 
         ids_per_ch = torch.cat([c.to(tokens.device) for c in channel_ids])
-        if text_embeds is not None:
-            text_per_ch = torch.cat([t.to(tokens.device) for t in text_embeds])
-        else:
-            text_per_ch = None
-        ident_per_ch = self.identity(ids_per_ch, text_per_ch)
+        ident_per_ch = self.identity(ids_per_ch)
         identity = ident_per_ch[channel_global]
 
         return ChannelSet(

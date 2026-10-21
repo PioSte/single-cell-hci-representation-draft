@@ -22,7 +22,6 @@ viz = [
     "kinemo>=0.19",
 ]
 flash = ["flash-attn>=2.5; platform_system != 'Darwin'"]
-text = ["transformers>=4.40"]
 
 [build-system]
 requires = ["hatchling"]

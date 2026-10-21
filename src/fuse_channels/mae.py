@@ -4,8 +4,7 @@ Pipeline
 --------
 ``images`` -> DCP masking (token omission) -> channel-tied patch embed +
 additive identity -> padding-free channel fusion -> memory-augmented spatial
-transformer -> channel-aware shared decoder -> per-channel normalized pixel
-loss.
+transformer -> channel-aware shared decoder -> patch-normalized pixel loss.
 
 Masking omits rows from the flattened token tensor; no mask tokens and no attention masks
 are used for masking.  The encoder only ever sees *visible* tokens.
@@ -23,7 +22,7 @@ from .decoder import ChannelAwareDecoder
 from .encoder import SpatialTransformer
 from .fusion import ChannelFusion, HypernetworkWeightedSum, MultiheadAttentionPooling
 from .identity import ChannelIdentity
-from .losses import per_channel_normalized_mse
+from .losses import normalized_patch_mse
 from .masking import DCPMasker
 from .patch_embed import ChannelFrontend
 
@@ -39,21 +38,15 @@ class ChannelFusionMAE(nn.Module):
         n_heads: int = 6,
         n_memory: int = 4,
         n_queries: int = 1,
-        num_markers: int = 0,
-        text_dim: Optional[int] = None,
-        use_learnable_identity: bool = True,
+        num_markers: int = 16,
         fusion: str = "attention",
         p_patch: float = 0.5,
         p_channel: float = 0.5,
-        per_channel_loss: bool = False,
     ) -> None:
         super().__init__()
         self.patch_size = patch_size
-        self.per_channel_loss = per_channel_loss
 
-        identity = ChannelIdentity(
-            dim, num_markers, text_dim, use_learnable=use_learnable_identity
-        )
+        identity = ChannelIdentity(dim, num_markers)
         self.frontend = ChannelFrontend(image_size, patch_size, dim, identity)
         n_patches = self.frontend.n_patches
         self.n_patches = n_patches
@@ -88,7 +81,6 @@ class ChannelFusionMAE(nn.Module):
         images: Sequence[torch.Tensor],
         channel_ids: Sequence[torch.Tensor],
         visible: Optional[Sequence[torch.Tensor]] = None,
-        text_embeds: Optional[Sequence[torch.Tensor]] = None,
         generator: Optional[torch.Generator] = None,
     ):
         B = len(images)
@@ -97,7 +89,7 @@ class ChannelFusionMAE(nn.Module):
         if visible is None:
             visible = self.masker(images, generator=generator)
 
-        cs = self.frontend(images, channel_ids, visible, text_embeds)
+        cs = self.frontend(images, channel_ids, visible)
         fused, present = self.fusion(cs)
         fused = self.fuse_proj(fused)  # [B, N, D]
 
@@ -135,12 +127,7 @@ class ChannelFusionMAE(nn.Module):
 
         # identity of the target channels (recomputed; also feeds the decoder)
         ids_per_ch = torch.cat([c.to(device) for c in channel_ids])
-        text_per_ch = (
-            torch.cat([t.to(device) for t in text_embeds])
-            if text_embeds is not None
-            else None
-        )
-        ident_per_ch = self.frontend.identity(ids_per_ch, text_per_ch)
+        ident_per_ch = self.frontend.identity(ids_per_ch)
         tgt_identity = ident_per_ch[gidx]
 
         pred = self.decoder(
@@ -151,9 +138,7 @@ class ChannelFusionMAE(nn.Module):
         target = patch_targets[gidx, :, tgt_patch]  # [Kt, patch_dim]
         target_cid = ids_per_ch[gidx]
 
-        loss = per_channel_normalized_mse(
-            pred, target, target_cid, per_channel=self.per_channel_loss
-        )
+        loss = normalized_patch_mse(pred, target)
         return {
             "loss": loss,
             "pred": pred,
@@ -169,7 +154,6 @@ class ChannelFusionMAE(nn.Module):
         self,
         images: Sequence[torch.Tensor],
         channel_ids: Sequence[torch.Tensor],
-        text_embeds: Optional[Sequence[torch.Tensor]] = None,
         pool: str = "attention",
     ):
         """Inference-time representation (no masking).
@@ -189,7 +173,7 @@ class ChannelFusionMAE(nn.Module):
             torch.ones(im.shape[0], self.n_patches, dtype=torch.bool, device=im.device)
             for im in images
         ]
-        cs = self.frontend(images, channel_ids, visible, text_embeds)
+        cs = self.frontend(images, channel_ids, visible)
         fused, present = self.fusion(cs)
         fused = self.fuse_proj(fused)
         B, D = fused.shape[0], fused.shape[-1]

@@ -28,15 +28,6 @@ Tables are inline in each `paper.md` (markdown and/or HTML). Figure blocks that
 MinerU marked as images/charts are exported as PNG from the PDF, and the
 markdown links are rewritten to local `images/*.png` paths.
 
-## Cited but not yet extracted
-
-The ESM-2 marker-token claim comes from **VirTues**, which is still not
-extracted. PMA terminology is now covered by `set-transformer/paper.md`.
-
-| Source | Used for | Links |
-|---|---|---|
-| VirTues (ESM-2 marker tokens) | Sequence-grounded identity / zero-shot new markers | [DOI](https://doi.org/10.21203/rs.3.rs-8865586/v1) · [model page](https://bio.rodeo/models/virtues) |
-
 ## Reproduce
 
 All source PDFs are public. Most are arXiv papers; ESM-2 is a bioRxiv

@@ -24,7 +24,7 @@ weighting, and **no padding tokens**.
 
 ```
 per-channel (tied) patch embed
-    + additive channel-identity embedding (learnable OR text/sequence)
+    + additive channel-identity embedding (learnable)
     + shared spatial positional embedding
     -> padding-free channel-axis attention pooling (PMA) to a fixed bottleneck
     -> memory-augmented spatial transformer
@@ -32,9 +32,8 @@ per-channel (tied) patch embed
 ```
 
 * **Channel-tied projection** — one shared filter across channels (ChannelViT).
-* **Additive channel identity** — learnable ids for a closed panel, or
-  text/sequence conditioned vectors for an open panel. Never normalized across
-  the channel axis.
+* **Additive channel identity** — learnable per-marker ids for a closed panel.
+  Never normalized across the channel axis.
 * **Padding-free** — tokens are flattened `[ΣC, D]` with segment ids; no
   `[B, C_max, D]` tensor and no attention masks for cardinality. Masking is
   token *omission*, never zeroing.
@@ -67,7 +66,6 @@ model = ChannelFusionMAE(
     image_size=16, patch_size=8, dim=192,
     encoder_depth=4, decoder_depth=2, n_heads=6,
     n_memory=4, num_markers=32,        # learnable identity table
-    # text_dim=512, use_learnable_identity=False,  # open vocabulary
 )
 
 # a batch is a list of variable-channel images: [C_b, 1, H, W]
@@ -101,13 +99,13 @@ fused, present = fusion(cs)                 # [B, 4, 192]; no channel padding
 | --- | --- |
 | `ops.py` | padding-free grouped attention primitives |
 | `container.py` | `ChannelSet`: flattened variable-channel token batch |
-| `identity.py` | learnable / text-conditioned channel identities |
+| `identity.py` | learnable per-marker channel identities |
 | `patch_embed.py` | channel-tied patch embedding + front-end |
 | `fusion.py` | `ChannelFusion` (PMA), `MultiheadAttentionPooling`, `HypernetworkWeightedSum`, dense reference |
 | `encoder.py` | memory-augmented spatial transformer |
 | `decoder.py` | channel-aware shared decoder |
 | `masking.py` | DCP masking (spatial-per-channel + dynamic channel) |
-| `losses.py` | per-channel normalized pixel loss |
+| `losses.py` | patch-normalized pixel loss |
 | `mae.py` | `ChannelFusionMAE` end-to-end |
 
 ## Acceptance criteria
@@ -117,7 +115,6 @@ Covered by `tests/`:
 - cardinality invariance for `C ∈ {1,3,6,20,60}` (`test_fusion.py`)
 - exact padding-free vs masked-padded equivalence (`test_padding_free_equivalence`)
 - omission correctness, permutation invariance, identity ablation
-- open-vocabulary identity with no table resizing
 - no pad artifacts in the fusion path
 - DCP masking never masks all channels; spatial masks are per channel
 - MAE encoder sees only visible tokens; loss decreases on a fixed batch

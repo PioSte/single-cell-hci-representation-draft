@@ -29,8 +29,8 @@ class ChannelSet:
     channel_id:
         ``[T]`` marker identity id (constant across the patches of a channel).
     identity:
-        ``[T, D]`` additive channel-identity vector (learnable or
-        text/sequence conditioned), if already computed.
+        ``[T, D]`` additive channel-identity vector (learnable), if already
+        computed.
     n_samples, n_patches:
         batch size and (fixed) number of spatial patches.
     seq_len:

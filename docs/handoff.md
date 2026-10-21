@@ -22,7 +22,6 @@ semantically meaningless, and panels/markers vary across labs and datasets.
 We need `f({E_c}) → R^{k×D}` (k learned queries, typically k=1) such that:
 
 - output size is **independent of C** (no concatenation blow-up);
-- `C` is **unbounded** (unseen markers, new panels);
 - output is **permutation-invariant** over channel order but
   **channel-identity-aware**;
 - aggregation weights are **data-dependent** (not fixed mean/max);
@@ -38,8 +37,8 @@ identity, and cross-channel attention; both use dense padded attention, so they
 inform the design but are not padding-free and do not pool to a fixed-query
 bottleneck. Explicitly **rejected**: Deep Sets mean/max as the *primary*
 mechanism (channel identity required); wavelength-hypernetwork conditioning
-(DOFA/HyperFree) because emission wavelength does not determine biology — a
-hypernetwork is only valid with **marker identity** as the key.
+(DOFA/HyperFree), whose supported mechanism keys on per-channel wavelength,
+whereas HCI panels are identified by markers.
 
 Pipeline, in order:
 
@@ -49,10 +48,8 @@ Pipeline, in order:
 2. **Additive channel-identity embedding** per token — **do not omit**.
    ChannelViT's channel-embedding ablation (replacing per-channel embeddings
    with a shared mean) severely degrades accuracy. Closed panel → learnable
-   per-marker embeddings; open/multiplexed panel → text-prompt-conditioned
-   channel embeddings, which is what makes `C` truly unbounded and removes any
-   pad slot. Add a **shared
-   spatial positional embedding** so position ≠ channel identity.
+   per-marker embeddings. Add a **shared spatial positional embedding** so
+   position ≠ channel identity.
 3. **Channel-axis attention / pooling** to a fixed query bottleneck (PMA-style
    cross-attention), placed **before** the main spatial transformer to bound
    compute.
@@ -85,9 +82,7 @@ instead of `O(C²)`, preferred if 20–60-channel quadratic cost is a concern.
 2. **Hierarchical Channel Sampling (HCS)** during training: sample channel
    *count* first, then a combination.
 3. **Channel-subset regularization**: train on random marker subsets.
-4. **Open-vocabulary identity**: text-conditioned embedding path; no table
-   resize, no pad slot.
-5. **Permutation semantics**: output depends on *which* markers are present, not
+4. **Permutation semantics**: output depends on *which* markers are present, not
    their order.
 
 ## 5. Acceptance criteria
@@ -97,7 +92,6 @@ instead of `O(C²)`, preferred if 20–60-channel quadratic cost is a concern.
 - Omission correctness (no leakage; per-token norm unaffected).
 - Permutation test: shuffling channel order changes output < tolerance.
 - Identity ablation: dropping the additive embedding degrades the task.
-- Open-vocabulary test: unseen marker prompt yields a usable embedding.
 - No pad artifacts: no `-inf` masks, no `[B, C_max, D]` in the fusion path.
 - Cost check: FLOPs/throughput at C=60, cross-attention vs. hypernetwork sum.
 
@@ -105,7 +99,7 @@ instead of `O(C²)`, preferred if 20–60-channel quadratic cost is a concern.
 
 - No fallback to `[B, C_max, D]` + masking.
 - No mean/max pooling as the primary mechanism.
-- No wavelength conditioning for HCI (marker/text identity instead).
+- No wavelength conditioning for HCI (marker identity instead).
 - No normalization across the channel axis.
 - No channel dropout by zeroing.
 
@@ -118,7 +112,7 @@ Perceiver / Perceiver IO (2103.03206 / 2107.14795) · FlashAttention
 ## 8. Deliverable summary
 
 Ship `ChannelFusion` as a drop-in encoder front-end: **channel-tied
-per-channel embedding → additive marker/text-conditioned identity embedding →
+per-channel embedding → additive marker-conditioned identity embedding →
 varlen cross-attention into a fixed learned-query bottleneck**, trained with
 HCS + channel dropout by token removal, per-token norms throughout.
 
@@ -138,17 +132,8 @@ Train the backbone as a **channel-aware MAE**:
 - **Channel-aware shared decoder** (one decoder, not per-channel), fed the
   unmasked channel tokens + memory tokens, and **conditioned on the target
   channel's identity embedding**.
-- **Per-channel normalized pixel loss** (so heterogeneous intensity ranges do
-  not bias the objective). This is a repo extension: ChA-MAEViT uses plain
-  pixel L2 plus a Fourier L1 term, not per-channel normalization.
-- **Sequence/text-grounded identity** (ESM-2 / prompt) enables zero-shot new
-  markers; optional novel-channel protocol: freeze model, adapt only identity
-  vectors. The text/sequence grounding is VirTues-style and is not part of
-  ChA-MAEViT, which instead randomly initializes new channel tokens and
-  fine-tunes only those tokens.
 
 Extra acceptance criteria: channel-masked reconstruction beats spatial-only
-masking; memory-token ablation degrades reconstruction; zero-shot novel-channel
-works without fine-tuning; padding-free property preserved under masking
-(encoder input length == number of visible tokens); downstream linear-probe
-transfer.
+masking; memory-token ablation degrades reconstruction; padding-free property
+preserved under masking (encoder input length == number of visible tokens);
+downstream linear-probe transfer.

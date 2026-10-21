@@ -4,8 +4,8 @@ One decoder is shared across *all* channels (per-channel decoders do not scale
 past a handful of channels).  Each reconstruction query is conditioned on the
 **target channel's identity embedding** and the **target spatial position**, and
 cross-attends to the encoder's memory + visible tokens.  This turns the additive
-identity embedding into a *target specification* and gives open-vocabulary
-behaviour for free.
+identity embedding into a *target specification* so one shared decoder can be
+used for all channels.
 """
 
 from __future__ import annotations

@@ -465,7 +465,7 @@ def _(ChannelFusionMAE, mae_steps, mo, structured_batch, torch):
 def _(go, losses, mo):
     fig_loss = go.Figure(go.Scatter(y=losses, mode="lines", name="reconstruction loss"))
     fig_loss.update_layout(
-        title="Channel-aware MAE training (per-channel normalized pixel loss)",
+        title="Channel-aware MAE training (patch-normalized pixel loss)",
         xaxis_title="step",
         yaxis_title="loss",
         height=280,

@@ -138,7 +138,7 @@ def draw_pipeline(ax) -> None:
         ("Channel-tied embed", "shared $1{\\to}D$ conv\n"
          "$+$ shared spatial pos", GREEN),
         ("Additive identity", "$+\\,z_c$\n"
-         "learnable table $|$ text/seq proj", ORANGE),
+         "learnable table", ORANGE),
         ("Padding-free tokens", "$[\\,\\Sigma C\\cdot N,\\; D\\,]$ $+$ idx\n"
          "$(b,c,n)$; ragged, no pad row", SKY),
         ("Channel fusion (PMA)", "pool over channels\n"

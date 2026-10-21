@@ -1,9 +1,7 @@
-import pytest
 import torch
 
 from fuse_channels import (
     ChannelFusion,
-    ChannelIdentity,
     ChannelSet,
     HypernetworkWeightedSum,
     MultiheadAttentionPooling,
@@ -99,19 +97,6 @@ def test_identity_ablation():
     a, _ = fusion(cs)
     b, _ = fusion(stripped)
     assert not torch.allclose(a, b)
-
-
-def test_open_vocabulary_identity():
-    """Text/sequence-conditioned identity works with no embedding table."""
-    ident = ChannelIdentity(D, num_markers=0, text_dim=8)
-    text = torch.randn(5, 8)
-    out = ident(torch.zeros(5, dtype=torch.long), text_embeds=text)
-    assert out.shape == (5, D)
-    # table was never created -> unbounded C
-    assert ident.embed is None
-    # and without text we cannot fabricate an identity
-    with pytest.raises(ValueError):
-        ident(torch.zeros(5, dtype=torch.long))
 
 
 def test_pooling_queries_are_shared_across_locations():

@@ -59,7 +59,7 @@ def test_padding_free_encoder_input():
 
 
 def test_overfit_single_batch():
-    model = _model(per_channel_loss=False)
+    model = _model()
     images, ids = _batch(C_list=(2, 4, 3), seed=3)
     visible = _fixed_visible(images, model.masker, seed=4)
     opt = torch.optim.Adam(model.parameters(), lr=2e-3)
@@ -114,17 +114,6 @@ def test_encode_attention_pool_replaces_mean():
     _, pooled0 = model0.encode(images, ids, pool="attention")
     assert pooled0.shape == (3, 32)
     assert torch.isfinite(pooled0).all()
-
-
-def test_open_vocab_text_conditioned():
-    model = _model(num_markers=0, text_dim=12, use_learnable_identity=False)
-    images = [torch.randn(C, 1, 8, 8) for C in (2, 5)]
-    ids = [torch.randint(0, 16, (C,)) for C in (2, 5)]
-    text = [torch.randn(C, 12) for C in (2, 5)]
-    out = model(images, ids, text_embeds=text, generator=torch.Generator().manual_seed(0))
-    assert torch.isfinite(out["loss"])
-    # no fixed table was created -> unbounded channel count
-    assert model.frontend.identity.embed is None
 
 
 def test_hypernetwork_fusion_mae():
