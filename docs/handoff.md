@@ -57,22 +57,31 @@ Pipeline, in order:
 
 ## 3. Padding-free implementation (the core requirement)
 
-Do **not** densify to `[B, C_max, D]`. Primary route:
+Do **not** densify to `[B, C_max, D]`.  The implementation flattens only REAL
+channel tokens and carries a segment id (the sample index) for every token:
 
 ```python
 # Concatenate only REAL channel tokens across the whole batch -- no pad tokens.
 E    = per_channel_proj(tokens) + channel_embed(ids)      # [ΣC, D]
-joint = varlen_cross_attn(q=queries,                      # [B, k, D]
-                          k=E, v=E,
-                          cu_seqlens=offsets)              # cumulative channel counts
+seg  = sample_idx_per_token                               # [ΣC]
+joint = grouped_pool_attention(q=queries, k=E, v=E,       # [B, k, D]
+                               kv_seg=seg, n_segments=B)
 ```
 
-- Attention is cross-sample-independent; varlen just exploits it, so results
-  match masked attention exactly.
+- `fuse_channels.ops` implements padding-free **grouped/segmented attention**
+  in pure PyTorch: sort tokens by segment id, run
+  `F.scaled_dot_product_attention` on each equal-length group, scatter the
+  results back.  `grouped_self_attention`, `grouped_pool_attention`, and
+  `grouped_cross_attention` cover the encoder and decoder paths.
+- This is mathematically equivalent to FlashAttention `varlen`/`cu_seqlens`,
+  without requiring the fused kernel; the tests compare it against a
+  masked-padded dense reference for exactness.
 - **Channel dropout / augmentation = token removal before the channel-attention
   stack**, never zeroing.
 
-Alternates: PyTorch nested tensors; **hypernetwork-weighted sum**
+Alternates: FlashAttention `varlen`/`cu_seqlens`, HuggingFace's padding-free
+path, or PyTorch nested tensors as optional kernel accelerations of the same
+computation; **hypernetwork-weighted sum**
 (`w_c = MLP(channel_embed_c)`, `joint = Σ_c softmax(w)_c · E_c`) — `O(C)`
 instead of `O(C²)`, preferred if 20–60-channel quadratic cost is a concern.
 
@@ -106,15 +115,17 @@ instead of `O(C²)`, preferred if 20–60-channel quadratic cost is a concern.
 ## 7. Reference implementations to adapt
 
 ChannelViT (2309.16108) · ChAda-ViT (2311.15264) · Panopticon (2503.10845) ·
-Perceiver / Perceiver IO (2103.03206 / 2107.14795) · FlashAttention
-`varlen` (`cu_seqlens`) / HF padding-free path / PyTorch nested tensors.
+Perceiver / Perceiver IO (2103.03206 / 2107.14795).  Implementation primitives:
+pure-PyTorch grouped/segmented attention in `fuse_channels.ops`;
+FlashAttention `varlen` (`cu_seqlens`), HF padding-free path, and PyTorch
+nested tensors remain optional accelerations, not required by this repo.
 
 ## 8. Deliverable summary
 
 Ship `ChannelFusion` as a drop-in encoder front-end: **channel-tied
 per-channel embedding → additive marker-conditioned identity embedding →
-varlen cross-attention into a fixed learned-query bottleneck**, trained with
-HCS + channel dropout by token removal, per-token norms throughout.
+padding-free grouped cross-attention into a fixed learned-query bottleneck**,
+trained with HCS + channel dropout by token removal, per-token norms throughout.
 
 ---
 
@@ -125,8 +136,8 @@ Train the backbone as a **channel-aware MAE**:
 - **Two masking axes** (Dynamic Channel-Patch masking, ChA-MAEViT 2503.19331):
   spatial patch masking sampled **independently per channel**, plus **dynamic
   channel masking** (sample `k`, then which `k`). Mix via `p_patch, p_channel`.
-  Spatial/channel masking = **token omission** in the varlen tensor; guard:
-  never mask all channels.
+  Spatial/channel masking = **token omission** in the flattened segment tensor;
+  guard: never mask all channels.
 - **Fixed-count memory/register tokens** through encoder + decoder
   (cardinality-independent).
 - **Channel-aware shared decoder** (one decoder, not per-channel), fed the
