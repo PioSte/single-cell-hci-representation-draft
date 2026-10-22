@@ -295,7 +295,7 @@ def draw_components(ax) -> None:
         ha="left", va="center", fontsize=9.6, color=INK,
     )
     ax.text(
-        62.0, 33.5, "$O(C^2)$ per location $\\cdot$ data-dependent weights",
+        62.0, 33.5, "$O(C)$ per location $\\cdot$ data-dependent weights",
         ha="left", va="center", fontsize=7.4, color=MUTED,
     )
     ax.text(

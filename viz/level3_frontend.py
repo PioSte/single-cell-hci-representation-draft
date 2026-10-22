@@ -38,7 +38,6 @@ OUT.mkdir(parents=True, exist_ok=True)
 def draw_channel_tile(ax, x, y, size, color):
     """Single channel image tile [1, H, W]."""
     rrect(ax, x, y, size, size, edge=color, face=tint(color, 0.72), lw=1.5)
-    # Faint image content squiggle
     ax.plot([x + 0.8, x + size - 0.8], [y + 1.5, y + size - 1.5],
             color=color, lw=0.9, alpha=0.6, zorder=4)
     ax.plot([x + 0.8, x + size - 0.8], [y + size - 1.5, y + 1.5],
@@ -57,49 +56,60 @@ def draw_patch_stack(ax, x, y0, w, h, pitch, n, color, omitted_idx=None):
 
 def draw_identity_card(ax, x, y, w, h, color, label):
     """A small identity embedding card z_c."""
-    rrect(ax, x, y, w, h, edge=color, face=tint(color, 0.75), lw=1.5, rounding=0.4)
+    rrect(ax, x, y, w, h, edge=color, face=tint(color, 0.75), lw=1.5,
+          rounding=0.4)
     ax.text(x + w / 2, y + h / 2, label, ha="center", va="center",
-            fontsize=7.5, fontweight="bold", color=INK, zorder=4)
+            fontsize=8.0, fontweight="bold", color=INK, zorder=4)
 
 
-def draw_tied_inset(ax):
+def dashed_route(ax, pts, color=INK, lw=1.4):
+    """Orthogonal dashed polyline ending in an arrow head (for lookups)."""
+    xs = [p[0] for p in pts]
+    ys = [p[1] for p in pts]
+    ax.plot(xs, ys, color=color, lw=lw, linestyle=(0, (4, 2.6)), zorder=6,
+            solid_capstyle="round")
+    arrow(ax, pts[-2], pts[-1], color=color, lw=lw, dashed=True, ms=10)
+
+
+def draw_tied_inset(ax, ix, iy, iw, ih):
     """Small inset comparing tied vs untied projections."""
-    # Box frame
-    ix, iy, iw, ih = 88, 5, 34, 20
     rrect(ax, ix, iy, iw, ih, edge=MUTED, face=tint(MUTED, 0.96), lw=1.3,
           dashed=True, rounding=0.6, z=2)
-    
-    ax.text(ix + iw / 2, iy + ih - 2.5, "Tied vs untied projection",
-            ha="center", va="center", fontsize=8.0, fontweight="bold", color=INK)
-    
-    # Tied: one W
-    ty, th = iy + 9, 5
-    rrect(ax, ix + 2, ty, 13, th, edge=GREEN, face=tint(GREEN, 0.8), lw=1.2, rounding=0.4)
-    ax.text(ix + 8.5, ty + th / 2, "Tied: W", ha="center", va="center",
-            fontsize=7.2, fontweight="bold", color=INK)
-    ax.text(ix + 8.5, ty - 1.8, "all channels", ha="center", va="center",
-            fontsize=6.0, color=MUTED)
-    
-    # Untied: W_c per channel
-    uy = ty
-    rrect(ax, ix + 17, uy, 6, th * 0.45, edge=BLUE, face=tint(BLUE, 0.8), lw=0.9, rounding=0.3)
-    ax.text(ix + 20, uy + th * 0.225, "$W_0$", ha="center", va="center",
-            fontsize=6.0, fontweight="bold", color=INK)
-    rrect(ax, ix + 17, uy + th * 0.55, 6, th * 0.45, edge=GREEN, face=tint(GREEN, 0.8),
-          lw=0.9, rounding=0.3)
-    ax.text(ix + 20, uy + th * 0.775, "$W_1$", ha="center", va="center",
-            fontsize=6.0, fontweight="bold", color=INK)
-    ax.text(ix + 20, uy - 1.8, "per channel", ha="center", va="center",
-            fontsize=6.0, color=MUTED)
-    ax.text(ix + 20, uy + th + 1.8, "untied", ha="center", va="center",
-            fontsize=6.4, style="italic", color=MUTED)
-    ax.text(ix + 8.5, uy + th + 1.8, "tied ✓", ha="center", va="center",
-            fontsize=6.4, style="italic", color=GREEN, fontweight="bold")
-    
-    # Note about robustness
-    ax.text(ix + iw / 2, iy + 2.0,
-            "ChannelViT: tied is more robust to varying channel sets",
-            ha="center", va="center", fontsize=6.2, color=MUTED, style="italic")
+
+    cx = ix + iw / 2
+    ax.text(cx, iy + ih - 2.6, "Tied vs untied projection",
+            ha="center", va="center", fontsize=8.2, fontweight="bold", color=INK)
+
+    # ---- tied (one W for all channels) ----
+    tx, ty, tw, th = ix + 2.5, iy + 9.0, 14.0, 5.0
+    rrect(ax, tx, ty, tw, th, edge=GREEN, face=tint(GREEN, 0.8), lw=1.3,
+          rounding=0.4)
+    ax.text(tx + tw / 2, ty + th / 2, "Tied: W", ha="center", va="center",
+            fontsize=7.4, fontweight="bold", color=INK)
+    ax.text(tx + tw / 2, ty - 2.2, "all channels", ha="center", va="center",
+            fontsize=6.2, color=MUTED)
+    ax.text(tx + tw / 2, ty + th + 2.2, "tied \u2713", ha="center", va="center",
+            fontsize=6.6, style="italic", color=GREEN, fontweight="bold")
+
+    # ---- untied (per-channel W_c) ----
+    ux, uw, uh = ix + 19.5, 6.5, 2.5
+    rrect(ax, ux, ty + 3.0, uw, uh, edge=BLUE, face=tint(BLUE, 0.8), lw=1.0,
+          rounding=0.3)
+    ax.text(ux + uw / 2, ty + 3.0 + uh / 2, "$W_0$", ha="center", va="center",
+            fontsize=6.4, fontweight="bold", color=INK)
+    rrect(ax, ux, ty + 0.2, uw, uh, edge=GREEN, face=tint(GREEN, 0.8), lw=1.0,
+          rounding=0.3)
+    ax.text(ux + uw / 2, ty + 0.2 + uh / 2, "$W_1$", ha="center", va="center",
+            fontsize=6.4, fontweight="bold", color=INK)
+    ax.text(ux + uw / 2, ty - 2.2, "per channel", ha="center", va="center",
+            fontsize=6.2, color=MUTED)
+    ax.text(ux + uw / 2, ty + th + 2.2, "untied", ha="center", va="center",
+            fontsize=6.6, style="italic", color=MUTED)
+
+    ax.text(cx, iy + 2.8,
+            "ChannelViT: tied filters are more robust\nto varying channel sets",
+            ha="center", va="center", fontsize=6.3, color=MUTED, style="italic",
+            linespacing=1.5)
 
 
 # --------------------------------------------------------------------------- #
@@ -118,178 +128,203 @@ def build() -> plt.Figure:
             fontweight="bold", color=INK)
     ax.text(6.5, 67, "Frontend: channel-tied patch embed + additive identity",
             ha="left", va="center", fontsize=12.2, fontweight="bold", color=INK)
-
-    # ---- Subtitle / key concept ------------------------------------------- #
-    ax.text(2, 63.5,
-            "Two channels sharing the same projection W and spatial_pos, but "
-            "each adding its own marker identity z_c.",
+    ax.text(2, 63.6,
+            "Two channels share one projection W and one spatial_pos, but each "
+            "adds its own marker identity z_c.",
             ha="left", va="center", fontsize=7.4, color=MUTED, style="italic")
-    ax.text(2, 60.8,
-            "Position ≠ channel identity  |  DCP-omitted = absent row (never a zero card)",
+    ax.text(2, 60.9,
+            "Position \u2260 channel identity  |  DCP-omitted = absent row (never a zero card)",
             ha="left", va="center", fontsize=7.2, color=RED, style="italic",
             fontweight="bold")
 
-    # ---- Channel 0 (BLUE) path -------------------------------------------- #
-    c0_color = CHANNEL_COLORS[0]  # BLUE
-    c0_y = 42
-    tile_size = 9
-    
-    # Image tile
-    draw_channel_tile(ax, 4, c0_y, tile_size, c0_color)
-    ax.text(8.5, c0_y - 1.8, "$[1, H, W]$", ha="center", va="center",
-            fontsize=6.8, color=MUTED)
-    ax.text(8.5, c0_y + tile_size + 1.8, "channel 0", ha="center", va="center",
-            fontsize=7.2, fontweight="bold", color=c0_color)
-    
-    # Conv2d projection (shared)
-    arrow(ax, (13.5, c0_y + tile_size / 2), (21, c0_y + tile_size / 2), color=c0_color)
-    
-    # Patches after projection
-    patch_x, patch_w, patch_h, patch_pitch = 21, 6, 1.6, 2.1
-    n_patches = 4
-    patch_top = draw_patch_stack(ax, patch_x, c0_y, patch_w, patch_h, patch_pitch,
-                                  n_patches, c0_color, omitted_idx=None)
-    ax.text(patch_x + patch_w / 2, patch_top + 1.8, "$[N, D]$", ha="center",
-            va="center", fontsize=6.8, color=MUTED)
-    
-    # + spatial_pos
-    arrow(ax, (28, c0_y + 4.5), (35, c0_y + 4.5), color=c0_color)
-    ax.text(31.5, c0_y + 6.2, "$+$", ha="center", va="center",
-            fontsize=9, fontweight="bold", color=INK)
-    
-    pos_x = 35
-    rrect(ax, pos_x, c0_y + 0.5, 8, 7.5, edge=ORANGE, face=tint(ORANGE, 0.82),
-          lw=1.3, rounding=0.4)
-    ax.text(pos_x + 4, c0_y + 4.25, "spatial_pos", ha="center", va="center",
-            fontsize=7.0, fontweight="bold", color=INK)
-    ax.text(pos_x + 4, c0_y + 1.8, "$[1, N, D]$", ha="center", va="center",
-            fontsize=6.2, color=MUTED)
-    
-    # + identity z_0
-    arrow(ax, (44, c0_y + 4.5), (52, c0_y + 4.5), color=c0_color)
-    ax.text(48, c0_y + 6.2, "$+$", ha="center", va="center",
-            fontsize=9, fontweight="bold", color=INK)
-    
-    id_x = 52
-    draw_identity_card(ax, id_x, c0_y + 2.5, 5.5, 4, c0_color, "$z_0$")
-    ax.text(id_x + 2.75, c0_y + 0.8, "marker 0", ha="center", va="center",
-            fontsize=6.0, color=MUTED)
-    
-    # Output tokens
-    arrow(ax, (58, c0_y + 4.5), (64, c0_y + 4.5), color=c0_color)
-    out_x = 64
-    out_top = draw_patch_stack(ax, out_x, c0_y, patch_w, patch_h, patch_pitch,
-                                n_patches, c0_color, omitted_idx=None)
-    ax.text(out_x + patch_w / 2, out_top + 1.8, "tokens", ha="center",
-            va="center", fontsize=7.2, fontweight="bold", color=c0_color)
+    # ---- Shared geometry -------------------------------------------------- #
+    lane_yc = [51.0, 25.0]                     # channel 0 / channel 1 centres
+    lane_color = [CHANNEL_COLORS[0], CHANNEL_COLORS[1]]
+    lane_name = ["channel 0", "channel 1"]
+    tile_x, tile_s = 3.0, 9.0
+    stack_x, stack_w, stack_h, stack_pitch, n_patches = 26.0, 6.0, 1.6, 2.1, 4
+    sp_x, sp_w, sp_h = 40.0, 10.0, 8.0        # spatial_pos box
+    z_x, z_w, z_h = 56.0, 6.0, 4.0            # identity card
+    out_x = 66.0                              # output token stack
+    omit_idx = 1                              # DCP-omitted row in channel 1
 
-    # ---- Channel 1 (GREEN) path ------------------------------------------- #
-    c1_color = CHANNEL_COLORS[1]  # GREEN
-    c1_y = 26
-    
-    # Image tile
-    draw_channel_tile(ax, 4, c1_y, tile_size, c1_color)
-    ax.text(8.5, c1_y - 1.8, "$[1, H, W]$", ha="center", va="center",
-            fontsize=6.8, color=MUTED)
-    ax.text(8.5, c1_y + tile_size + 1.8, "channel 1", ha="center", va="center",
-            fontsize=7.2, fontweight="bold", color=c1_color)
-    
-    # Conv2d projection (shared - same box as above)
-    arrow(ax, (13.5, c1_y + tile_size / 2), (21, c1_y + tile_size / 2), color=c1_color)
-    
-    # Patches after projection (with one omitted)
-    omit_idx = 2
-    patch_top_1 = draw_patch_stack(ax, patch_x, c1_y, patch_w, patch_h, patch_pitch,
-                                    n_patches, c1_color, omitted_idx=omit_idx)
-    # Label the omitted row
-    ax.text(patch_x + patch_w + 0.8, c1_y + omit_idx * patch_pitch + patch_h / 2,
-            "omitted", ha="left", va="center", fontsize=6.0, color=RED, style="italic")
-    
-    # + spatial_pos (same box as above, arrow from c1)
-    arrow(ax, (28, c1_y + 4.5), (35, c1_y + 4.5), color=c1_color)
-    ax.text(31.5, c1_y + 6.2, "$+$", ha="center", va="center",
-            fontsize=9, fontweight="bold", color=INK)
-    
-    # + identity z_1
-    arrow(ax, (44, c1_y + 4.5), (52, c1_y + 4.5), color=c1_color)
-    ax.text(48, c1_y + 6.2, "$+$", ha="center", va="center",
-            fontsize=9, fontweight="bold", color=INK)
-    
-    draw_identity_card(ax, id_x, c1_y + 2.5, 5.5, 4, c1_color, "$z_1$")
-    ax.text(id_x + 2.75, c1_y + 0.8, "marker 1", ha="center", va="center",
-            fontsize=6.0, color=MUTED)
-    
-    # Output tokens (with omitted row still absent)
-    arrow(ax, (58, c1_y + 4.5), (64, c1_y + 4.5), color=c1_color)
-    out_top_1 = draw_patch_stack(ax, out_x, c1_y, patch_w, patch_h, patch_pitch,
-                                  n_patches, c1_color, omitted_idx=omit_idx)
-    ax.text(out_x + patch_w / 2, out_top_1 + 1.8, "tokens", ha="center",
-            va="center", fontsize=7.2, fontweight="bold", color=c1_color)
-    ax.text(out_x + patch_w + 0.8, c1_y + omit_idx * patch_pitch + patch_h / 2,
-            "DCP omission", ha="left", va="center", fontsize=6.0, color=RED,
-            style="italic")
+    # ---- Channel lanes ---------------------------------------------------- #
+    for lane, yc in enumerate(lane_yc):
+        color = lane_color[lane]
 
-    # ---- Shared Conv2d module box ----------------------------------------- #
-    box(ax, 15, 18, 11, 38, "Conv2d", "1 → D\nkernel P\nstride P\n\nshared W",
-        edge=GREEN, title_size=8.5, sub_size=6.6)
+        # Image tile [1, H, W]
+        draw_channel_tile(ax, tile_x, yc - tile_s / 2, tile_s, color)
+        ax.text(tile_x + tile_s / 2, yc + tile_s / 2 + 1.9, lane_name[lane],
+                ha="center", va="center", fontsize=7.4, fontweight="bold",
+                color=color)
+        ax.text(tile_x + tile_s / 2, yc - tile_s / 2 - 1.9, "$[1, H, W]$",
+                ha="center", va="center", fontsize=6.8, color=MUTED)
 
-    # ---- Shared spatial_pos annotation ------------------------------------ #
-    ax.text(pos_x + 4, c0_y + 8.5, "shared across channels", ha="center",
+        # tile -> shared Conv2d -> projected patches
+        arrow(ax, (tile_x + tile_s, yc), (15.0, yc), color=color)
+        arrow(ax, (23.5, yc), (stack_x, yc), color=color)
+
+        st_y0 = yc - (n_patches - 1) * stack_pitch / 2 - stack_h / 2
+        top = draw_patch_stack(ax, stack_x, st_y0, stack_w, stack_h,
+                               stack_pitch, n_patches, color,
+                               omitted_idx=(omit_idx if lane == 1 else None))
+        ax.text(stack_x + stack_w / 2, top + 1.9, "$[N, D]$", ha="center",
+                va="center", fontsize=6.8, color=MUTED)
+
+        # + spatial_pos
+        arrow(ax, (stack_x + stack_w, yc), (sp_x, yc), color=color)
+        ax.text((stack_x + stack_w + sp_x) / 2, yc + 2.6, "$+$", ha="center",
+                va="center", fontsize=9.5, fontweight="bold", color=INK)
+        rrect(ax, sp_x, yc - sp_h / 2, sp_w, sp_h, edge=ORANGE,
+              face=tint(ORANGE, 0.82), lw=1.3, rounding=0.4)
+        ax.text(sp_x + sp_w / 2, yc + 1.8, "spatial_pos", ha="center",
+                va="center", fontsize=7.2, fontweight="bold", color=INK,
+                zorder=4)
+        ax.text(sp_x + sp_w / 2, yc - 1.8, "$[1, N, D]$", ha="center",
+                va="center", fontsize=6.3, color=MUTED, zorder=4)
+
+        # + identity z_c
+        arrow(ax, (sp_x + sp_w, yc), (z_x, yc), color=color)
+        ax.text((sp_x + sp_w + z_x) / 2, yc + 2.6, "$+$", ha="center",
+                va="center", fontsize=9.5, fontweight="bold", color=INK)
+        draw_identity_card(ax, z_x, yc - z_h / 2, z_w, z_h, color,
+                           f"$z_{lane}$")
+        ax.text(z_x + z_w / 2, yc - z_h / 2 - 2.0, f"marker {lane}",
+                ha="center", va="center", fontsize=6.1, color=MUTED)
+
+        # -> output tokens (ragged list, omission preserved)
+        arrow(ax, (z_x + z_w, yc), (out_x, yc), color=color)
+        o_y0 = yc - (n_patches - 1) * stack_pitch / 2 - stack_h / 2
+        top = draw_patch_stack(ax, out_x, o_y0, stack_w, stack_h,
+                               stack_pitch, n_patches, color,
+                               omitted_idx=(omit_idx if lane == 1 else None))
+        ax.text(out_x + stack_w / 2, top + 1.9, "tokens", ha="center",
+                va="center", fontsize=7.2, fontweight="bold", color=color)
+
+    # annotate the omitted row on the (upper) projected stack of channel 1
+    row_y = lane_yc[1] - (n_patches - 1) * stack_pitch / 2 - stack_h / 2 \
+        + omit_idx * stack_pitch + stack_h / 2
+    ax.plot([stack_x + stack_w, stack_x + stack_w + 1.1],
+            [row_y, row_y - 0.6], color=RED, lw=1.0, zorder=7)
+    ax.text(stack_x + stack_w + 1.3, row_y - 1.0, "omitted", ha="left",
+            va="center", fontsize=6.1, color=RED, style="italic",
+            fontweight="bold")
+
+    # ---- Shared Conv2d module (one kernel for every channel) -------------- #
+    rrect(ax, 15.0, 19.0, 8.5, 38.0, edge=GREEN, face=tint(GREEN, 0.86),
+          lw=1.5, rounding=0.7, z=3)
+    cx = 19.25
+    ax.text(cx, 54.6, "Conv2d", ha="center", va="center", fontsize=8.6,
+            fontweight="bold", color=INK, zorder=4)
+    ax.text(cx, 50.4, "1 \u2192 D", ha="center", va="center", fontsize=6.8,
+            color=INK, zorder=4)
+    ax.text(cx, 47.9, "kernel P", ha="center", va="center", fontsize=6.6,
+            color=MUTED, zorder=4)
+    ax.text(cx, 45.4, "stride P", ha="center", va="center", fontsize=6.6,
+            color=MUTED, zorder=4)
+    ax.plot([cx - 2.8, cx + 2.8], [42.5, 42.5], color=GREEN, lw=1.0,
+            linestyle=(0, (3, 2)), zorder=4)
+    ax.text(cx, 38.8, "shared W", ha="center", va="center", fontsize=7.6,
+            fontweight="bold", color=GREEN, zorder=4)
+    ax.text(cx, 33.2, "one kernel for\nevery channel", ha="center", va="center",
+            fontsize=6.3, color=MUTED, zorder=4, linespacing=1.5)
+    ax.text(cx, 26.5, "(tied, not\nper-channel)", ha="center", va="center",
+            fontsize=6.1, color=MUTED, zorder=4, linespacing=1.5)
+
+    # ---- Shared spatial_pos emphasis -------------------------------------- #
+    rrect(ax, sp_x - 1.5, lane_yc[1] - sp_h / 2 - 1.5, sp_w + 3.0,
+          (lane_yc[0] - lane_yc[1]) + sp_h + 3.0, edge=ORANGE,
+          face="none", lw=1.1, dashed=True, rounding=0.6, z=2)
+    ax.text(sp_x + sp_w / 2, (lane_yc[0] + lane_yc[1]) / 2,
+            "spatial_pos is shared\n(position \u2260 identity)", ha="center",
             va="center", fontsize=6.6, color=ORANGE, fontweight="bold",
-            style="italic")
-    
-    # ---- Identity embedding source ---------------------------------------- #
-    # nn.Embedding table
-    emb_x, emb_y = 77, 30
-    box(ax, emb_x, emb_y, 13, 10, "nn.Embedding", "num_markers × D",
-        edge=PURPLE, title_size=7.8, sub_size=6.2)
-    
-    # Arrows from identity cards to embedding
-    arrow(ax, (id_x + 2.75, c0_y + 2.5), (emb_x + 2, emb_y + 8), color=c0_color,
-          lw=1.3, rad=-0.2, dashed=True)
-    arrow(ax, (id_x + 2.75, c1_y + 6.5), (emb_x + 2, emb_y + 2), color=c1_color,
-          lw=1.3, rad=0.2, dashed=True)
-    ax.text(emb_x - 8, emb_y + 5, "lookup", ha="center", va="center",
-            fontsize=6.6, color=PURPLE, style="italic")
+            style="italic", linespacing=1.5)
 
-    # ---- "Never a zero card" emphasis ------------------------------------- #
-    zero_x, zero_y = 77, 14
-    rrect(ax, zero_x, zero_y, 13, 8, edge=RED, face=tint(RED, 0.92), lw=2.0,
-          dashed=True)
-    ax.plot([zero_x + 1.5, zero_x + 11.5], [zero_y + 1.5, zero_y + 6.5],
-            color=RED, lw=2.5, zorder=5)
-    ax.plot([zero_x + 1.5, zero_x + 11.5], [zero_y + 6.5, zero_y + 1.5],
-            color=RED, lw=2.5, zorder=5)
-    ax.text(zero_x + 6.5, zero_y + 4, "zero card", ha="center", va="center",
-            fontsize=7.0, fontweight="bold", color=MUTED, zorder=4)
-    ax.text(zero_x + 6.5, zero_y - 1.5, "never used", ha="center", va="center",
-            fontsize=6.8, color=RED, fontweight="bold", style="italic")
+    # ---- Identity embedding source ---------------------------------------- #
+    emb_x, emb_y, emb_w, emb_h = 76.0, 34.0, 14.0, 10.0
+    box(ax, emb_x, emb_y, emb_w, emb_h, "nn.Embedding", "num_markers \u00d7 D",
+        edge=PURPLE, title_size=7.8, sub_size=6.3)
+
+    # dashed lookup routes: table -> each z_c card (routed clear of tokens)
+    route_x = z_x + z_w - 1.0
+    dashed_route(ax, [(emb_x + 1.0, emb_y + emb_h), (emb_x + 1.0, 58.3),
+                      (route_x, 58.3), (route_x, lane_yc[0] + z_h / 2)],
+                 color=lane_color[0])
+    dashed_route(ax, [(emb_x + 1.0, emb_y), (emb_x + 1.0, 18.5),
+                      (route_x, 18.5), (route_x, lane_yc[1] - z_h / 2)],
+                 color=lane_color[1])
+    ax.text(emb_x + emb_w / 2, emb_y + emb_h + 1.7,
+            "$z_c$ lookup", ha="center", va="center", fontsize=6.4,
+            color=PURPLE, style="italic")
+
+    # ---- Additive-token formula (fills the centre) ------------------------ #
+    rrect(ax, 53.0, 32.5, 21.0, 10.0, edge=MUTED, face=tint(MUTED, 0.97),
+          lw=1.1, dashed=True, rounding=0.5, z=2)
+    ax.text(63.5, 39.4, "per token (additive):", ha="center", va="center",
+            fontsize=6.6, fontweight="bold", color=INK, zorder=4)
+    ax.text(63.5, 35.7, "proj(patch) + spatial_pos[n] + $z_c$", ha="center",
+            va="center", fontsize=6.0, color=MUTED, zorder=4)
+
+    # ---- DCP omission strip ----------------------------------------------- #
+    strip_x, strip_y, strip_w, strip_h = 3.0, 3.0, 90.0, 13.0
+    rrect(ax, strip_x, strip_y, strip_w, strip_h, edge=INK,
+          face=tint(INK, 0.97), lw=1.2, rounding=0.6, z=2)
+    ax.text(strip_x + 2.0, strip_y + strip_h - 2.4,
+            "DCP omission = absent row", ha="left", va="center", fontsize=7.8,
+            fontweight="bold", color=INK, zorder=4)
+
+    # mini ragged stack: omitted row dashed, never a zero card
+    mini_specs = [(GREEN, False), (GREEN, True), (GREEN, False), (GREEN, False)]
+    token_rows(ax, strip_x + 2.0, strip_y + 2.0, 6.0, 1.3, 1.7, mini_specs,
+               rounding=0.3, z=4)
+    ax.text(strip_x + 2.0, strip_y + 1.2, "omitted\nrow", ha="left", va="center",
+            fontsize=5.8, color=RED, style="italic", zorder=4, linespacing=1.4)
+
+    ax.text(strip_x + 12.5, strip_y + 8.2,
+            "Masked channel-patch tokens are removed from the ragged list "
+            "$[\\Sigma C \\cdot N, D]$.", ha="left", va="center", fontsize=6.4,
+            color=INK, zorder=4)
+    ax.text(strip_x + 12.5, strip_y + 5.2,
+            "Never zero cards \u00b7 never padded \u00b7 no $-\\infty$ attention mask.",
+            ha="left", va="center", fontsize=6.4, color=MUTED, zorder=4)
+
+    # dashed ghost of the padded tensor that is never materialised
+    ghost_x, ghost_y, ghost_w, ghost_h = strip_x + 75.0, strip_y + 2.6, 12.0, 7.4
+    rrect(ax, ghost_x, ghost_y, ghost_w, ghost_h, edge=MUTED,
+          face=tint(MUTED, 0.99), lw=1.2, dashed=True, rounding=0.4, z=3)
+    ax.plot([ghost_x + 1.0, ghost_x + ghost_w - 1.0],
+            [ghost_y + 1.0, ghost_y + ghost_h - 1.0], color=RED, lw=1.6,
+            alpha=0.7, zorder=5)
+    ax.text(ghost_x + ghost_w / 2, ghost_y + ghost_h / 2,
+            "$[B, C_{max}, N, D]$", ha="center", va="center", fontsize=6.0,
+            color=MUTED, zorder=4)
+    ax.text(ghost_x + ghost_w / 2, ghost_y + ghost_h + 1.2,
+            "never materialised", ha="center", va="center", fontsize=5.9,
+            color=RED, fontweight="bold", style="italic", zorder=4)
 
     # ---- Tied vs untied inset --------------------------------------------- #
-    draw_tied_inset(ax)
+    draw_tied_inset(ax, 95.0, 6.0, 33.0, 22.0)
 
-    # ---- Legend / key concepts box ---------------------------------------- #
-    leg_x, leg_y, leg_w, leg_h = 93, 42, 35, 16
+    # ---- Key design points ------------------------------------------------- #
+    leg_x, leg_y, leg_w, leg_h = 95.0, 33.0, 33.0, 26.0
     rrect(ax, leg_x, leg_y, leg_w, leg_h, edge=INK, face=tint(INK, 0.97),
           lw=1.3, rounding=0.6, z=2)
-    
-    ax.text(leg_x + leg_w / 2, leg_y + leg_h - 2.2, "Key design points",
-            ha="center", va="center", fontsize=8.5, fontweight="bold", color=INK)
-    
-    # Bullet points
+    ax.text(leg_x + leg_w / 2, leg_y + leg_h - 2.6, "Key design points",
+            ha="center", va="center", fontsize=8.6, fontweight="bold", color=INK)
+
     bullets = [
-        "• Projection W is tied (shared) across all channels",
-        "• Spatial position is shared (position ≠ identity)",
-        "• Channel identity z_c is additive (per marker)",
-        "• DCP omission → absent row (never zeroed)",
-        "• No padding tokens, no zero embeddings",
+        "\u2022 One shared Conv2d W for every channel (tied)",
+        "\u2022 spatial_pos $[1, N, D]$ is shared (\u2260 identity)",
+        "\u2022 $z_c$ = Embedding(marker_id) added per token",
+        "\u2022 DCP omission \u2192 absent row, never a zero card",
+        "\u2022 No padding tokens, no zero embeddings",
+        "\u2022 $C$ lives only in the ragged input length $\\Sigma C \\cdot N$",
     ]
-    
-    bullet_y = leg_y + leg_h - 5.0
+    bullet_y = leg_y + leg_h - 5.6
     for bullet in bullets:
-        ax.text(leg_x + 1.5, bullet_y, bullet, ha="left", va="center",
-                fontsize=6.6, color=INK)
-        bullet_y -= 2.2
+        ax.text(leg_x + 1.6, bullet_y, bullet, ha="left", va="center",
+                fontsize=6.5, color=INK)
+        bullet_y -= 2.6
 
     return fig
 

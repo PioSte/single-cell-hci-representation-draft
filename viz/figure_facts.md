@@ -51,12 +51,17 @@ All shapes below are read from the code, not invented. Notation:
   every spatial location** — expanded to `[Kf, Q, H, Dh]`.
 - `grouped_pool_attention(q, tok, tok, lookup, Kf)` → `[Kf, Q, H, Dh]`
   (**keys = values = tokens**; there is no `W_Q/W_K/W_V`).
+- Cost: `O(Q·C·D)` per `(b,n)` location. With the default `Q = 1`
+  (fixed-query PMA) this is **`O(C)`**, not the `O(C²)` of dense `C×C`
+  channel self-attention (the ChannelViT / ChAda-ViT baseline).
 - `proj_out` Linear → scatter back to `fused: [B, N, Q·D]`, `present: [B, N]`.
 - `fuse_proj`: `Identity` if `Q·D == D` else `Linear` → `[B, N, D]`.
 - **HypernetworkWeightedSum**: `logits = weight_net(identity) [V, Q]`,
   `weights = segment_softmax(logits)` over the channel (segment) axis, values
   `= out_norm(value_proj(tokens))`; `Σ_c weights_c · V_c` → `[B, N, Q·D]`
   — `O(C)` per location, keys on **marker identity** (`z_c`).
+  (Both shipped fusions are therefore `O(C)` per location; the quadratic
+  `O(C²)` baseline is dense `C×C` cross-channel self-attention.)
 
 ## Encoder — `encoder.py` (L2, L6)
 

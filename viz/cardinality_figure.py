@@ -119,7 +119,7 @@ def step3(ax, x0):
         arrow(ax, (cx, gy - 0.9), (cx, 39.4), color=RED, lw=1.1, ms=8)
         cell(ax, gx + c * pitch, 36.0, s, tint(RED, 0.82), RED)
     label(ax, x0 + 13.5, 34.2,
-          "$C$ tokens $\\to$ 1 per $(b,n)$ · $O(C^2)$ or $O(C)$",
+          "$C$ tokens $\\to$ 1 per $(b,n)$ · $O(C)$ per location",
           size=7.0, color=RED, weight="bold")
 
 

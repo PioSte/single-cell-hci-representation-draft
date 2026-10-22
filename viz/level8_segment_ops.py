@@ -25,8 +25,8 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 from figure_style import (  # noqa: E402
-    BLUE, GREEN, ORANGE, RED, PURPLE, VIOLET, INK, MUTED, CHANNEL_COLORS,
-    tint, rrect, box, arrow, edge_label, sq_bracket, panel_header,
+    BLUE, GREEN, ORANGE, RED, PURPLE, INK, MUTED,
+    tint, rrect, box, arrow, sq_bracket, panel_header,
     install_rcparams, save_figure,
 )
 
@@ -35,335 +35,291 @@ OUT.mkdir(parents=True, exist_ok=True)
 
 
 # --------------------------------------------------------------------------- #
-# Token array stacks
+# Shared row grid -- every token stack uses these, so a token can be tracked
+# row-for-row across stages (stage-1 seg column, [T,D] brackets, stage-2 group
+# separators and the stage-4 scatter-back all line up).
 # --------------------------------------------------------------------------- #
-def draw_input_tokens(ax, x, y0):
-    """[T, D] flattened token tensor plus seg: [T] segment ids."""
-    w, h, pitch = 14.0, 2.5, 3.2
-    specs = [
-        (BLUE, 0),
-        (BLUE, 1),
-        (BLUE, 2),
-        (GREEN, 0),
-        (GREEN, 1),
-        (ORANGE, 0),
-        (ORANGE, 1),
-        (ORANGE, 2),
-    ]
-    for i, (c, seg_id) in enumerate(specs):
-        yy = y0 + i * pitch
-        rrect(ax, x, yy, w, h, edge=c, face=tint(c, 0.8), lw=1.2)
-        # segment id annotation
-        ax.text(x - 1.2, yy + h / 2, f"$s_{seg_id}$", ha="right", va="center",
-                fontsize=6.8, color=c, fontweight="bold")
-    
-    top = y0 + (len(specs) - 1) * pitch + h
-    sq_bracket(ax, x + w + 0.9, y0, top)
-    ax.text(x + w + 1.6, (y0 + top) / 2, "$[T, D]$", ha="left", va="center",
-            fontsize=8.5, color=INK)
-    
-    # seg ids column - moved further right to avoid overlap
-    sx = x + w + 9.5
+W_TOK, H_TOK, PITCH = 14.0, 2.5, 3.2
+N_TOK = 8
+Y0 = 45.0
+STACK_TOP = Y0 + (N_TOK - 1) * PITCH + H_TOK
+ARROW_Y = Y0 + 15.4  # aligned with the L=3 batch row in stage 3
+
+# Flattened input order: segments are interleaved (s0 blue, s1 green,
+# s2 orange), so the stable argsort visibly regroups them.
+IN_SPECS = [
+    (BLUE, 0), (GREEN, 1), (ORANGE, 2),
+    (BLUE, 0), (GREEN, 1), (ORANGE, 2),
+    (BLUE, 0), (ORANGE, 2),
+]
+# After ``order = argsort(seg, stable=True)``: grouped by segment id.
+SORTED_SPECS = [
+    (BLUE, 0), (BLUE, 0), (BLUE, 0),
+    (GREEN, 1), (GREEN, 1),
+    (ORANGE, 2), (ORANGE, 2), (ORANGE, 2),
+]
+# (first_row, last_row, segment_id, colour, length) for the sorted stack.
+GROUPS = [
+    (0, 2, 0, BLUE, 3),
+    (3, 4, 1, GREEN, 2),
+    (5, 7, 2, ORANGE, 3),
+]
+
+
+# --------------------------------------------------------------------------- #
+# Array-stack drawing
+# --------------------------------------------------------------------------- #
+def draw_token_column(ax, x, specs, face=0.80):
+    """A vertical [T, D] token column; returns the top y of the stack."""
+    for i, (c, _seg) in enumerate(specs):
+        rrect(ax, x, Y0 + i * PITCH, W_TOK, H_TOK, edge=c,
+              face=tint(c, face), lw=1.2)
+    return Y0 + (len(specs) - 1) * PITCH + H_TOK
+
+
+def bracket_and_shape(ax, x, top):
+    """[T, D] bracket + label to the right of a token column."""
+    sq_bracket(ax, x + W_TOK + 0.9, Y0, top)
+    ax.text(x + W_TOK + 1.6, (Y0 + top) / 2, "$[T, D]$",
+            ha="left", va="center", fontsize=8.5, color=INK)
+
+
+def draw_input_tokens(ax, x):
+    """[T, D] flattened tokens + the ``seg: [T]`` id column."""
+    for i, (c, seg_id) in enumerate(IN_SPECS):
+        ax.text(x - 1.0, Y0 + i * PITCH + H_TOK / 2, f"$s_{seg_id}$",
+                ha="right", va="center", fontsize=6.8, color=c,
+                fontweight="bold")
+
+    top = draw_token_column(ax, x, IN_SPECS)
+    bracket_and_shape(ax, x, top)
+
+    # seg: [T] integer id column, to the right of the [T, D] bracket.
+    sx = x + W_TOK + 7.0
     sw = 3.5
-    ax.text(sx + sw / 2, top + 2.0, "$\\mathtt{seg}$", ha="center", va="center",
-            fontsize=8.0, fontweight="bold", color=MUTED)
-    for i, (c, seg_id) in enumerate(specs):
-        yy = y0 + i * pitch
-        rrect(ax, sx, yy, sw, h, edge=MUTED, face="#F4F4F4", lw=1.0)
-        ax.text(sx + sw / 2, yy + h / 2, str(seg_id), ha="center", va="center",
-                fontsize=7.2, color=INK)
-    
-    return top, x + w + 9.5 + sw
+    ax.text(sx + sw / 2, top + 2.0, "$\\mathtt{seg}$", ha="center",
+            va="center", fontsize=8.0, fontweight="bold", color=MUTED)
+    for i, (_c, seg_id) in enumerate(IN_SPECS):
+        rrect(ax, sx, Y0 + i * PITCH, sw, H_TOK, edge=MUTED,
+              face="#F4F4F4", lw=1.0)
+        ax.text(sx + sw / 2, Y0 + i * PITCH + H_TOK / 2, str(seg_id),
+                ha="center", va="center", fontsize=7.2, color=INK)
+    return top, sx + sw
 
 
-def draw_sorted_tokens(ax, x, y0):
-    """[T, D] after argsort(seg, stable=True), grouped by segment."""
-    w, h, pitch = 14.0, 2.5, 3.2
-    # Now grouped: seg 0 (blue), seg 1 (green), seg 2 (orange)
-    specs = [
-        (BLUE, 0, 0),   # t0
-        (BLUE, 0, 1),   # t3
-        (BLUE, 0, 2),   # t6
-        (GREEN, 1, 0),  # t1
-        (GREEN, 1, 1),  # t4
-        (ORANGE, 2, 0), # t2
-        (ORANGE, 2, 1), # t5
-        (ORANGE, 2, 2), # t7
-    ]
-    
-    # Draw group separators
-    group_tops = []
-    for i, (c, seg_id, _) in enumerate(specs):
-        yy = y0 + i * pitch
-        rrect(ax, x, yy, w, h, edge=c, face=tint(c, 0.8), lw=1.2)
-        # Check if next token is different segment
-        if i < len(specs) - 1 and specs[i][1] != specs[i+1][1]:
-            group_tops.append(yy + h)
-            ax.plot([x - 0.5, x + w + 0.5], [yy + h, yy + h],
+def draw_sorted_tokens(ax, x):
+    """[T, D] after ``argsort(seg, stable=True)``, grouped by segment."""
+    top = draw_token_column(ax, x, SORTED_SPECS)
+
+    for (i0, i1, seg_id, c, length) in GROUPS:
+        if i0 > 0:  # dotted separator between adjacent groups
+            yy = Y0 + i0 * PITCH
+            ax.plot([x - 0.7, x + W_TOK + 0.7], [yy, yy],
                     color=MUTED, lw=1.0, linestyle=":", zorder=2)
-    
-    top = y0 + (len(specs) - 1) * pitch + h
-    sq_bracket(ax, x + w + 0.9, y0, top)
-    ax.text(x + w + 1.6, (y0 + top) / 2, "$[T, D]$", ha="left", va="center",
-            fontsize=8.5, color=INK)
-    
-    # Segment length annotations - moved further left for clarity
-    lx = x - 9.5
-    # seg 0: 3 tokens (blue)
-    y_mid0 = y0 + pitch
-    ax.text(lx, y_mid0, "$L_0{=}3$", ha="center", va="center",
-            fontsize=6.8, color=BLUE, fontweight="bold")
-    # seg 1: 2 tokens (green)
-    y_mid1 = y0 + 3.5 * pitch
-    ax.text(lx, y_mid1, "$L_1{=}2$", ha="center", va="center",
-            fontsize=6.8, color=GREEN, fontweight="bold")
-    # seg 2: 3 tokens (orange)
-    y_mid2 = y0 + 6.5 * pitch
-    ax.text(lx, y_mid2, "$L_2{=}3$", ha="center", va="center",
-            fontsize=6.8, color=ORANGE, fontweight="bold")
-    
+        yc = Y0 + (i0 + i1) / 2 * PITCH + H_TOK / 2
+        # length label clearly attached to this group, left of the column
+        ax.text(x - 1.4, yc, f"$L_{{{seg_id}}}{{=}}{length}$",
+                ha="right", va="center", fontsize=6.8, color=c,
+                fontweight="bold")
+
+    bracket_and_shape(ax, x, top)
     return top
 
 
-def draw_batched_groups(ax, x, y0):
-    """Groups of equal length batched for SDPA."""
-    # Show two groups: L=3 (blue+orange), L=2 (green)
-    cell = 2.8
-    pitch = 3.3
-    
-    # Group 1: L=3 (two samples: seg 0 blue, seg 2 orange)
-    # Move text higher to avoid overlap with cells
-    ax.text(x + 7.0, y0 + 14.5, "length $L{=}3$", ha="center", va="center",
+def draw_batched_groups(ax, x):
+    """Batched SDPA: equal-length segments grouped into one call each."""
+    cell, cpitch = 2.8, 3.2
+
+    def row(y, n, c):
+        for i in range(n):
+            rrect(ax, x + i * cpitch, y, cell, cell, edge=c,
+                  face=tint(c, 0.75), lw=1.1, rounding=0.3)
+
+    # --- L = 3, batch M = 2 (segments s0 blue and s2 orange) --------------- #
+    blue_y, orange_y = Y0 + 14.0, Y0 + 10.5
+    row(blue_y, 3, BLUE)
+    row(orange_y, 3, ORANGE)
+    ax.text(x + 3.0, Y0 + 20.4, "length $L{=}3$", ha="center", va="center",
             fontsize=7.5, fontweight="bold", color=INK)
-    ax.text(x + 7.0, y0 + 12.7, "batch $M{=}2$ segs", ha="center", va="center",
-            fontsize=6.2, color=MUTED)
-    
-    # Blue segment (3 tokens)
-    for i in range(3):
-        rrect(ax, x + i * pitch, y0 + 4.5, cell, cell, edge=BLUE,
-              face=tint(BLUE, 0.75), lw=1.1, rounding=0.3)
-    ax.text(x - 2.5, y0 + 4.5 + cell/2, "$s_0$", ha="right", va="center",
-            fontsize=6.5, color=BLUE, fontweight="bold")
-    
-    # Orange segment (3 tokens)
-    for i in range(3):
-        rrect(ax, x + i * pitch, y0 + 1.0, cell, cell, edge=ORANGE,
-              face=tint(ORANGE, 0.75), lw=1.1, rounding=0.3)
-    ax.text(x - 2.5, y0 + 1.0 + cell/2, "$s_2$", ha="right", va="center",
-            fontsize=6.5, color=ORANGE, fontweight="bold")
-    
-    # Group 2: L=2 (one sample: seg 1 green)
-    gy0 = y0 - 5.5
-    # Move text higher and further left to avoid overlap
-    ax.text(x + 4.5, gy0 + 5.5, "length $L{=}2$", ha="center", va="center",
+    ax.text(x + 3.0, Y0 + 18.7, "batch $M{=}2$: $s_0 + s_2$", ha="center",
+            va="center", fontsize=6.2, color=MUTED)
+
+    # --- L = 2, batch M = 1 (segment s1 green) ----------------------------- #
+    green_y = Y0 + 3.0
+    row(green_y, 2, GREEN)
+    ax.text(x + 3.0, Y0 + 9.0, "length $L{=}2$", ha="center", va="center",
             fontsize=7.5, fontweight="bold", color=INK)
-    ax.text(x + 4.5, gy0 + 3.7, "batch $M{=}1$ seg", ha="center", va="center",
-            fontsize=6.2, color=MUTED)
-    
-    # Green segment (2 tokens)
-    for i in range(2):
-        rrect(ax, x + i * pitch, gy0, cell, cell, edge=GREEN,
-              face=tint(GREEN, 0.75), lw=1.1, rounding=0.3)
-    ax.text(x - 2.5, gy0 + cell/2, "$s_1$", ha="right", va="center",
-            fontsize=6.5, color=GREEN, fontweight="bold")
+    ax.text(x + 3.0, Y0 + 7.3, "batch $M{=}1$: $s_1$", ha="center",
+            va="center", fontsize=6.2, color=MUTED)
 
 
-def draw_output_tokens(ax, x, y0):
-    """[T, D] output after scatter back."""
-    w, h, pitch = 14.0, 2.5, 3.2
-    specs = [
-        (BLUE, 0),
-        (BLUE, 1),
-        (BLUE, 2),
-        (GREEN, 0),
-        (GREEN, 1),
-        (ORANGE, 0),
-        (ORANGE, 1),
-        (ORANGE, 2),
-    ]
-    for i, (c, seg_id) in enumerate(specs):
-        yy = y0 + i * pitch
-        rrect(ax, x, yy, w, h, edge=c, face=tint(c, 0.85), lw=1.2)
-    
-    top = y0 + (len(specs) - 1) * pitch + h
-    sq_bracket(ax, x + w + 0.9, y0, top)
-    ax.text(x + w + 1.6, (y0 + top) / 2, "$[T, D]$", ha="left", va="center",
-            fontsize=8.5, color=INK)
-    
+def draw_output_tokens(ax, x):
+    """[T, D] output after the scatter-back ``out[order] = out_sorted``."""
+    top = draw_token_column(ax, x, IN_SPECS, face=0.88)
+    bracket_and_shape(ax, x, top)
     return top
 
 
+# --------------------------------------------------------------------------- #
+# Ghost padded reference (never materialised)
+# --------------------------------------------------------------------------- #
 def draw_padded_reference(ax, x, y0):
-    """The ghost padded [B, T_max, D] + -inf mask that is never materialized."""
-    cell = 2.5
-    pitch = 2.9
+    """Dashed ghost of the dense [B, T_max, D] + -inf mask reference."""
+    cell, pitch = 2.5, 2.9
     B, T_max = 3, 3
-    
-    # Dashed frame
     fw, fh = T_max * pitch + 1.5, B * pitch + 1.5
+
     rrect(ax, x, y0, fw, fh, edge=MUTED, face="#F8F8F8", lw=1.5,
           dashed=True, rounding=0.6, z=1)
-    
-    ox = x + 0.5
-    oy = y0 + 0.5
-    
-    # Blue segment: 3 tokens (full row)
+
+    ox, oy = x + 0.5, y0 + 0.5
+    # b0 (blue, len 3) full row
     for j in range(3):
         rrect(ax, ox + j * pitch, oy + 2 * pitch, cell, cell, edge=BLUE,
               face=tint(BLUE, 0.75), lw=1.0, rounding=0.25)
-    
-    # Green segment: 2 tokens + 1 padding
+    # b1 (green, len 2) + one omitted/padding cell (crossed out)
     for j in range(2):
         rrect(ax, ox + j * pitch, oy + 1 * pitch, cell, cell, edge=GREEN,
               face=tint(GREEN, 0.75), lw=1.0, rounding=0.25)
-    # Padding cell (crossed out)
     rrect(ax, ox + 2 * pitch, oy + 1 * pitch, cell, cell, edge=RED,
           face="#FFFFFF", lw=1.0, rounding=0.25)
     ax.plot([ox + 2 * pitch + 0.3, ox + 2 * pitch + cell - 0.3],
             [oy + 1 * pitch + 0.3, oy + 1 * pitch + cell - 0.3],
-            color=RED, lw=1.8, alpha=0.8, zorder=4)
-    
-    # Orange segment: 3 tokens (full row)
+            color=RED, lw=1.8, alpha=0.85, zorder=4)
+    # b2 (orange, len 3) full row
     for j in range(3):
         rrect(ax, ox + j * pitch, oy, cell, cell, edge=ORANGE,
               face=tint(ORANGE, 0.75), lw=1.0, rounding=0.25)
-    
-    # Labels
-    ax.text(x - 1.2, oy + 2 * pitch + cell/2, "$b_0$", ha="right", va="center",
-            fontsize=6.5, color=BLUE)
-    ax.text(x - 1.2, oy + 1 * pitch + cell/2, "$b_1$", ha="right", va="center",
-            fontsize=6.5, color=GREEN)
-    ax.text(x - 1.2, oy + cell/2, "$b_2$", ha="right", va="center",
+
+    ax.text(x - 1.2, oy + 2 * pitch + cell / 2, "$b_0$", ha="right",
+            va="center", fontsize=6.5, color=BLUE)
+    ax.text(x - 1.2, oy + 1 * pitch + cell / 2, "$b_1$", ha="right",
+            va="center", fontsize=6.5, color=GREEN)
+    ax.text(x - 1.2, oy + cell / 2, "$b_2$", ha="right", va="center",
             fontsize=6.5, color=ORANGE)
-    
-    # Move label above the frame to avoid overlap
-    ax.text(x + fw / 2, y0 + fh + 2.2, "$[B, T_{\\max}, D]$ ghost",
+
+    ax.text(x + fw / 2, y0 + fh + 2.0, "$[B, T_{\\max}, D]$ ghost",
             ha="center", va="center", fontsize=7.5, color=MUTED,
             fontweight="bold", style="italic")
-    # Move below text lower to avoid the red slash
-    ax.text(x + fw / 2, y0 - 4.0, "never materialized", ha="center", va="center",
-            fontsize=6.6, color=RED, style="italic")
+    ax.text(x + fw / 2, y0 - 5.3, "never materialized", ha="center",
+            va="center", fontsize=6.6, color=RED, style="italic")
+    return y0 + fh
 
 
 # --------------------------------------------------------------------------- #
 # The figure
 # --------------------------------------------------------------------------- #
 def build() -> plt.Figure:
-    fig = plt.figure(figsize=(13, 7))
+    fig = plt.figure(figsize=(14, 8.2))
     ax = fig.add_axes([0.0, 0.0, 1.0, 1.0])
-    ax.set_xlim(0, 130)
-    ax.set_ylim(0, 70)
+    ax.set_xlim(0, 140)
+    ax.set_ylim(0, 82)
     ax.set_aspect("equal", adjustable="box")
     ax.axis("off")
 
     # ---- title ------------------------------------------------------------ #
-    panel_header(ax, 2, 67, "L8",
+    panel_header(ax, 2, 79, "L8",
                  "Segmented-attention primitive: padding-free batched SDPA")
 
-    # ---- main flow stages ------------------------------------------------- #
-    y0 = 37.0
-    
-    # Stage 1: Input tokens
-    ax.text(10.0, y0 + 28.5, "① flattened tokens", ha="center", va="center",
+    # ---- stage headings --------------------------------------------------- #
+    head_y, sub_y = STACK_TOP + 4.5, STACK_TOP + 2.2
+
+    # Stage 1: flattened tokens + seg ids
+    ax.text(10.0, head_y, "① flattened tokens", ha="center", va="center",
             fontsize=8.0, fontweight="bold", color=INK)
-    top1, seg_right = draw_input_tokens(ax, 3.5, y0)
-    
-    # Stage 2: Sort by segment
-    ax.text(35.0, y0 + 28.5, "② sort by segment", ha="center", va="center",
+    _top1, seg_right = draw_input_tokens(ax, 3.5)
+
+    # Stage 2: sort by segment
+    ax.text(41.0, head_y, "② sort by segment", ha="center", va="center",
             fontsize=8.0, fontweight="bold", color=INK)
-    ax.text(35.0, y0 + 26.0, "$\\mathtt{order} = \\mathtt{argsort(seg)}$",
+    ax.text(41.0, sub_y, "$\\mathtt{order} = \\mathtt{argsort(seg, stable)}$",
             ha="center", va="center", fontsize=6.8, color=MUTED)
-    top2 = draw_sorted_tokens(ax, 28.0, y0)
-    
-    # Arrow 1->2
-    arrow(ax, (seg_right + 1.0, y0 + 13.0), (27.0, y0 + 13.0))
-    
-    # Stage 3: Batched SDPA
-    ax.text(60.0, y0 + 28.5, "③ batched SDPA", ha="center", va="center",
+    draw_sorted_tokens(ax, 34.0)
+
+    # Stage 3: batched SDPA by equal length
+    ax.text(64.5, head_y, "③ batched SDPA", ha="center", va="center",
             fontsize=8.0, fontweight="bold", color=INK)
-    ax.text(60.0, y0 + 26.0, "by equal length $L$", ha="center", va="center",
-            fontsize=6.8, color=MUTED)
-    draw_batched_groups(ax, 49.0, y0 + 8.0)
-    
-    # Arrow 2->3
-    arrow(ax, (43.5, y0 + 13.0), (47.0, y0 + 13.0))
-    
-    # Stage 4: Scatter back
-    ax.text(87.0, y0 + 28.5, "④ scatter back", ha="center", va="center",
+    ax.text(64.5, sub_y, "one call per equal length $L$", ha="center",
+            va="center", fontsize=6.8, color=MUTED)
+    draw_batched_groups(ax, 58.0)
+
+    # Stage 4: scatter back
+    ax.text(91.0, head_y, "④ scatter back", ha="center", va="center",
             fontsize=8.0, fontweight="bold", color=INK)
-    ax.text(87.0, y0 + 26.0, "$\\mathtt{out[order]} = \\mathtt{out\\_sorted}$",
+    ax.text(91.0, sub_y, "$\\mathtt{out[order]} = \\mathtt{out\\_sorted}$",
             ha="center", va="center", fontsize=6.8, color=MUTED)
-    top4 = draw_output_tokens(ax, 78.0, y0)
-    
-    # Arrow 3->4
-    arrow(ax, (70.5, y0 + 13.0), (77.0, y0 + 13.0))
-    
-    # ---- equation box ----------------------------------------------------- #
-    box(ax, 98.5, y0 + 17.0, 28.0, 9.5,
+    draw_output_tokens(ax, 84.0)
+
+    # ---- inter-stage arrows (same y so the flow reads straight) ----------- #
+    arrow(ax, (seg_right + 0.6, ARROW_Y), (33.0, ARROW_Y))
+    arrow(ax, (54.5, ARROW_Y), (57.0, ARROW_Y))
+    arrow(ax, (68.0, ARROW_Y), (83.0, ARROW_Y))
+
+    # ---- right-hand side notes -------------------------------------------- #
+    box(ax, 104.0, Y0 + 17.0, 33.0, 9.5,
         "$\\mathrm{softmax}(QK^T/\\sqrt{d})V$",
         "keys $=$ values for pooling", edge=PURPLE, title_size=11,
         sub_size=6.5)
-    
-    # ---- key insight box -------------------------------------------------- #
-    rrect(ax, 98.5, y0 + 4.0, 28.0, 11.0, edge=RED, face=tint(RED, 0.92),
+
+    rrect(ax, 104.0, Y0 + 4.0, 33.0, 11.0, edge=RED, face=tint(RED, 0.92),
           lw=1.5, rounding=0.6)
-    ax.text(112.5, y0 + 12.0, "Tokens from different", ha="center", va="center",
-            fontsize=7.2, fontweight="bold", color=INK)
-    ax.text(112.5, y0 + 9.3, "segments NEVER interact", ha="center", va="center",
-            fontsize=7.2, fontweight="bold", color=INK)
-    ax.text(112.5, y0 + 5.8, "⇒ exactly per-sample /", ha="center", va="center",
-            fontsize=6.5, color=MUTED, style="italic")
-    ax.text(112.5, y0 + 4.2, "per-location attention", ha="center", va="center",
-            fontsize=6.5, color=MUTED, style="italic")
-    
-    # ---- equivalence to padded reference ---------------------------------- #
-    ax.text(65.0, 20.0, "Equivalence (cf. FlashAttention $\\mathtt{cu\\_seqlens}$)",
-            ha="center", va="center", fontsize=8.5, fontweight="bold", color=INK)
-    
-    # Segmented form on left - moved text upward to avoid overlap
-    seg_x = 40.0
-    seg_y = 5.0
-    ax.text(seg_x + 7.0, 27.0, "segmented form", ha="center", va="center",
-            fontsize=7.0, fontweight="bold", color=GREEN)
-    ax.text(seg_x + 7.0, 25.4, "(what we compute)", ha="center", va="center",
-            fontsize=6.2, color=MUTED, style="italic")
-    
-    # Mini token stack
-    w, h, pitch = 8.0, 1.8, 2.4
-    for i, c in enumerate([BLUE, BLUE, BLUE, GREEN, GREEN, ORANGE, ORANGE, ORANGE]):
-        rrect(ax, seg_x, seg_y + i * pitch, w, h, edge=c, face=tint(c, 0.8),
-              lw=1.0)
-    ax.text(seg_x + w + 0.6, seg_y + 3.5 * pitch, "$[T, D]$", ha="left", va="center",
-            fontsize=7.0, color=INK)
-    
-    # Check mark
-    ax.text(seg_x + w / 2, seg_y - 1.5, "✓", ha="center", va="center",
-            fontsize=18, color=GREEN, fontweight="bold")
-    
-    # Padded form on right - moved text upward
-    pad_x = 95.0
-    ax.text(pad_x + 6.0, 27.0, "padded $+$ mask", ha="center", va="center",
-            fontsize=7.0, fontweight="bold", color=MUTED)
-    ax.text(pad_x + 6.0, 25.4, "(never materialized)", ha="center", va="center",
-            fontsize=6.2, color=RED, style="italic")
-    draw_padded_reference(ax, pad_x, seg_y)
-    
-    # Cross mark
-    ax.text(pad_x + 5.0, seg_y - 1.5, "✗", ha="center", va="center",
+    ax.text(120.5, Y0 + 12.0, "Tokens from different", ha="center",
+            va="center", fontsize=7.2, fontweight="bold", color=INK)
+    ax.text(120.5, Y0 + 9.6, "segments NEVER interact", ha="center",
+            va="center", fontsize=7.2, fontweight="bold", color=INK)
+    ax.text(120.5, Y0 + 6.4, "⇒ exactly per-sample /", ha="center",
+            va="center", fontsize=6.5, color=MUTED, style="italic")
+    ax.text(120.5, Y0 + 5.0, "per-location attention", ha="center",
+            va="center", fontsize=6.5, color=MUTED, style="italic")
+
+    # ---- equivalence to the padded reference (aligned bottom row) --------- #
+    bot_c = 18.5
+    eq_y = 34.0
+    ax.text(63.0, eq_y,
+            "Equivalence (cf. FlashAttention $\\mathtt{cu\\_seqlens}$)",
+            ha="center", va="center", fontsize=8.5, fontweight="bold",
+            color=INK)
+
+    # segmented form (left) -- what we actually compute
+    seg_x, seg_w = 14.0, 8.0
+    seg_h, seg_pitch = 1.8, 2.4
+    seg_bottom = bot_c - (7 * seg_pitch + seg_h) / 2
+    ax.text(seg_x + seg_w / 2, eq_y - 3.5, "segmented form", ha="center",
+            va="center", fontsize=7.0, fontweight="bold", color=GREEN)
+    ax.text(seg_x + seg_w / 2, eq_y - 5.0, "(what we compute)", ha="center",
+            va="center", fontsize=6.2, color=MUTED, style="italic")
+    for i, c in enumerate([BLUE, BLUE, BLUE, GREEN, GREEN,
+                           ORANGE, ORANGE, ORANGE]):
+        rrect(ax, seg_x, seg_bottom + i * seg_pitch, seg_w, seg_h, edge=c,
+              face=tint(c, 0.8), lw=1.0)
+    ax.text(seg_x + seg_w + 0.7, seg_bottom + 3.5 * seg_pitch, "$[T, D]$",
+            ha="left", va="center", fontsize=7.0, color=INK)
+    ax.text(seg_x + seg_w / 2, seg_bottom - 2.2, "✓", ha="center",
+            va="center", fontsize=18, color=GREEN, fontweight="bold")
+
+    # padded + mask ghost (right) -- never materialised
+    pad_x = 100.0
+    pad_y0 = bot_c - 10.2 / 2
+    draw_padded_reference(ax, pad_x, pad_y0)
+    ax.text(pad_x + 5.1, eq_y - 3.5, "padded $+$ mask", ha="center",
+            va="center", fontsize=7.0, fontweight="bold", color=MUTED)
+    ax.text(pad_x + 5.1, eq_y - 5.0, "(never materialized)", ha="center",
+            va="center", fontsize=6.2, color=RED, style="italic")
+    ax.text(pad_x + 5.1, pad_y0 - 3.0, "✗", ha="center", va="center",
             fontsize=18, color=RED, fontweight="bold")
-    
-    # Equivalence arrow
-    arrow(ax, (seg_x + w + 12.0, 10.0), (pad_x - 2.0, 10.0), color=MUTED,
-          lw=1.8, dashed=True, ms=13)
-    ax.text(70.0, 11.8, "same semantics", ha="center", va="center",
+
+    # equivalence arrow between the two forms
+    arrow(ax, (27.0, bot_c), (97.5, bot_c), color=MUTED, lw=1.8,
+          dashed=True, ms=13)
+    ax.text(62.0, bot_c + 2.0, "same semantics", ha="center", va="center",
             fontsize=6.8, color=MUTED)
-    
+
     # ---- footer note ------------------------------------------------------ #
     ax.text(2.0, 1.5,
             "FlashAttention varlen / cu_seqlens idiom: no padding tokens, "
             "no $-\\infty$ mask, $O(T)$ memory.",
             ha="left", va="center", fontsize=7.0, color=MUTED, style="italic")
-    
+
     return fig
 
 
