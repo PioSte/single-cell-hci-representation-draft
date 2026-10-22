@@ -37,13 +37,11 @@ import torch
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from figure_style import (
-    BLUE,
-    GREEN,
+    FUSED,
+    FUSION,
     INK,
+    LOSS,
     MUTED,
-    ORANGE,
-    RED,
-    VIOLET,
     install_rcparams,
     save_figure,
 )
@@ -188,9 +186,9 @@ def build_figure(card_results, perm_results, pad_results,
     D = card_results[0]["D"]
     x = np.arange(len(Cs))
 
-    ax_a.plot(x, n_in, "o-", color=BLUE, linewidth=2.0, markersize=7,
-              label="input tensor  $[\\Sigma C{\\cdot}N,\\ D]$  (elements)")
-    ax_a.axhline(D, color=GREEN, ls="-", lw=2.0,
+    ax_a.plot(x, n_in, "o-", color=MUTED, linewidth=2.0, markersize=7,
+              label="input ragged list  $[\\Sigma C{\\cdot}N,\\ D]$  (elements)")
+    ax_a.axhline(D, color=FUSED, ls="-", lw=2.6,
                  label=f"descriptor  $[1,\\ D]$  = {D} elements (constant)")
 
     ax_a.set_yscale("log")
@@ -208,7 +206,7 @@ def build_figure(card_results, perm_results, pad_results,
               transform=ax_a.transAxes, ha="right", va="bottom",
               fontsize=9.2, color=INK, fontweight="bold",
               bbox=dict(boxstyle="round,pad=0.4", facecolor="white",
-                        edgecolor=GREEN, linewidth=1.5))
+                        edgecolor=FUSED, linewidth=1.5))
 
     # ---- Panel B: permutation invariance -------------------------------- #
     ax_b = fig.add_subplot(gs[0, 1])
@@ -219,14 +217,17 @@ def build_figure(card_results, perm_results, pad_results,
     for i, C in enumerate(bCs):
         vals = [r["diff"] for r in perm_results if r["C"] == C]
         jit = rng.uniform(-0.16, 0.16, size=len(vals))
-        ax_b.scatter(i + jit, vals, s=42, color=ORANGE, alpha=0.85,
+        ax_b.scatter(i + jit, vals, s=46, color=FUSION, alpha=0.9,
                      edgecolor="white", linewidth=0.6, zorder=4)
     ax_b.axhline(EPS, color=MUTED, ls="--", lw=1.3,
-                 label=f"float32 eps = {EPS:.1e}")
+                 label=f"float32 eps = {EPS:.1e} (round-off floor)")
+    ax_b.axhline(1e-6, color=LOSS, ls=":", lw=1.7,
+                 label="equivalence tol.  $10^{-6}$")
 
     perm_max = max(r["diff"] for r in perm_results)
     ax_b.set_yscale("log")
     ax_b.set_ylim(1e-9, 1e-5)
+    ax_b.set_xlim(-0.5, len(bCs) - 0.5)
     ax_b.set_xticks(range(len(bCs)))
     ax_b.set_xticklabels([f"{C}" for C in bCs])
     ax_b.set_xlabel("Channel count $C$", fontsize=10, fontweight="bold")
@@ -241,7 +242,7 @@ def build_figure(card_results, perm_results, pad_results,
               transform=ax_b.transAxes, ha="right", va="top", fontsize=9,
               color=INK,
               bbox=dict(boxstyle="round,pad=0.4", facecolor="white",
-                        edgecolor=ORANGE, linewidth=1.5))
+                        edgecolor=FUSION, linewidth=1.5))
 
     # ---- Panel C: padding-free == masked-padded ------------------------- #
     ax_c = fig.add_subplot(gs[1, 0])
@@ -251,14 +252,16 @@ def build_figure(card_results, perm_results, pad_results,
     xs = np.arange(len(pad_diffs))
     floor = 1.6e-9  # log-axis floor for bit-exact (0.0) comparisons
     nonzero = pad_diffs > 0
-    ax_c.scatter(xs[nonzero], pad_diffs[nonzero], s=52, color=VIOLET,
-                 alpha=0.85, edgecolor="white", linewidth=0.6, zorder=5,
+    ax_c.scatter(xs[nonzero], pad_diffs[nonzero], s=52, color=FUSED,
+                 alpha=0.9, edgecolor="white", linewidth=0.6, zorder=5,
                  label="padding-free vs dense ref.")
     ax_c.scatter(xs[~nonzero], np.full((~nonzero).sum(), floor), s=52,
-                 facecolor="none", edgecolor=VIOLET, linewidth=1.6, zorder=5,
+                 facecolor="none", edgecolor=FUSED, linewidth=1.6, zorder=5,
                  label=f"bit-exact (0.0, at {floor:.0e})")
     ax_c.axhline(EPS, color=MUTED, ls="--", lw=1.3,
                  label=f"float32 eps = {EPS:.1e}")
+    ax_c.axhline(1e-6, color=LOSS, ls=":", lw=1.7,
+                 label="equivalence tol.  $10^{-6}$")
 
     pad_max = float(pad_diffs.max())
     n_exact = int((~nonzero).sum())
@@ -280,17 +283,17 @@ def build_figure(card_results, perm_results, pad_results,
               transform=ax_c.transAxes, ha="right", va="top", fontsize=9,
               color=INK,
               bbox=dict(boxstyle="round,pad=0.4", facecolor="white",
-                        edgecolor=VIOLET, linewidth=1.5))
+                        edgecolor=FUSED, linewidth=1.5))
 
     # ---- Panel D: cost -------------------------------------------------- #
     ax_d = fig.add_subplot(gs[1, 1])
     header(ax_d, "D", "Cost per location \u2014 $O(C^2)$ vs $O(C)$")
 
-    ax_d.loglog(Cs_cost, cost_attn, "-", color=BLUE, linewidth=2.4,
+    ax_d.loglog(Cs_cost, cost_attn, "-", color=FUSED, linewidth=2.6,
                 label="ChannelFusion fixed-query PMA  ($O(C)$)")
-    ax_d.loglog(Cs_cost, cost_hyper, "-", color=GREEN, linewidth=2.4,
+    ax_d.loglog(Cs_cost, cost_hyper, "-", color=FUSION, linewidth=2.6,
                 label="HypernetworkWeightedSum  ($O(C)$)")
-    ax_d.loglog(Cs_cost, cost_dense, "--", color=RED, linewidth=2.4,
+    ax_d.loglog(Cs_cost, cost_dense, "--", color=LOSS, linewidth=2.6,
                 label="dense $C{\\times}C$ channel attention  ($O(C^2)$)")
 
     ax_d.set_xlabel("Channel count $C$", fontsize=10, fontweight="bold")
@@ -302,7 +305,7 @@ def build_figure(card_results, perm_results, pad_results,
 
     C_end = Cs_cost[-1]
     ratio = cost_dense[-1] / cost_hyper[-1]
-    ax_d.text(0.97, 0.36,
+    ax_d.text(0.97, 0.16,
               f"at $C$={C_end}: dense $C{{\\times}}C$ is\n"
               f"{ratio:.1f}$\\times$ the hypernetwork\n"
               "both trade-offs are $O(C)$;\n"
@@ -310,7 +313,7 @@ def build_figure(card_results, perm_results, pad_results,
               transform=ax_d.transAxes, ha="right", va="center", fontsize=8.4,
               color=INK,
               bbox=dict(boxstyle="round,pad=0.4", facecolor="white",
-                        edgecolor=RED, linewidth=1.4))
+                        edgecolor=LOSS, linewidth=1.4))
 
     return fig
 

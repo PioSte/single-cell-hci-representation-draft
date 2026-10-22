@@ -11,12 +11,11 @@ Shows:
 2. ragged token list ``[ΣC·N, D]`` with the ``(b, c, n)`` index triple annotated
 3. the per-``(b,n)`` attention grouping highlighted (box round C tokens)
 4. fused ``[B, N, D]`` grid after channel fusion
-5. encoder memory ``[B·M, D]`` (fixed) + visible tokens ``[Kf, D]``
-6. decoder target queries ``[Kt, D]`` -> predicted pixels ``[Kt, P²]``
+5. encoder module ``[B·M, D]`` memory (gold) + ``[K_f, D]`` visible tokens
+6. decoder target queries ``[K_t, D]`` -> predicted pixels ``[K_t, P²]``
 7. inference branch: pooled descriptor ``[B, D]``
-
-Plus the ghost ``[B, C_max, N, D]`` tensor (dashed, slashed red) that is never
-materialised, with a note that C is fused away.
+8. the ghost ``[B, C_max, N, D]`` tensor (dashed, struck) that is never
+   materialised, plus role / channel legends and a faithful note.
 
 Usage::
 
@@ -35,8 +34,10 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 from figure_style import (  # noqa: E402
-    BLUE, ORANGE, RED, VIOLET, INK, MUTED, CHANNEL_COLORS,
+    GREEN, FUSION, ENCODER, MEMORY, LOSS, FUSED, VIOLET, INK, MUTED,
+    CHANNEL_COLORS,
     tint, rrect, arrow, edge_label, sq_bracket, token_rows, grid_cells,
+    role_legend, channel_legend, padded_ghost,
     install_rcparams, save_figure,
 )
 
@@ -47,7 +48,7 @@ YMID = 30.5
 
 
 # --------------------------------------------------------------------------- #
-# Small local helper: horizontal bracket (for the D / N axis of a stack)
+# Small local helpers: vertical / horizontal brackets and axis text
 # --------------------------------------------------------------------------- #
 def h_bracket(ax, x0, x1, y, color=MUTED, lw=1.1, tick=0.55, down=True):
     """Horizontal square bracket spanning ``x0..x1`` at height ``y``."""
@@ -74,13 +75,17 @@ def axis_text(ax, x, y, text, color=INK, size=7.5, rotation=0, ha="center",
 # Array stacks
 # --------------------------------------------------------------------------- #
 def draw_input_images(ax):
-    """Ragged set of single-channel images [ΣC, 1, H, W]."""
+    """Ragged set of single-channel images [ΣC, 1, H, W].
+
+    Tiles use ``channel_color(i)`` with the level-1 vertical order (marker 0 at
+    the top); the variable axis is the stack height.
+    """
     x, cw, pitch = 2.2, 4.2, 4.4
-    n = 5
+    n = len(CHANNEL_COLORS)
     y0 = YMID - ((n - 1) * pitch + cw) / 2.0
     for i in range(n):
         c = CHANNEL_COLORS[i]
-        yy = y0 + i * pitch
+        yy = y0 + (n - 1 - i) * pitch  # marker 0 at the top, like L1
         rrect(ax, x, yy, cw, cw, edge=c, face=tint(c, 0.72), lw=1.5, z=3)
         ax.plot([x + 0.8, x + cw - 0.8], [yy + 0.9, yy + cw - 0.9],
                 color=c, lw=0.9, alpha=0.6, zorder=4)
@@ -88,12 +93,19 @@ def draw_input_images(ax):
                 color=c, lw=0.9, alpha=0.4, zorder=4)
 
     top = y0 + (n - 1) * pitch + cw
+    ax.text(x + cw + 0.7, top - 1.6, "$\\vdots$", ha="left", va="center",
+            fontsize=10, color=MUTED)
+    ax.text(x + cw + 0.7, y0 + 1.6, "$\\vdots$", ha="left", va="center",
+            fontsize=10, color=MUTED)
+
     sq_bracket(ax, x - 0.7, y0, top, color=MUTED, lw=1.1, tick=0.55)
     axis_text(ax, x - 1.7, (y0 + top) / 2, "$\\Sigma C$", rotation=90)
     h_bracket(ax, x, x + cw, top + 0.6, color=MUTED, down=True)
     axis_text(ax, x + cw / 2, top + 1.6, "$1{\\times}H{\\times}W$", size=7.5)
-    ax.text(x + cw / 2, y0 - 1.1, "input", ha="center", va="center",
+    ax.text(x + cw / 2, y0 - 1.1, "input set", ha="center", va="center",
             fontsize=7.8, fontweight="bold", color=INK)
+    ax.text(x + cw / 2, y0 - 2.7, "$P{\\times}P$ patches $\\to N$", ha="center",
+            va="center", fontsize=6.2, color=MUTED)
 
 
 def _token_column(ax, x, w, h, pitch, n_rows, specs):
@@ -102,16 +114,20 @@ def _token_column(ax, x, w, h, pitch, n_rows, specs):
     return y0, top
 
 
-def draw_ragged_tokens(ax):
-    """Ragged token list [ΣC·N, D] with (b,c,n) annotation."""
-    x, w, h, pitch, n = 11.5, 9.0, 2.0, 2.3, 9
+def _ragged_specs(n):
     specs = []
     for i in range(n):
         if i == 6:
             specs.append((MUTED, True))  # omitted row -> masked by DCP
         else:
             specs.append((CHANNEL_COLORS[(i // 3) % len(CHANNEL_COLORS)], False))
-    y0, top = _token_column(ax, x, w, h, pitch, n, specs)
+    return specs
+
+
+def draw_ragged_tokens(ax):
+    """Ragged token list [ΣC·N, D] with (b,c,n) annotation."""
+    x, w, h, pitch, n = 11.5, 9.0, 2.0, 2.3, 9
+    y0, top = _token_column(ax, x, w, h, pitch, n, _ragged_specs(n))
 
     # (b, c, n) index-triple annotation just right of the stack (not on cells)
     anno_y = y0 + 1 * pitch + h / 2
@@ -119,93 +135,103 @@ def draw_ragged_tokens(ax):
             fontsize=6.5, color=INK, style="italic", zorder=5)
 
     sq_bracket(ax, x - 0.7, y0, top, color=MUTED, lw=1.1, tick=0.55)
-    axis_text(ax, x - 1.7, y0 + 0.30 * (top - y0), "$\\Sigma C{\\cdot}N$", rotation=90)
+    axis_text(ax, x - 1.7, y0 + 0.30 * (top - y0), "$\\Sigma C{\\cdot}N$",
+              rotation=90)
     h_bracket(ax, x, x + w, top + 0.6, color=MUTED, down=True)
     axis_text(ax, x + w / 2, top + 1.6, "$D$", size=7.5)
     ax.text(x + w / 2, y0 - 1.1, "ragged tokens", ha="center", va="center",
             fontsize=7.8, fontweight="bold", color=INK)
+    ax.text(x + w / 2, y0 - 2.7, "solid primary object", ha="center",
+            va="center", fontsize=6.2, color=MUTED, style="italic")
 
 
 def draw_channel_grouping(ax):
     """Highlight the per-(b,n) grouping with a box around C tokens."""
     x, w, h, pitch, n = 25.5, 9.0, 2.0, 2.3, 9
-    specs = []
-    for i in range(n):
-        if i == 6:
-            specs.append((MUTED, True))
-        else:
-            specs.append((CHANNEL_COLORS[(i // 3) % len(CHANNEL_COLORS)], False))
-    y0, top = _token_column(ax, x, w, h, pitch, n, specs)
+    y0, top = _token_column(ax, x, w, h, pitch, n, _ragged_specs(n))
 
-    # Highlight box around 3 consecutive tokens (one location's channels)
+    # FUSION-tinted box around 3 consecutive tokens (one location's channels)
     group_start, group_n = 3, 3
     gy0 = y0 + group_start * pitch - 0.3
     gh = group_n * pitch + 0.6
-    rrect(ax, x - 0.4, gy0, w + 0.8, gh, edge=RED, face="none", lw=2.0,
+    rrect(ax, x - 0.4, gy0, w + 0.8, gh, edge=FUSION, face="none", lw=2.0,
           dashed=False, rounding=0.5, z=4)
 
     sq_bracket(ax, x - 0.7, y0, top, color=MUTED, lw=1.1, tick=0.55)
-    axis_text(ax, x - 1.7, y0 + 0.30 * (top - y0), "$\\Sigma C{\\cdot}N$", rotation=90)
+    axis_text(ax, x - 1.7, y0 + 0.30 * (top - y0), "$\\Sigma C{\\cdot}N$",
+              rotation=90)
     h_bracket(ax, x, x + w, top + 0.6, color=MUTED, down=True)
     axis_text(ax, x + w / 2, top + 1.6, "$D$", size=7.5)
-    ax.text(x + w / 2, y0 - 1.1, "grouped by location", ha="center", va="center",
-            fontsize=7.8, fontweight="bold", color=INK)
-    ax.text(x + w / 2, y0 - 3.1, "pool over $C$ channels at $(b,n)$",
-            ha="center", va="center", fontsize=6.3, color=RED)
+    ax.text(x + w / 2, y0 - 1.1, "grouped by location", ha="center",
+            va="center", fontsize=7.8, fontweight="bold", color=INK)
+    ax.text(x + w / 2, y0 - 2.55, "pool over $C$ channels at $(b,n)$",
+            ha="center", va="center", fontsize=6.3, color=FUSION)
 
 
 def draw_fused_grid(ax):
-    """Fused [B, N, D] grid."""
+    """Fused [B, N, D] grid (FUSED blue)."""
     x0, cw, pitch = 42.5, 2.4, 2.7
     B, N = 4, 5
     gh = (B - 1) * pitch + cw
     y0 = YMID - gh / 2.0
-    top, right = grid_cells(ax, x0, y0, B, N, cw, pitch, edge=BLUE,
-                            face=tint(BLUE, 0.76), lw=1.1, rounding=0.25, z=3)
+    top, right = grid_cells(ax, x0, y0, B, N, cw, pitch, edge=FUSED,
+                            face=tint(FUSED, 0.76), lw=1.1, rounding=0.25, z=3)
 
     h_bracket(ax, x0, right, top + 0.6, color=MUTED, down=True)
     axis_text(ax, (x0 + right) / 2, top + 1.6, "$N$", size=7.5)
     sq_bracket(ax, x0 - 0.7, y0, top, color=MUTED, lw=1.1, tick=0.55)
     axis_text(ax, x0 - 1.7, (y0 + top) / 2, "$B$", rotation=90)
-    axis_text(ax, right + 0.9, top - 0.6, "$D$", ha="left", size=7.5)
-    ax.text((x0 + right) / 2, y0 - 1.1, "fused", ha="center", va="center",
-            fontsize=7.8, fontweight="bold", color=INK)
+    axis_text(ax, right + 0.9, top - 0.5, "$D$", ha="left", size=7.5)
+    ax.text(right + 0.9, top - 2.0, "$Q{\\cdot}D\\to D$", ha="left",
+            fontsize=6.0, color=MUTED)
+    ax.text((x0 + right) / 2, y0 - 1.1, "fused $[B,N,D]$", ha="center",
+            va="center", fontsize=7.8, fontweight="bold", color=INK)
 
 
 def draw_encoder_memory(ax):
-    """Encoder: [B·M, D] memory + [Kf, D] visible tokens."""
+    """Encoder module: [B·M, D] gold memory + [K_f, D] blue visible tokens."""
     x, w, h, pitch = 62.5, 9.0, 1.9, 2.2
     n_mem, n_vis = 3, 4
     n = n_mem + n_vis
     y0 = YMID - ((n - 1) * pitch + h) / 2.0
 
     for i in range(n_mem):
-        rrect(ax, x, y0 + i * pitch, w, h, edge=ORANGE, face=tint(ORANGE, 0.80),
+        rrect(ax, x, y0 + i * pitch, w, h, edge=MEMORY, face=tint(MEMORY, 0.80),
               lw=1.2, rounding=0.3, z=3)
     for i in range(n_vis):
-        rrect(ax, x, y0 + (n_mem + i) * pitch, w, h, edge=BLUE,
-              face=tint(BLUE, 0.80), lw=1.2, rounding=0.3, z=3)
+        rrect(ax, x, y0 + (n_mem + i) * pitch, w, h, edge=FUSED,
+              face=tint(FUSED, 0.80), lw=1.2, rounding=0.3, z=3)
     top = y0 + (n - 1) * pitch + h
 
-    h_bracket(ax, x, x + w, top + 0.6, color=MUTED, down=True)
-    axis_text(ax, x + w / 2, top + 1.6, "$D$", size=7.5)
+    # ENCODER-tinted dashed module frame so the role colour reads.
+    rrect(ax, x - 0.4, y0 - 0.6, w + 0.9, (top - y0) + 1.2, edge=ENCODER,
+          face="none", lw=1.4, dashed=True, rounding=0.6, z=2)
+
+    h_bracket(ax, x, x + w, top + 1.3, color=MUTED, down=True)
+    axis_text(ax, x + w / 2, top + 2.2, "$D$", size=7.5)
+
+    # module title / role sits above the frame, clear of the flow arrows
+    ax.text(x + w / 2, top + 4.6, "encoder $\\cdot$ SpatialTransformer",
+            ha="center", va="center", fontsize=7.8, fontweight="bold",
+            color=INK)
+    ax.text(x + w / 2, top + 3.35, "$+M$ memory tokens $\\cdot\\ \\times L$ blocks",
+            ha="center", va="center", fontsize=6.3, color=ENCODER)
 
     mem_top = y0 + (n_mem - 1) * pitch + h
-    sq_bracket(ax, x - 0.7, y0, mem_top, color=ORANGE, lw=1.1, tick=0.55)
-    axis_text(ax, x - 1.9, (y0 + mem_top) / 2, "$B{\\cdot}M$", color=ORANGE,
+    sq_bracket(ax, x - 1.0, y0, mem_top, color=MEMORY, lw=1.1, tick=0.55)
+    axis_text(ax, x - 2.1, (y0 + mem_top) / 2, "$B{\\cdot}M$", color=MEMORY,
               rotation=90, size=7.0)
+    ax.text(x + w + 1.2, (y0 + mem_top) / 2, "$M$", ha="left", va="center",
+            fontsize=6.8, color=MEMORY)
 
     vis_y0 = y0 + n_mem * pitch
-    sq_bracket(ax, x - 0.7, vis_y0, top, color=BLUE, lw=1.1, tick=0.55)
-    axis_text(ax, x - 1.9, (vis_y0 + top) / 2, "$K_f$", color=BLUE,
+    sq_bracket(ax, x - 1.0, vis_y0, top, color=FUSED, lw=1.1, tick=0.55)
+    axis_text(ax, x - 2.1, (vis_y0 + top) / 2, "$K_f$", color=FUSED,
               rotation=90, size=7.0)
-
-    ax.text(x + w / 2, y0 - 1.1, "encoder", ha="center", va="center",
-            fontsize=7.8, fontweight="bold", color=INK)
 
 
 def draw_decoder_targets(ax):
-    """Decoder: [Kt, D] queries -> [Kt, P²] predictions."""
+    """Decoder: [Kt, D] queries -> [Kt, P²] predictions (DECODER violet)."""
     x, w, h, pitch = 78.0, 7.0, 1.9, 2.2
     n = 4
     y0 = YMID - ((n - 1) * pitch + h) / 2.0
@@ -240,12 +266,12 @@ def draw_decoder_targets(ax):
 
 
 def draw_inference_pooled(ax):
-    """Inference: pooled descriptor [B, D] branching off the encoder."""
+    """Inference branch: pooled descriptor [B, D] below the encoder."""
     x, w, h, pitch = 63.0, 8.0, 2.0, 2.5
     B = 4
-    y0 = 6.0
+    y0 = 5.6
     for i in range(B):
-        rrect(ax, x, y0 + i * pitch, w, h, edge=BLUE, face=tint(BLUE, 0.76),
+        rrect(ax, x, y0 + i * pitch, w, h, edge=FUSED, face=tint(FUSED, 0.76),
               lw=1.1, rounding=0.25, z=3)
     top = y0 + (B - 1) * pitch + h
 
@@ -253,33 +279,55 @@ def draw_inference_pooled(ax):
     axis_text(ax, x - 1.7, (y0 + top) / 2, "$B$", rotation=90)
     h_bracket(ax, x, x + w, top + 0.6, color=MUTED, down=True)
     axis_text(ax, x + w / 2, top + 1.6, "$D$", size=7.5)
-    ax.text(x + w / 2, y0 - 1.1, "pooled", ha="center", va="center",
+    ax.text(x + w / 2, y0 - 1.1, "pooled descriptor", ha="center", va="center",
             fontsize=7.8, fontweight="bold", color=INK)
 
-    # dashed inference branch: encoder bottom -> pooled top-left
-    arrow(ax, (63.5, 22.95), (64.8, top + 0.4), color=BLUE, lw=1.3,
-          dashed=True, rad=-0.10)
-    ax.text(x + 1.2, (22.95 + top) / 2 + 0.2, "inference\npool", ha="right",
-            va="center", fontsize=6.3, color=BLUE, style="italic",
+    # dashed inference branch: encoder bottom -> pooled top-left (clear of the
+    # centred $D$ label)
+    cx = x + w / 2
+    arrow(ax, (cx, 22.3), (x + 1.0, top + 0.55), color=FUSED, lw=1.3,
+          dashed=True, rad=-0.15)
+    ax.text(cx + 0.8, (22.3 + top) / 2, "inference\npool", ha="left",
+            va="center", fontsize=6.3, color=FUSED, style="italic",
             linespacing=1.2)
 
 
 def draw_ghost_padded(ax):
     """The ghost [B, C_max, N, D] tensor that is never materialised."""
-    x, y0, w, h = 2.5, 3.5, 21.5, 12.0
+    padded_ghost(ax, 2.5, 3.4, 21.5, 11.2,
+                 shape="$[B,\\,C_{\\max},\\,N,\\,D]$",
+                 note="never materialised", color=MUTED, z=1)
 
-    rrect(ax, x, y0, w, h, edge=MUTED, face="#F8F8F8", lw=1.8, dashed=True,
-          rounding=0.7, z=1)
 
-    # red slash (bottom-left -> top-right); labels placed clear of it
-    ax.plot([x + 1.5, x + w - 1.5], [y0 + 1.5, y0 + h - 1.5],
-            color=RED, lw=2.8, alpha=0.9, zorder=5)
+def draw_legends(ax):
+    """Fill the empty bottom band with role + channel legends and a note."""
+    role_legend(
+        ax, 27.0, 16.1,
+        [("front-end patch embed", GREEN),
+         ("channel fusion", FUSION),
+         ("spatial transformer", ENCODER),
+         ("memory / register tokens", MEMORY),
+         ("fused tokens $[B,N,D]$", FUSED),
+         ("decoder / targets", VIOLET),
+         ("omitted row (masked)", LOSS)],
+        title="module roles", pitch=1.78, sw=1.15, fontsize=6.2,
+        title_size=6.8,
+    )
+    channel_legend(
+        ax, 47.0, 16.1, n=len(CHANNEL_COLORS), title="channel identity",
+        labels=[f"marker {i}" for i in range(len(CHANNEL_COLORS))],
+        pitch=1.78, sw=1.15, fontsize=6.2, title_size=6.8,
+    )
 
-    ax.text(x + 0.6, y0 + h - 1.7, "$[B, C_{\\max}, N, D]$", ha="left",
-            va="center", fontsize=8.3, color=MUTED, fontweight="bold", zorder=6)
-    ax.text(x + w - 0.6, y0 + 1.7, "never materialised", ha="right",
-            va="center", fontsize=6.8, color=RED, style="italic",
-            fontweight="bold", zorder=6)
+    ax.text(48.5, 20.7,
+            "Channel count $C$ lives only in the input length $\\Sigma C{\\cdot}N$.\n"
+            "Fusion pools the $C$ channel tokens at each $(b,n)$ with $Q$ shared\n"
+            "queries: $O(Q{\\cdot}C{\\cdot}D)$ per location, i.e. $O(C)$ for $Q{=}1$.\n"
+            "The output is fixed-size $[B,N,D]$; omitted rows are masked, never zeroed.",
+            ha="center", va="center", fontsize=6.5, color=MUTED, style="italic",
+            linespacing=1.45,
+            bbox=dict(boxstyle="round,pad=0.5", facecolor="white",
+                      edgecolor=MUTED, linewidth=0.9))
 
 
 # --------------------------------------------------------------------------- #
@@ -313,6 +361,7 @@ def build() -> plt.Figure:
     draw_decoder_targets(ax)
     draw_inference_pooled(ax)
     draw_ghost_padded(ax)
+    draw_legends(ax)
 
     # ---- main dataflow arrows (all on the shared centre line) ------------- #
     arrow(ax, (6.9, YMID), (11.1, YMID), lw=1.5)
@@ -320,22 +369,14 @@ def build() -> plt.Figure:
 
     arrow(ax, (21.0, YMID), (25.1, YMID), lw=1.5)
 
-    arrow(ax, (35.0, YMID), (42.1, YMID), lw=1.5, color=RED)
-    edge_label(ax, 38.5, YMID + 1.4, "channel\nfusion", size=6.5, color=RED)
+    arrow(ax, (35.0, YMID), (42.1, YMID), lw=1.5, color=FUSION)
+    edge_label(ax, 38.5, YMID + 1.4, "channel\nfusion", size=6.5, color=FUSION)
 
-    arrow(ax, (56.2, YMID), (62.1, YMID), lw=1.5)
-    edge_label(ax, 59.1, YMID + 1.4, "enc", size=6.5)
+    arrow(ax, (56.2, YMID), (62.0, YMID), lw=1.5)
+    edge_label(ax, 58.8, YMID + 1.4, "enc", size=6.5)
 
-    arrow(ax, (71.9, YMID), (77.6, YMID), lw=1.5, color=VIOLET)
-    edge_label(ax, 74.7, YMID + 1.4, "dec", size=6.5, color=VIOLET)
-
-    # ---- key note --------------------------------------------------------- #
-    ax.text(45.0, 11.5,
-            "Note: $C$ appears only in the input set length $\\Sigma C{\\cdot}N$; channel\n"
-            "fusion sums it away at each $(b,n)$ so the output is fixed-size $[B,N,D]$.",
-            ha="center", va="center", fontsize=7.3, color=MUTED, style="italic",
-            bbox=dict(boxstyle="round,pad=0.55", facecolor="white",
-                      edgecolor=MUTED, linewidth=1.0))
+    arrow(ax, (72.4, YMID), (77.6, YMID), lw=1.5, color=VIOLET)
+    edge_label(ax, 75.0, YMID + 1.4, "dec", size=6.5, color=VIOLET)
 
     return fig
 

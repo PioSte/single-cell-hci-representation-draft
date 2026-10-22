@@ -9,7 +9,13 @@ from *where the model sits in the literature* down to *the attention primitive*.
 They share one design system so they read as one authored set:
 
 * `figure_style.py` — the palette (Okabe-Ito), module-box / arrow / array-stack
-  primitives, the marker colour table, and the `save_figure` helper.
+  primitives, the marker colour table, and the `save_figure` helper. It also
+  exposes a shared **role palette** so the same architecture role always gets
+  the same colour in every level (`FRONTEND` green, `FUSION` orange, `ENCODER`
+  pink, `DECODER` violet, `MEMORY` gold, `LOSS` red, `FUSED` blue, `POOL` sky,
+  `GHOST` muted), plus `legend` / `role_legend` / `channel_legend` and
+  `padded_ghost` helpers. Per-marker colours stay in `CHANNEL_COLORS` and are
+  used only for the channel axis (image tiles and channel-patch token rows).
 * `figure_facts.md` — the authoritative tensor shapes and semantics each figure
   must draw, read from `src/fuse_channels/`. Every figure is built from this.
 

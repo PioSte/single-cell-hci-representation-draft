@@ -28,9 +28,10 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 from figure_style import (  # noqa: E402  (sibling module, run from viz/)
-    BLUE, GREEN, ORANGE, RED, PURPLE, VIOLET, INK, MUTED, CHANNEL_COLORS,
+    FRONTEND, FUSION, ENCODER, DECODER, MEMORY, LOSS, FUSED, POOL,
+    INK, MUTED, CHANNEL_COLORS,
     tint, rrect, box, arrow, edge_label, sq_bracket, install_rcparams,
-    save_figure,
+    save_figure, role_legend, channel_legend, padded_ghost,
 )
 
 OUT = Path(__file__).resolve().parent / "out"
@@ -39,6 +40,21 @@ OUT.mkdir(parents=True, exist_ok=True)
 # Vertical centre of the whole training track: every array stack is centred here
 # and every main-flow arrow runs along this line.
 YMID = 46.0
+
+
+# --------------------------------------------------------------------------- #
+# Small local helper
+# --------------------------------------------------------------------------- #
+def dim_extent(ax, x, y, w, text="$D$", color=MUTED):
+    """Horizontal double arrow marking the embedding width ``D`` of a stack."""
+    ax.annotate(
+        "", xy=(x, y), xytext=(x + w, y),
+        arrowprops=dict(arrowstyle="<->", color=color, lw=0.9,
+                        shrinkA=0.0, shrinkB=0.0),
+        zorder=5,
+    )
+    ax.text(x + w / 2, y - 1.4, text, ha="center", va="center",
+            fontsize=6.4, color=color, zorder=6)
 
 
 # --------------------------------------------------------------------------- #
@@ -71,20 +87,25 @@ def draw_input_set(ax):
 
 
 def draw_ragged_tokens(ax):
-    """Flattened ``[sum C . N, D]`` token set -- one row per channel-patch."""
-    x, w, h, pitch, rows = 41.0, 10.5, 2.6, 3.4, 8
+    """Flattened ``[sum C . N, D]`` token set -- one row per channel-patch.
+
+    Row colours follow the input marker colours; the DCP-omitted row is drawn
+    as a dashed white row with the LOSS red edge (absent, never zeroed).
+    """
+    x, w, h, pitch, rows = 41.0, 10.5, 2.4, 3.0, 10
     total = (rows - 1) * pitch + h
     y0 = YMID - total / 2
+    omit = 2
     for i in range(rows):
         yy = y0 + i * pitch
-        c = CHANNEL_COLORS[(i // 2) % len(CHANNEL_COLORS)]
-        omitted = i == 5
-        rrect(ax, x, yy, w, h, edge=c,
+        c = CHANNEL_COLORS[((rows - 1 - i) // 2) % len(CHANNEL_COLORS)]
+        omitted = i == omit
+        rrect(ax, x, yy, w, h, edge=(LOSS if omitted else c),
               face=("#FFFFFF" if omitted else tint(c, 0.8)),
-              lw=1.2, dashed=omitted)
+              lw=1.4 if omitted else 1.2, dashed=omitted)
         if omitted:
             ax.text(x + w / 2, yy + h / 2, "omitted row (DCP)", ha="center",
-                    va="center", fontsize=6.0, color=RED, style="italic",
+                    va="center", fontsize=6.0, color=LOSS, style="italic",
                     zorder=4)
     top = y0 + total
     sq_bracket(ax, x + w + 1.0, y0, top)
@@ -92,6 +113,7 @@ def draw_ragged_tokens(ax):
             ha="left", va="center", fontsize=8.0, color=INK)
     ax.text(x + w / 2, top + 2.6, "ragged token set", ha="center", va="center",
             fontsize=8.4, fontweight="bold", color=INK)
+    dim_extent(ax, x, y0 - 1.8, w)
 
 
 def draw_joint_grid(ax, x0=79.0):
@@ -103,49 +125,53 @@ def draw_joint_grid(ax, x0=79.0):
     for b in range(B):
         for n in range(N):
             rrect(ax, x0 + n * pitch, y0 + b * pitch, cell, cell,
-                  edge=BLUE, face=tint(BLUE, 0.72), lw=1.1, rounding=0.3)
+                  edge=FUSED, face=tint(FUSED, 0.72), lw=1.1, rounding=0.3)
     top = y0 + gh
-    ax.text(x0 + (N - 1) * pitch / 2 + cell / 2, top + 1.0, "$N$ patches",
-            ha="center", va="center", fontsize=6.6, color=MUTED)
-    ax.text(x0 - 0.7, YMID - 3.2, "$B$", ha="right", va="center",
+    cx = x0 + (N - 1) * pitch / 2 + cell / 2
+    ax.text(cx, top + 1.0, "$N$ patches", ha="center", va="center",
             fontsize=6.6, color=MUTED)
-    ax.text(x0 + (N - 1) * pitch / 2 + cell / 2, top + 5.4, "joint embeddings",
-            ha="center", va="center", fontsize=8.4, fontweight="bold", color=INK)
-    ax.text(x0 + (N - 1) * pitch / 2 + cell / 2, top + 3.1, "$[\\,B,\\,N,\\,D\\,]$",
-            ha="center", va="center", fontsize=6.4, color=BLUE)
+    ax.text(x0 - 0.6, top + 1.0, "$B$", ha="right", va="center",
+            fontsize=6.6, color=MUTED)
+    ax.text(cx, top + 5.4, "joint embeddings", ha="center", va="center",
+            fontsize=8.4, fontweight="bold", color=INK)
+    ax.text(cx, top + 3.1, "$[\\,B,\\,N,\\,D\\,]$", ha="center", va="center",
+            fontsize=6.4, color=FUSED)
+    dim_extent(ax, x0, y0 - 1.8, (N - 1) * pitch + cell)
     return x0 + (N - 1) * pitch + cell
 
 
 def draw_encoded(ax, x=124.0):
-    """``[B . M + K_f, D]`` -- fixed-count memory + visible tokens."""
-    w, h, pitch = 10.5, 2.6, 3.4
-    rows = [("tok", BLUE)] * 5 + [("mem", ORANGE)] * 2
+    """``[B . M + K_f, D]`` -- fixed memory rows + visible fused tokens."""
+    w, h, pitch = 10.5, 2.4, 3.0
+    rows = [("tok", FUSED)] * 5 + [("mem", MEMORY)] * 2
     total = (len(rows) - 1) * pitch + h
     y0 = YMID - total / 2
-    for i, (kind, c) in enumerate(rows):
+    for i, (_kind, c) in enumerate(rows):
         yy = y0 + i * pitch
         rrect(ax, x, yy, w, h, edge=c, face=tint(c, 0.8), lw=1.2)
     top = y0 + total
     sq_bracket(ax, x + w + 1.0, y0, top)
     ax.text(x + w / 2, top + 2.0, "$[\\,B\\cdot M + K_f,\\; D\\,]$",
             ha="center", va="center", fontsize=7.4, color=INK)
-    ax.text(x + w / 2, top + 4.6, "encoder memory", ha="center", va="center",
+    ax.text(x + w / 2, top + 4.6, "encoder tokens", ha="center", va="center",
             fontsize=8.4, fontweight="bold", color=INK)
-    ax.text(x - 0.8, y0 + 5.8 * pitch + h / 2, "$M$", ha="right", va="center",
-            fontsize=6.2, color=ORANGE)
+    ax.text(x - 0.8, y0 + 5.5 * pitch + h / 2, "$M$", ha="right", va="center",
+            fontsize=6.2, color=MEMORY)
     ax.text(x - 0.8, y0 + 2 * pitch + h / 2, "$K_f$", ha="right", va="center",
-            fontsize=6.2, color=BLUE)
+            fontsize=6.2, color=FUSED)
+    dim_extent(ax, x, y0 - 1.8, w)
+    return x, y0, top
 
 
 def draw_output(ax, x, w=21.0):
     """``[K_t, P^2]`` predicted pixels for the omitted channel-patches."""
     h, pitch, rows = 2.6, 3.5, 4
     total = (rows - 1) * pitch + h
-    y0 = 31.0 - total          # top of the stack sits at y = 31
+    top = 31.0
+    y0 = top - total
     for i in range(rows):
-        rrect(ax, x, y0 + i * pitch, w, h, edge=VIOLET,
-              face=tint(VIOLET, 0.82), lw=1.2)
-    top = y0 + total
+        rrect(ax, x, y0 + i * pitch, w, h, edge=DECODER,
+              face=tint(DECODER, 0.82), lw=1.2)
     return top, y0
 
 
@@ -174,25 +200,25 @@ def build() -> plt.Figure:
     draw_input_set(ax)
     draw_ragged_tokens(ax)
     grid_right = draw_joint_grid(ax)
-    draw_encoded(ax)
+    enc_x, enc_y0, enc_top = draw_encoded(ax)
 
     # ---- module boxes (all centred on YMID) ------------------------------- #
     box(ax, 15, YMID - 7.5, 22, 15, "Channel-tied patch embed",
         "shared Conv $1{\\to}D$, stride $P$\n$+$ shared spatial pos $+\\, z_c$",
-        edge=GREEN, sub_size=6.4)
+        edge=FRONTEND, sub_size=6.4)
     box(ax, 56, YMID - 7.5, 19, 15, "Channel fusion",
         "pool over channel axis\nper $(b,n)$ location\nfixed-query PMA $O(C)$ · hypernet $O(C)$",
-        edge=RED, sub_size=5.9)
+        edge=FUSION, sub_size=5.9)
     box(ax, 95, YMID - 7.5, 24, 15, "Spatial transformer",
         "grouped self-attention\nover real tokens\n$+M$ fixed memory tokens",
-        edge=PURPLE, sub_size=6.1)
+        edge=ENCODER, sub_size=6.1)
     box(ax, 138, YMID - 7.5, 21, 15, "Channel-aware decoder",
         "one shared decoder\n$q=\\mathrm{mask} + \\mathrm{pos}_n + Wz_c$\n"
-        "cross-attn $\\to$ pixels", edge=VIOLET, sub_size=5.7)
+        "cross-attn $\\to$ pixels", edge=DECODER, sub_size=5.7)
 
     # ---- arrows along the main track ------------------------------------- #
     arrow(ax, (9.8, YMID), (15.0, YMID))
-    edge_label(ax, 12.0, YMID + 1.7, "$[\\Sigma C,1,H,W]$")
+    edge_label(ax, 12.6, YMID + 1.7, "$[\\Sigma C,1,H,W]$")
     arrow(ax, (37.0, YMID), (41.0, YMID))
     arrow(ax, (52.5, YMID), (56.0, YMID))
     arrow(ax, (75.0, YMID), (79.0, YMID))
@@ -202,50 +228,58 @@ def build() -> plt.Figure:
 
     # ---- DCP masker chip feeds the patch embed ---------------------------- #
     box(ax, 15, 57.0, 22, 6.2, "DCP masker", "token omission (never zero)",
-        edge=GREEN, title_size=7.6, sub_size=6.2)
-    arrow(ax, (26.0, 57.0), (26.0, 53.5), color=GREEN, lw=1.3)
+        edge=FRONTEND, title_size=7.6, sub_size=6.2)
+    arrow(ax, (26.0, 57.0), (26.0, 53.5), color=FRONTEND, lw=1.3)
 
     # ---- shared-weight bracket over the transformer ----------------------- #
-    rrect(ax, 93.0, YMID - 10.2, 28.0, 19.4, edge=PURPLE, face="none", lw=1.3,
+    rrect(ax, 93.0, YMID - 10.2, 28.0, 19.4, edge=ENCODER, face="none", lw=1.3,
           dashed=True, rounding=0.9, z=1)
     ax.text(107.0, YMID + 10.4, "$\\times L$ blocks, weights shared",
-            ha="center", va="center", fontsize=6.9, color=PURPLE)
+            ha="center", va="center", fontsize=6.9, color=ENCODER)
 
     # ---- ghost padded tensor (never materialised) ------------------------- #
-    rrect(ax, 3.0, 6.0, 54.0, 13.0, edge=MUTED, face="#F4F4F4", lw=1.3,
-          dashed=True, rounding=0.7, z=1)
-    ax.plot([3.7, 56.3], [6.5, 18.5], color=RED, lw=2.4, alpha=0.85, zorder=5)
-    ax.text(30.0, 12.6,
-            "the padded tensor $[B,\\,C_{\\max},\\,N,\\,D]$ is never materialised",
-            ha="center", va="center", fontsize=7.4, color=MUTED, style="italic",
-            fontweight="bold", zorder=6)
+    padded_ghost(ax, 3.0, 2.0, 57.0, 9.0)
+
+    # ---- legends (large empty lower-left area) ---------------------------- #
+    role_legend(
+        ax, 13.0, 32.0,
+        [("frontend", FRONTEND), ("fusion", FUSION), ("encoder", ENCODER),
+         ("decoder", DECODER), ("memory rows", MEMORY), ("loss / omitted", LOSS),
+         ("fused tokens", FUSED), ("pooling", POOL)],
+        title="module roles", pitch=2.2, fontsize=6.4, title_size=6.9,
+    )
+    channel_legend(ax, 31.0, 32.0, n=len(CHANNEL_COLORS),
+                   title="channel identity", pitch=2.2, fontsize=6.4,
+                   title_size=6.9)
 
     # ---- inference branch: encode() taps the encoder output --------------- #
-    rrect(ax, 62.0, 6.0, 42.0, 24.0, edge=BLUE, face=tint(BLUE, 0.94), lw=1.3,
+    rrect(ax, 62.0, 6.0, 42.0, 24.0, edge=POOL, face=tint(POOL, 0.94), lw=1.3,
           dashed=True, rounding=0.9, z=1)
-    ax.text(83.0, 28.5, "encode(): no masking, then pool", ha="center",
-            va="center", fontsize=6.9, color=BLUE)
-    # dashed elbow from the encoder-memory stack into the branch
-    ax.plot([129.25, 129.25, 96.0], [34.5, 24.0, 24.0], color=BLUE, lw=1.3,
-            linestyle="--", zorder=2)
-    arrow(ax, (97.0, 24.0), (94.0, 24.0), color=BLUE, lw=1.4, dashed=True)
+    ax.text(83.0, 28.4, "encode(): no masking, then pool", ha="center",
+            va="center", fontsize=6.9, color=POOL)
+    # dashed elbow from the encoder-token stack into the branch
+    ax.plot([enc_x, enc_x - 2.0, enc_x - 2.0, 96.0], [enc_y0, enc_y0, 24.0, 24.0],
+            color=FUSED, lw=1.3, linestyle="--", zorder=2)
+    arrow(ax, (97.0, 24.0), (94.0, 24.0), color=FUSED, lw=1.4, dashed=True)
     box(ax, 72.0, 20.0, 22.0, 8.0, "PMA pooler", "learned query",
-        edge=BLUE, title_size=7.6, sub_size=6.2)
-    arrow(ax, (83.0, 20.0), (83.0, 16.0), color=BLUE, lw=1.4)
-    rrect(ax, 74.0, 7.0, 18.0, 9.0, edge=BLUE, face=tint(BLUE, 0.72), lw=1.5)
+        edge=POOL, title_size=7.6, sub_size=6.2)
+    arrow(ax, (83.0, 20.0), (83.0, 16.0), color=POOL, lw=1.4)
+    rrect(ax, 74.0, 7.0, 18.0, 9.0, edge=FUSED, face=tint(FUSED, 0.72), lw=1.5)
     ax.text(83.0, 12.1, "$[\\,B,\\; D\\,]$", ha="center", va="center",
             fontsize=9.0, fontweight="bold", color=INK)
     ax.text(83.0, 8.6, "fixed-size descriptor", ha="center", va="center",
             fontsize=6.2, color=MUTED)
 
     # ---- decoder output -> loss ------------------------------------------ #
-    otop, _obot = draw_output(ax, 138.0)
-    arrow(ax, (148.5, YMID - 7.5), (148.5, otop), color=VIOLET, lw=1.5)
-    edge_label(ax, 146.0, 33.6, "$[\\,K_t,\\; P^2\\,]$ predictions",
-               color=INK, size=6.7, ha="right")
+    otop, obot = draw_output(ax, 138.0)
+    arrow(ax, (148.5, YMID - 7.5), (148.5, otop), color=DECODER, lw=1.5)
+    ax.text(137.0, (otop + obot) / 2 + 0.9, "$[\\,K_t,\\; P^2\\,]$",
+            ha="right", va="center", fontsize=8.4, fontweight="bold", color=INK)
+    ax.text(137.0, (otop + obot) / 2 - 1.7, "predicted pixels", ha="right",
+            va="center", fontsize=6.2, color=MUTED)
     box(ax, 138.0, 3.0, 21.0, 9.0, "patch-normalised MSE",
-        "channel-masked reconstruction", edge=RED, title_size=7.4, sub_size=6.1)
-    arrow(ax, (148.5, 17.9), (148.5, 12.0), color=RED, lw=1.5)
+        "channel-masked reconstruction", edge=LOSS, title_size=7.4, sub_size=6.1)
+    arrow(ax, (148.5, obot), (148.5, 12.0), color=LOSS, lw=1.5)
 
     # ---- target pixels, routed along the bottom --------------------------- #
     ax.plot([1.5, 1.5, 148.5, 148.5], [31.4, 1.0, 1.0, 3.0],

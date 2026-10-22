@@ -13,11 +13,30 @@ grammar the reference architecture figures in ``references/`` use:
 Import from a figure script::
 
     from figure_style import (BLUE, GREEN, ORANGE, RED, VIOLET, INK, MUTED,
-                              CHANNEL_COLORS, tint, rrect, box, arrow,
+                              CHANNEL_COLORS, FRONTEND, FUSION, ENCODER,
+                              DECODER, MEMORY, LOSS, FUSED, POOL,
+                              tint, rrect, box, arrow,
                               edge_label, sq_bracket, panel_header,
-                              token_rows, grid_cells, install_rcparams, save_figure)
+                              token_rows, grid_cells, install_rcparams, save_figure,
+                              legend, role_legend, channel_legend, padded_ghost)
 
 Okabe-Ito palette (colour-blind safe).
+
+Role palette -- the same *role* always gets the same colour in every figure,
+so the L0-L8 set reads as one authored system:
+
+    FRONTEND  green   patch embed / tied Conv / spatial pos / additive z_c
+    FUSION    orange  channel fusion (ChannelFusion + HypernetworkWeightedSum)
+    ENCODER   pink    spatial transformer + its memory-augmented blocks
+    DECODER   violet  channel-aware decoder + reconstruction head
+    MEMORY    gold    fixed memory / register token rows
+    LOSS      red     objective / waste / -inf mask / omitted-row accent
+    FUSED     blue    fixed-size fused / joint tokens [B, N, D]
+    POOL      sky     pooling / descriptor reduction
+    GHOST     muted   geometry, brackets, never-materialised padded tensor
+
+Per-channel marker colours live in ``CHANNEL_COLORS`` and are used ONLY for
+the channel axis (image tiles and channel-patch token rows).
 """
 
 from __future__ import annotations
@@ -40,10 +59,26 @@ MUTED = "#5C5C5C"
 # One colour per marker/channel; reused for image borders, token rows and cards.
 CHANNEL_COLORS = [BLUE, GREEN, ORANGE, PURPLE, VIOLET]
 
+# --- semantic role palette (see module docstring) ------------------------- #
+FRONTEND = GREEN
+FUSION = ORANGE
+ENCODER = PURPLE
+DECODER = VIOLET
+MEMORY = "#B8860B"          # legible gold for the fixed memory / register rows
+LOSS = RED
+FUSED = BLUE
+POOL = SKY
+GHOST = MUTED
+
 
 # --------------------------------------------------------------------------- #
 # Primitives
 # --------------------------------------------------------------------------- #
+def channel_color(i: int) -> str:
+    """Colour of marker/channel ``i`` (cycles through the marker table)."""
+    return CHANNEL_COLORS[i % len(CHANNEL_COLORS)]
+
+
 def tint(color: str, amount: float = 0.84):
     """Mix ``color`` toward white by ``amount`` (fills for node bodies)."""
     r, g, b = mcolors.to_rgb(color)
@@ -106,6 +141,86 @@ def panel_header(ax, x, y, letter, text, color=INK):
             fontweight="bold", color=color)
     ax.text(x + 4.5, y, text, ha="left", va="center", fontsize=12.2,
             fontweight="bold", color=color)
+
+
+# --------------------------------------------------------------------------- #
+# Legends
+# --------------------------------------------------------------------------- #
+def legend(ax, x, y_top, entries, title=None, sw=1.5, pitch=2.5,
+           fontsize=6.6, title_size=7.0, label_gap=1.0, label_color=INK):
+    """Compact vertical legend drawn downward from ``(x, y_top)``.
+
+    ``entries`` is a list of ``(label, color, style)``; ``style`` is one of
+
+    * ``"fill"``  -- rounded cell filled with ``tint(color)`` (kept object),
+    * ``"omit"``  -- dashed white cell (masked / absent row, never zero),
+    * ``"ghost"`` -- dashed pale cell (never-materialised tensor),
+    * ``"line"``  -- a short solid line swatch (curve / edge),
+    * ``"dash"``  -- a short dashed line swatch.
+
+    Returns the y of the last row's centre.
+    """
+    y = y_top
+    if title:
+        ax.text(x, y, title, ha="left", va="center", fontsize=title_size,
+                fontweight="bold", color=INK, zorder=5)
+        y -= pitch
+    last = y
+    for label, color, style in entries:
+        cy = y - sw / 2
+        last = cy
+        if style in ("omit", "ghost"):
+            rrect(ax, x, y - sw, sw, sw, edge=color,
+                  face="#FFFFFF" if style == "omit" else tint(color, 0.94),
+                  lw=1.1, dashed=True, rounding=0.2, z=4)
+        elif style == "line":
+            ax.plot([x, x + sw], [cy, cy], color=color, lw=2.2, zorder=4,
+                    solid_capstyle="round")
+        elif style == "dash":
+            ax.plot([x, x + sw], [cy, cy], color=color, lw=2.2, ls="--",
+                    zorder=4)
+        else:  # fill
+            rrect(ax, x, y - sw, sw, sw, edge=color, face=tint(color, 0.8),
+                  lw=1.1, rounding=0.2, z=4)
+        ax.text(x + sw + label_gap, cy, label, ha="left", va="center",
+                fontsize=fontsize, color=label_color, zorder=5)
+        y -= pitch
+    return last
+
+
+def role_legend(ax, x, y_top, roles, title="module roles", **kw):
+    """Legend for module roles: ``roles`` is ``[(label, color), ...]``."""
+    entries = [(label, color, "fill") for label, color in roles]
+    return legend(ax, x, y_top, entries, title=title, **kw)
+
+
+def channel_legend(ax, x, y_top, n=None, title="channel identity",
+                   labels=None, **kw):
+    """Legend for the marker/channel colour table (image tiles, token rows)."""
+    n = n or len(CHANNEL_COLORS)
+    entries = [
+        (labels[i] if labels else f"marker {i}", channel_color(i), "fill")
+        for i in range(n)
+    ]
+    return legend(ax, x, y_top, entries, title=title, **kw)
+
+
+def padded_ghost(ax, x, y, w, h, shape=r"$[B,\,C_{\max},\,N,\,D]$",
+                 note="never materialised", color=GHOST, strike=True, z=1):
+    """The dashed padded tensor that is never materialised (with a strike)."""
+    rrect(ax, x, y, w, h, edge=color, face="#FAFAFA", lw=1.3, dashed=True,
+          rounding=0.6, z=z)
+    if strike:
+        ax.plot([x + 0.3, x + w - 0.3], [y + 0.3, y + h - 0.3],
+                color=LOSS, lw=2.2, alpha=0.85, zorder=z + 4)
+    # white backing boxes keep the shape and the note legible over the strike
+    bbox = dict(boxstyle="round,pad=0.18", facecolor="white",
+                edgecolor="none", alpha=0.9)
+    ax.text(x + w / 2, y + h / 2 + 0.8, shape, ha="center", va="center",
+            fontsize=7.0, color=color, zorder=z + 5, fontweight="bold",
+            bbox=bbox)
+    ax.text(x + w - 0.6, y + 0.6, note, ha="right", va="bottom",
+            fontsize=6.2, color=LOSS, style="italic", zorder=z + 5, bbox=bbox)
 
 
 # --------------------------------------------------------------------------- #

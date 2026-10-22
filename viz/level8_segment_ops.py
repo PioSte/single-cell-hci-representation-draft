@@ -25,9 +25,9 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 from figure_style import (  # noqa: E402
-    BLUE, GREEN, ORANGE, RED, PURPLE, INK, MUTED,
-    tint, rrect, box, arrow, sq_bracket, panel_header,
-    install_rcparams, save_figure,
+    BLUE, GREEN, ORANGE, RED, FUSED, GHOST, LOSS, INK, MUTED,
+    tint, rrect, box, arrow, sq_bracket, panel_header, legend,
+    padded_ghost, install_rcparams, save_figure,
 )
 
 OUT = Path(__file__).resolve().parent / "out"
@@ -164,46 +164,16 @@ def draw_output_tokens(ax, x):
 # Ghost padded reference (never materialised)
 # --------------------------------------------------------------------------- #
 def draw_padded_reference(ax, x, y0):
-    """Dashed ghost of the dense [B, T_max, D] + -inf mask reference."""
-    cell, pitch = 2.5, 2.9
-    B, T_max = 3, 3
-    fw, fh = T_max * pitch + 1.5, B * pitch + 1.5
+    """Dashed ghost of the dense [B, T_max, D] + -inf mask reference.
 
-    rrect(ax, x, y0, fw, fh, edge=MUTED, face="#F8F8F8", lw=1.5,
-          dashed=True, rounding=0.6, z=1)
-
-    ox, oy = x + 0.5, y0 + 0.5
-    # b0 (blue, len 3) full row
-    for j in range(3):
-        rrect(ax, ox + j * pitch, oy + 2 * pitch, cell, cell, edge=BLUE,
-              face=tint(BLUE, 0.75), lw=1.0, rounding=0.25)
-    # b1 (green, len 2) + one omitted/padding cell (crossed out)
-    for j in range(2):
-        rrect(ax, ox + j * pitch, oy + 1 * pitch, cell, cell, edge=GREEN,
-              face=tint(GREEN, 0.75), lw=1.0, rounding=0.25)
-    rrect(ax, ox + 2 * pitch, oy + 1 * pitch, cell, cell, edge=RED,
-          face="#FFFFFF", lw=1.0, rounding=0.25)
-    ax.plot([ox + 2 * pitch + 0.3, ox + 2 * pitch + cell - 0.3],
-            [oy + 1 * pitch + 0.3, oy + 1 * pitch + cell - 0.3],
-            color=RED, lw=1.8, alpha=0.85, zorder=4)
-    # b2 (orange, len 3) full row
-    for j in range(3):
-        rrect(ax, ox + j * pitch, oy, cell, cell, edge=ORANGE,
-              face=tint(ORANGE, 0.75), lw=1.0, rounding=0.25)
-
-    ax.text(x - 1.2, oy + 2 * pitch + cell / 2, "$b_0$", ha="right",
-            va="center", fontsize=6.5, color=BLUE)
-    ax.text(x - 1.2, oy + 1 * pitch + cell / 2, "$b_1$", ha="right",
-            va="center", fontsize=6.5, color=GREEN)
-    ax.text(x - 1.2, oy + cell / 2, "$b_2$", ha="right", va="center",
-            fontsize=6.5, color=ORANGE)
-
-    ax.text(x + fw / 2, y0 + fh + 2.0, "$[B, T_{\\max}, D]$ ghost",
-            ha="center", va="center", fontsize=7.5, color=MUTED,
-            fontweight="bold", style="italic")
-    ax.text(x + fw / 2, y0 - 5.3, "never materialized", ha="center",
-            va="center", fontsize=6.6, color=RED, style="italic")
-    return y0 + fh
+    Uses the shared :func:`padded_ghost` primitive so the never-materialised
+    padded tensor reads the same way as in every other level.
+    """
+    w, h = 16.0, 12.0
+    padded_ghost(ax, x, y0, w, h,
+                 shape=r"$[B, T_{\max}, D]$",
+                 note="never materialized", color=GHOST, strike=False, z=1)
+    return y0 + h, w
 
 
 # --------------------------------------------------------------------------- #
@@ -239,7 +209,7 @@ def build() -> plt.Figure:
     # Stage 3: batched SDPA by equal length
     ax.text(64.5, head_y, "③ batched SDPA", ha="center", va="center",
             fontsize=8.0, fontweight="bold", color=INK)
-    ax.text(64.5, sub_y, "one call per equal length $L$", ha="center",
+    ax.text(64.5, sub_y, "one call per length $L$, batch $M$", ha="center",
             va="center", fontsize=6.8, color=MUTED)
     draw_batched_groups(ax, 58.0)
 
@@ -257,24 +227,38 @@ def build() -> plt.Figure:
 
     # ---- right-hand side notes -------------------------------------------- #
     box(ax, 104.0, Y0 + 17.0, 33.0, 9.5,
-        "$\\mathrm{softmax}(QK^T/\\sqrt{d})V$",
-        "keys $=$ values for pooling", edge=PURPLE, title_size=11,
-        sub_size=6.5)
+        "SDPA primitive",
+        "$\\mathrm{softmax}(QK^T/\\sqrt{d})V$\n"
+        "keys $=$ values for pooling",
+        edge=FUSED, title_size=9.5, sub_size=6.5)
 
-    rrect(ax, 104.0, Y0 + 4.0, 33.0, 11.0, edge=RED, face=tint(RED, 0.92),
+    rrect(ax, 104.0, Y0 + 4.0, 33.0, 11.0, edge=LOSS, face=tint(LOSS, 0.92),
           lw=1.5, rounding=0.6)
-    ax.text(120.5, Y0 + 12.0, "Tokens from different", ha="center",
+    ax.text(120.5, Y0 + 13.5, "HARD CONSTRAINT", ha="center",
+            va="center", fontsize=6.2, fontweight="bold", color=LOSS)
+    ax.text(120.5, Y0 + 11.2, "Tokens from different", ha="center",
             va="center", fontsize=7.2, fontweight="bold", color=INK)
-    ax.text(120.5, Y0 + 9.6, "segments NEVER interact", ha="center",
+    ax.text(120.5, Y0 + 8.9, "segments NEVER interact", ha="center",
             va="center", fontsize=7.2, fontweight="bold", color=INK)
     ax.text(120.5, Y0 + 6.4, "⇒ exactly per-sample /", ha="center",
             va="center", fontsize=6.5, color=MUTED, style="italic")
-    ax.text(120.5, Y0 + 5.0, "per-location attention", ha="center",
+    ax.text(120.5, Y0 + 5.1, "per-location attention", ha="center",
             va="center", fontsize=6.5, color=MUTED, style="italic")
 
+    # ---- legends (segment ids are NOT channel identity) ------------------- #
+    legend(ax, 2.0, 43.0,
+           [("$s_0$", BLUE, "fill"), ("$s_1$", GREEN, "fill"),
+            ("$s_2$", ORANGE, "fill")],
+           title="segment IDs (not channels)", pitch=2.3, fontsize=6.6)
+    legend(ax, 52.0, 43.0,
+           [("SDPA primitive", FUSED, "fill"),
+            ("hard constraint", LOSS, "fill"),
+            ("never materialized", GHOST, "ghost")],
+           title="roles", pitch=2.3, fontsize=6.6)
+
     # ---- equivalence to the padded reference (aligned bottom row) --------- #
-    bot_c = 18.5
-    eq_y = 34.0
+    bot_c = 17.0
+    eq_y = 32.0
     ax.text(63.0, eq_y,
             "Equivalence (cf. FlashAttention $\\mathtt{cu\\_seqlens}$)",
             ha="center", va="center", fontsize=8.5, fontweight="bold",
@@ -298,20 +282,22 @@ def build() -> plt.Figure:
             va="center", fontsize=18, color=GREEN, fontweight="bold")
 
     # padded + mask ghost (right) -- never materialised
-    pad_x = 100.0
-    pad_y0 = bot_c - 10.2 / 2
-    draw_padded_reference(ax, pad_x, pad_y0)
-    ax.text(pad_x + 5.1, eq_y - 3.5, "padded $+$ mask", ha="center",
-            va="center", fontsize=7.0, fontweight="bold", color=MUTED)
-    ax.text(pad_x + 5.1, eq_y - 5.0, "(never materialized)", ha="center",
-            va="center", fontsize=6.2, color=RED, style="italic")
-    ax.text(pad_x + 5.1, pad_y0 - 3.0, "✗", ha="center", va="center",
+    pad_x = 96.0
+    pad_y0 = bot_c - 12.0 / 2
+    _pad_top, pad_w = draw_padded_reference(ax, pad_x, pad_y0)
+    ax.text(pad_x + pad_w / 2, eq_y - 3.5, "padded $+$ $-\\infty$ mask",
+            ha="center", va="center", fontsize=7.0, fontweight="bold",
+            color=MUTED)
+    ax.text(pad_x + pad_w / 2, eq_y - 5.0, "(dense reference)",
+            ha="center", va="center", fontsize=6.2, color=MUTED,
+            style="italic")
+    ax.text(pad_x + pad_w / 2, pad_y0 - 2.4, "✗", ha="center", va="center",
             fontsize=18, color=RED, fontweight="bold")
 
     # equivalence arrow between the two forms
-    arrow(ax, (27.0, bot_c), (97.5, bot_c), color=MUTED, lw=1.8,
+    arrow(ax, (27.0, bot_c), (pad_x - 2.0, bot_c), color=MUTED, lw=1.8,
           dashed=True, ms=13)
-    ax.text(62.0, bot_c + 2.0, "same semantics", ha="center", va="center",
+    ax.text(60.0, bot_c + 2.0, "same semantics", ha="center", va="center",
             fontsize=6.8, color=MUTED)
 
     # ---- footer note ------------------------------------------------------ #
