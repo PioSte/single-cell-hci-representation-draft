@@ -37,9 +37,11 @@ per-channel (tied) patch embed
 * **Padding-free** — tokens are flattened `[ΣC, D]` with segment ids; no
   `[B, C_max, D]` tensor and no attention masks for cardinality. Masking is
   token *omission*, never zeroing.
-* **PMA pooling** — a learned query cross-attends over the channel set at each
-  spatial location (`ChannelFusion`), or a cheaper `O(C)` hypernetwork-weighted
-  sum (`HypernetworkWeightedSum`).
+* **PMA pooling** — a fixed learned query cross-attends over the channel set at
+  each spatial location (`ChannelFusion`, `O(C)` per location), or a
+  marker-identity-routed hypernetwork-weighted sum (`HypernetworkWeightedSum`).
+  Both avoid the `O(C²)` dense `C×C` cross-channel attention of ChannelViT /
+  ChAda-ViT.
 * **PMA descriptor** — at inference the encoder output is reduced to a fixed
   `[B, D]` joint embedding by pooling by multi-head attention
   (`MultiheadAttentionPooling`), not a variable-length mean.
