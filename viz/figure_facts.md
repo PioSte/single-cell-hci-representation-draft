@@ -23,7 +23,7 @@ The fusion output is one token per location, so there is **no query-count
 axis** in the fused tensor. `n_queries` exists only on the descriptor pooler
 (see below), never on `ChannelFusion`.
 
-## Front-end — `patch_embed.py` (L3)
+## Tokenizer — `patch_embed.py` (L3)
 
 - `images`: list of `[C_b, 1, H, W]` → `torch.cat` → `[ΣC, 1, H, W]`.
 - `ChannelTiedPatchEmbed.proj = Conv2d(1, D, kernel_size=P, stride=P)` —
@@ -180,7 +180,7 @@ attention mask. It is **not** in the model path.
 
 ## Inference — `mae.py::encode` (L1, L2)
 
-- No masking (`visible = all True`); same front-end + fusion + encoder.
+- No masking (`visible = all True`); same tokenizer + fusion + encoder.
 - `pool="attention"` (default) applies the trained descriptor pooler to
   `tok_out`; `pool="mean"` averages the content tokens. Both return a
   `[B, D]` descriptor; `encode` also returns `mem_out [B·M, D]`.

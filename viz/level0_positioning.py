@@ -9,7 +9,7 @@ All three columns share the same scale and width; the stages are aligned at
 identical y so the panels read across.  Panel (c) is emphasised only through
 the green accent frame/tint, never through size.
 
-Colour is semantic (see ``figure_style`` role palette): front-end green,
+Colour is semantic (see ``figure_style`` role palette): tokenizer green,
 fusion orange, spatial transformer pink, fused/joint tokens blue, loss/waste
 red, never-materialised padded tensor a dashed ghost.
 
@@ -33,7 +33,7 @@ import matplotlib.pyplot as plt
 
 from figure_style import (  # noqa: E402
     GREEN, INK, MUTED, CHANNEL_COLORS,
-    FRONTEND, FUSION, ENCODER, DECODER, MEMORY, LOSS, FUSED,
+    TOKENIZER, FUSION, ENCODER, DECODER, MEMORY, LOSS, FUSED,
     tint, rrect, box, arrow, edge_label, sq_bracket, panel_header,
     legend, role_legend, channel_legend, padded_ghost,
     install_rcparams, save_figure,
@@ -187,12 +187,12 @@ def draw_column_b(ax, x0):
     ax.text(xr, TENSOR_BOT + 3.5 * PITCH, "pad + $z_c$", ha="left", va="center",
             fontsize=6.2, color=LOSS, style="italic")
 
-    # Additive channel identity -- FRONTEND role (green)
+    # Additive channel identity -- TOKENIZER role (green)
     box(ax, x0, FUSE_BOX_Y, COL_W, FUSE_BOX_H, "Additive $z_c$ identity",
-        "channel vector · not omitted", edge=FRONTEND,
+        "channel vector · not omitted", edge=TOKENIZER,
         title_size=6.8, sub_size=6.0)
     arrow(ax, (cx, TENSOR_BOT - 0.2), (cx, FUSE_BOX_Y + FUSE_BOX_H),
-          color=FRONTEND, lw=1.2)
+          color=TOKENIZER, lw=1.2)
 
     # Dense joint self-attention -- the rejected baseline (muted + dashed)
     dashed_module(ax, x0, TRANS_BOX_Y, COL_W, TRANS_BOX_H,
@@ -312,7 +312,7 @@ def draw_legends(ax):
     role_legend(
         ax, 4.0, 8.5,
         [
-            ("front-end: tied conv / $z_c$", FRONTEND),
+            ("tokenizer: tied conv / $z_c$", TOKENIZER),
             ("channel fusion (PMA / gated sum)", FUSION),
             ("spatial transformer", ENCODER),
             ("channel-aware decoder", DECODER),

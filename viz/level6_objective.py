@@ -31,7 +31,7 @@ import matplotlib.pyplot as plt
 
 from figure_style import (  # noqa: E402
     BLUE, GREEN, ORANGE, RED, PURPLE, VIOLET, INK, MUTED, CHANNEL_COLORS,
-    FRONTEND, FUSION, ENCODER, DECODER, MEMORY, LOSS, FUSED, POOL, GHOST,
+    TOKENIZER, FUSION, ENCODER, DECODER, MEMORY, LOSS, FUSED, POOL, GHOST,
     tint, rrect, box, arrow, edge_label, sq_bracket, token_rows, channel_color,
     install_rcparams, save_figure, role_legend, channel_legend,
 )
@@ -195,7 +195,7 @@ def build() -> plt.Figure:
 
     # DCP omission annotation, fully inside the frame and clear of the dashed row.
     ax.text(8.4, 56.55, "DCP\nomission\n(not zeroed)", ha="right",
-            va="center", fontsize=5.4, color=FRONTEND, fontweight="bold",
+            va="center", fontsize=5.4, color=TOKENIZER, fontweight="bold",
             linespacing=1.15)
 
     # Encoder module (TransformerEncoder) -- ENCODER role colour.
@@ -267,7 +267,7 @@ def build() -> plt.Figure:
     role_legend(
         ax, 3.0, 27.0,
         [
-            ("front-end / patch embed", FRONTEND),
+            ("tokenizer / patch embed", TOKENIZER),
             ("channel fusion", FUSION),
             ("spatial encoder", ENCODER),
             ("channel-aware decoder", DECODER),

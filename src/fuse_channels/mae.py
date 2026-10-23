@@ -82,8 +82,8 @@ class ChannelFusionMAE(nn.Module):
         self._loss_fn = _LOSSES[loss]
 
         channel_embedding = ChannelEmbedding(dim, num_channel_ids)
-        self.frontend = ChannelTokenizer(image_size, patch_size, dim, channel_embedding)
-        n_patches = self.frontend.n_patches
+        self.tokenizer = ChannelTokenizer(image_size, patch_size, dim, channel_embedding)
+        n_patches = self.tokenizer.n_patches
         self.n_patches = n_patches
 
         if fusion == "attention":
@@ -136,7 +136,7 @@ class ChannelFusionMAE(nn.Module):
         if visible is None:
             visible = self.masker(images, generator=generator)
 
-        cs = self.frontend(images, channel_ids, visible)
+        cs = self.tokenizer(images, channel_ids, visible)
         fused, present = self.fusion(cs)  # [B, N, D] incl. post-fusion PE
 
         # -- padding-free encoder input: only present locations ---------- #
@@ -187,7 +187,7 @@ class ChannelFusionMAE(nn.Module):
 
         # embedding of the target channels (recomputed; also feeds the decoder)
         ids_per_ch = torch.cat([c.to(device) for c in channel_ids])
-        embed_per_ch = self.frontend.channel_embed(ids_per_ch)
+        embed_per_ch = self.tokenizer.channel_embed(ids_per_ch)
         tgt_channel_embed = embed_per_ch[gidx]
 
         pred = self.decoder(
@@ -235,7 +235,7 @@ class ChannelFusionMAE(nn.Module):
             torch.ones(im.shape[0], self.n_patches, dtype=torch.bool, device=im.device)
             for im in images
         ]
-        cs = self.frontend(images, channel_ids, visible)
+        cs = self.tokenizer(images, channel_ids, visible)
         fused, present = self.fusion(cs)
         B, D = fused.shape[0], fused.shape[-1]
         enc_tokens = fused[present]

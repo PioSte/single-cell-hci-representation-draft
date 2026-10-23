@@ -303,7 +303,7 @@ def draw_legends(ax):
     """Fill the empty bottom band with role + channel legends and a note."""
     role_legend(
         ax, 27.0, 16.1,
-        [("front-end patch embed", GREEN),
+        [("tokenizer patch embed", GREEN),
          ("channel fusion", FUSION),
          ("spatial transformer", ENCODER),
          ("memory / register tokens", MEMORY),

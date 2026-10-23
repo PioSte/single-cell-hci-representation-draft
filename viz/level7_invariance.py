@@ -132,7 +132,7 @@ def measure_padding_free_equiv(model, device, seed=0):
             torch.ones(C, model.n_patches, dtype=torch.bool, device=device)
             for C in comp
         ]
-        cs = model.frontend(images, channel_ids, visible)
+        cs = model.tokenizer(images, channel_ids, visible)
         fused_padless, _ = model.fusion(cs)
         fused_dense = _dense_fusion_reference(model.fusion, cs)
         diff = (fused_padless - fused_dense).abs().max().item()

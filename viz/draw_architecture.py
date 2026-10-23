@@ -135,7 +135,7 @@ def draw_schematic() -> None:
     ax.text(
         0.1,
         3.7,
-        "Padding-free channel-fusion front-end  (no [B, C_max, D] tensor anywhere in this path)",
+        "Padding-free channel-fusion tokenizer  (no [B, C_max, D] tensor anywhere in this path)",
         fontsize=12,
         fontweight="bold",
     )

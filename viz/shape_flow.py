@@ -287,7 +287,7 @@ def shape_flow(s: k.Scene):
     # 8 -- channel-aware shared decoder -> raw pixels for masked targets.
     # ===================================================================== #
     nxt("8 / 10")
-    # clear the front-end stage to make room
+    # clear the tokenizer stage to make room
     alive_fused = [f for key, f in fused.items() if key not in omitted]
     s.play(
         k.fade_out(

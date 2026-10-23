@@ -2,7 +2,7 @@
 
 One hand-authored, vector-first figure (PDF/SVG/PNG) with two panels:
 
-* **A** -- the end-to-end padding-free channel-fusion front-end.
+* **A** -- the end-to-end padding-free channel-fusion tokenizer.
 * **B** -- the set-native token layout and the interchangeable components
   (channel fusion, DCP masking).
 
@@ -130,7 +130,7 @@ def draw_pipeline(ax) -> None:
     ax.set_xlim(-2, 102)
     ax.set_ylim(0, 24)
     ax.axis("off")
-    panel_header(ax, -1, 22.8, "A", "Padding-free channel-fusion front-end")
+    panel_header(ax, -1, 22.8, "A", "Padding-free channel-fusion tokenizer")
 
     stages = [
         ("Variable channel set", "$\\{I_c\\in\\mathbb{R}^{1\\times H\\times W}\\}$\n"

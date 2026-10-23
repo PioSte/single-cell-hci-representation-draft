@@ -1,8 +1,8 @@
-"""L3 -- patch embed + additive identity frontend detail.
+"""L3 -- patch embed + additive identity tokenizer detail.
 
 Shows the channel-tied patch embedding (one shared Conv2d projection for all
 channels) plus the additive channel embedding `z_c`. Emphasizes:
-- The front-end has **no spatial positional embedding**; position is added
+- The tokenizer has **no spatial positional embedding**; position is added
   post-fusion by `ChannelFusion` / `IdentityGatedSum`.
 - `z_c` is per channel id, not a position.
 - DCP-omitted tokens are drawn as absent dashed rows, never zero cards.
@@ -10,8 +10,8 @@ channels) plus the additive channel embedding `z_c`. Emphasizes:
 
 Usage::
 
-    uv run --extra viz python viz/level3_frontend.py
-    uv run --extra viz python viz/level3_frontend.py --formats pdf svg png
+    uv run --extra viz python viz/level3_tokenizer.py
+    uv run --extra viz python viz/level3_tokenizer.py --formats pdf svg png
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ import matplotlib.pyplot as plt
 
 from figure_style import (  # noqa: E402
     BLUE, GREEN, ORANGE, RED, PURPLE, VIOLET, INK, MUTED, CHANNEL_COLORS,
-    FRONTEND, FUSION, ENCODER, DECODER, LOSS, GHOST,
+    TOKENIZER, FUSION, ENCODER, DECODER, LOSS, GHOST,
     tint, rrect, box, arrow, token_rows, install_rcparams,
     legend, role_legend, channel_legend, padded_ghost, save_figure,
 )
@@ -129,7 +129,7 @@ def build() -> plt.Figure:
     # ---- Title ------------------------------------------------------------ #
     ax.text(2, 77.5, "L3", ha="left", va="center", fontsize=15,
             fontweight="bold", color=INK)
-    ax.text(6.5, 77.5, "Frontend: channel-tied patch embed + additive channel embedding",
+    ax.text(6.5, 77.5, "Tokenizer: channel-tied patch embed + additive channel embedding",
             ha="left", va="center", fontsize=12.2, fontweight="bold", color=INK)
     ax.text(2, 73.8,
             "Two channels share one projection W, but each adds its own channel "
@@ -213,7 +213,7 @@ def build() -> plt.Figure:
             fontweight="bold")
 
     # ---- Shared Conv2d module (one kernel for every channel) -------------- #
-    rrect(ax, conv_x, 22.0, conv_w, 40.0, edge=FRONTEND, face=tint(FRONTEND, 0.86),
+    rrect(ax, conv_x, 22.0, conv_w, 40.0, edge=TOKENIZER, face=tint(TOKENIZER, 0.86),
           lw=1.5, rounding=0.7, z=3)
     cx = conv_x + conv_w / 2
     ax.text(cx, 60.0, "Conv2d", ha="center", va="center", fontsize=8.6,
@@ -224,10 +224,10 @@ def build() -> plt.Figure:
             color=MUTED, zorder=4)
     ax.text(cx, 51.8, "stride P", ha="center", va="center", fontsize=6.6,
             color=MUTED, zorder=4)
-    ax.plot([cx - 2.8, cx + 2.8], [49.0, 49.0], color=FRONTEND, lw=1.0,
+    ax.plot([cx - 2.8, cx + 2.8], [49.0, 49.0], color=TOKENIZER, lw=1.0,
             linestyle=(0, (3, 2)), zorder=4)
     ax.text(cx, 45.4, "shared W", ha="center", va="center", fontsize=7.6,
-            fontweight="bold", color=FRONTEND, zorder=4)
+            fontweight="bold", color=TOKENIZER, zorder=4)
     ax.text(cx, 40.0, "one kernel for\nevery channel", ha="center", va="center",
             fontsize=6.3, color=MUTED, zorder=4, linespacing=1.5)
     ax.text(cx, 33.6, "(tied, not\nper-channel)", ha="center", va="center",
@@ -236,9 +236,9 @@ def build() -> plt.Figure:
     # ---- Identity embedding source ---------------------------------------- #
     emb_x, emb_y, emb_w, emb_h = 90.0, 37.0, 16.0, 10.0
     box(ax, emb_x, emb_y, emb_w, emb_h, "nn.Embedding", "num_channel_ids \u00d7 D",
-        edge=FRONTEND, title_size=7.8, sub_size=6.3)
+        edge=TOKENIZER, title_size=7.8, sub_size=6.3)
     ax.text(emb_x + emb_w / 2, emb_y - 2.0, "$z_c$ lookup table",
-            ha="center", va="center", fontsize=6.4, color=FRONTEND,
+            ha="center", va="center", fontsize=6.4, color=TOKENIZER,
             style="italic")
 
     # dashed lookup routes: table -> each z_c card (enter card from behind)
@@ -314,7 +314,7 @@ def build() -> plt.Figure:
 
     # Legends: roles + channel identity
     role_legend(ax, 112.0, 50.0,
-                [("frontend / $z_c$", FRONTEND),
+                [("tokenizer / $z_c$", TOKENIZER),
                  ("channel fusion", FUSION),
                  ("encoder", ENCODER),
                  ("decoder", DECODER),
@@ -332,7 +332,7 @@ def build() -> plt.Figure:
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--formats", nargs="+", default=["pdf", "svg", "png"])
-    ap.add_argument("--stem", default="level3_frontend")
+    ap.add_argument("--stem", default="level3_tokenizer")
     args = ap.parse_args()
 
     install_rcparams()

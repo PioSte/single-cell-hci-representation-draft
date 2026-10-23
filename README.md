@@ -1,6 +1,6 @@
 # fuse-channels
 
-A PyTorch implementation of the **padding-free channel-fusion front-end** for a
+A PyTorch implementation of the **padding-free channel-fusion tokenizer** for a
 high-content-imaging (HCI) foundation model, plus a channel-aware Masked
 Autoencoder (MAE) built on top of it.
 
@@ -20,7 +20,7 @@ f({E_1 .. E_C}) -> [N, D] per sample, then -> [D] descriptor,
 ```
 
 without concatenation blow-up, with channel identity preserved, and with **no
-padding tokens**. `C` appears only in the front-end input length `ΣC·N`; the
+padding tokens**. `C` appears only in the tokenizer input length `ΣC·N`; the
 fused output is `[B, N, D]` (`N` is fixed by the image and patch size) and the
 pooled descriptor is `[B, D]`.
 
@@ -45,7 +45,7 @@ per-channel tied Conv2d(1 -> D) patch embed        (no positional embedding here
 * **Additive channel identity.** `ChannelEmbedding` is a learned
   `num_channel_ids × D` table. The row for a channel id is added to every patch
   token of that channel; it is never normalized across the channel axis.
-* **Padding-free.** Front-end tokens are flattened `[ΣC·N, D]` with integer
+* **Padding-free.** Tokens from the tokenizer are flattened `[ΣC·N, D]` with integer
   group ids; no `[B, C_max, N, D]` tensor and no attention masks for
   cardinality are ever materialised. Masking is token *omission*, never
   zeroing. The encoder receives one token per **present** `(sample, patch)`
@@ -143,10 +143,10 @@ images = [torch.randn(3, 1, 16, 16), torch.randn(7, 1, 16, 16)]
 ids = [torch.randint(0, 32, (3,)), torch.randint(0, 32, (7,))]
 
 embedding = ChannelEmbedding(192, num_channel_ids=32)
-frontend = ChannelTokenizer(16, 8, 192, embedding)
+tokenizer = ChannelTokenizer(16, 8, 192, embedding)
 fusion = ChannelFusion(192, n_heads=6, n_patches=4)   # one query per location
 
-cs: ChannelSet = frontend(images, ids)   # real tokens only; cs.channel_embed is [ΣC·N, 192]
+cs: ChannelSet = tokenizer(images, ids)   # real tokens only; cs.channel_embed is [ΣC·N, 192]
 fused, present = fusion(cs)              # [B, 4, 192]; no channel padding
 
 # the O(C) marker-routed ablation
@@ -208,7 +208,7 @@ Covered by `tests/`:
 - post-fusion PE, one query shared across locations, and attention dropout
   behaviour (`test_post_fusion_spatial_pos`,
   `test_pooling_query_is_shared_across_locations`, dropout tests)
-- encoder input length = number of present locations, with front-end token count
+- encoder input length = number of present locations, with token count
   = visible channel-patches (`test_encoder_input_length_is_present_locations`)
 - DCP Eq. 1 regions and HCS counts (`test_masking.py`); channels dropped by DCP
   are reconstruction targets (`test_dcp_dropped_channel_is_a_reconstruction_target`)

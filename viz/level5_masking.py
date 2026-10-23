@@ -30,7 +30,7 @@ import matplotlib.pyplot as plt
 
 from figure_style import (  # noqa: E402
     BLUE, GREEN, ORANGE, RED, INK, MUTED, CHANNEL_COLORS,
-    FRONTEND, LOSS, GHOST,
+    TOKENIZER, LOSS, GHOST,
     tint, rrect, arrow, edge_label, sq_bracket, panel_header,
     install_rcparams, save_figure,
     legend, channel_legend, channel_color,
@@ -263,8 +263,8 @@ def build() -> plt.Figure:
                 below=True)
 
     # Arrow between the two stacks (above the shape label, clear of it).
-    arrow(ax, (13.5, 25.0), (27.0, 25.0), color=FRONTEND, lw=2.0)
-    edge_label(ax, 20.25, 27.2, "apply mask", color=FRONTEND)
+    arrow(ax, (13.5, 25.0), (27.0, 25.0), color=TOKENIZER, lw=2.0)
+    edge_label(ax, 20.25, 27.2, "apply mask", color=TOKENIZER)
 
     # ---- equivalence panel (neutral / MUTED) ------------------------------ #
     e_top, e_bot = stack_top, y_tokens

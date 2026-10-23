@@ -30,7 +30,7 @@ import matplotlib.pyplot as plt
 
 from figure_style import (  # noqa: E402
     BLUE, GREEN, ORANGE, RED, PURPLE, VIOLET, INK, MUTED, SKY,
-    CHANNEL_COLORS, FRONTEND, FUSION, ENCODER, DECODER, MEMORY, LOSS, FUSED,
+    CHANNEL_COLORS, TOKENIZER, FUSION, ENCODER, DECODER, MEMORY, LOSS, FUSED,
     GHOST, tint, rrect, arrow, panel_header, install_rcparams, save_figure,
     legend, role_legend, channel_legend, padded_ghost, edge_label,
 )
@@ -40,7 +40,7 @@ OUT = Path(__file__).resolve().parent / "out"
 # Short-hand role colours (the figure is built entirely from role colours).
 FUS = FUSION          # orange: every ChannelFusion / IdentityGatedSum box
 OUT_C = FUSED         # blue: the fused output vector [B, N, D]
-FE = FRONTEND         # green: patch-embed tokens, additive identity z_c
+TOK = TOKENIZER         # green: patch-embed tokens, additive identity z_c
 REJ = LOSS            # red: the rejected O(C^2) baseline / omitted accent
 
 
@@ -89,7 +89,7 @@ def draw_panel_a(ax):
     GC = (GX0 + GX1) / 2
 
     # ---- ragged token list: the solid primary object ---------------------- #
-    rrect(ax, GX0, 78.0, GX1 - GX0, 3.0, edge=FE, face=tint(FE, 0.86),
+    rrect(ax, GX0, 78.0, GX1 - GX0, 3.0, edge=TOK, face=tint(TOK, 0.86),
           lw=1.4, rounding=0.5)
     ax.text(GC, 79.5, "ragged $[\\Sigma C\\cdot N,\\, D]$  $V$ visible rows",
             ha="center", va="center", fontsize=6.2, color=INK,
@@ -146,7 +146,7 @@ def draw_panel_a(ax):
 
     # ---- connectors: tokens -> LayerNorm -> k=v -> scores -> alpha -------- #
     for cx in CTR:
-        arrow(ax, (cx, 78.0), (cx, y_tok + h_tok), lw=1.0, ms=7, color=FE)
+        arrow(ax, (cx, 78.0), (cx, y_tok + h_tok), lw=1.0, ms=7, color=TOK)
         arrow(ax, (cx, y_tok), (cx, y_ln + h_ln), lw=1.1, ms=7)
         arrow(ax, (cx, y_ln), (cx, y_kv + h_kv), lw=1.1, ms=7)
         arrow(ax, (cx, y_kv), (cx, y_s + h_s), lw=1.1, ms=7)
@@ -228,13 +228,13 @@ def draw_panel_b(ax):
     RC = RX[1] + W / 2                # 122.5 -- right group centre
 
     # ---- branch inputs ---------------------------------------------------- #
-    rrect(ax, LX[0], 78.0, LX[2] + W - LX[0], 3.0, edge=FE,
-          face=tint(FE, 0.86), lw=1.4, rounding=0.5)
+    rrect(ax, LX[0], 78.0, LX[2] + W - LX[0], 3.0, edge=TOK,
+          face=tint(TOK, 0.86), lw=1.4, rounding=0.5)
     ax.text(LC, 79.5, "channel embedding $z_c$  ($D$)", ha="center",
             va="center", fontsize=6.2, color=INK, fontweight="bold")
 
-    rrect(ax, RX[0], 78.0, RX[2] + W - RX[0], 3.0, edge=FE,
-          face=tint(FE, 0.86), lw=1.4, rounding=0.5)
+    rrect(ax, RX[0], 78.0, RX[2] + W - RX[0], 3.0, edge=TOK,
+          face=tint(TOK, 0.86), lw=1.4, rounding=0.5)
     ax.text(RC, 79.5, "ragged tokens $[\\Sigma C\\cdot N, D]$", ha="center",
             va="center", fontsize=6.2, color=INK, fontweight="bold")
 
@@ -383,7 +383,7 @@ def draw_legends(ax):
           lw=1.2, rounding=0.6, z=1)
 
     role_legend(ax, 4.0, 25.0,
-                [("frontend / $z_c$", FRONTEND),
+                [("tokenizer / $z_c$", TOKENIZER),
                  ("channel fusion", FUSION),
                  ("encoder", ENCODER),
                  ("decoder", DECODER),

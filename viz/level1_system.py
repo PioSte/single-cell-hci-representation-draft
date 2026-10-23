@@ -28,7 +28,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 from figure_style import (  # noqa: E402  (sibling module, run from viz/)
-    FRONTEND, FUSION, ENCODER, DECODER, MEMORY, LOSS, FUSED, POOL,
+    TOKENIZER, FUSION, ENCODER, DECODER, MEMORY, LOSS, FUSED, POOL,
     INK, MUTED, CHANNEL_COLORS,
     tint, rrect, box, arrow, edge_label, sq_bracket, install_rcparams,
     save_figure, role_legend, channel_legend, padded_ghost,
@@ -205,7 +205,7 @@ def build() -> plt.Figure:
     # ---- module boxes (all centred on YMID) ------------------------------- #
     box(ax, 15, YMID - 7.5, 22, 15, "Channel-tied patch embed",
         "shared Conv $1{\\to}D$, stride $P$\nno PE here; $+\\,z_c$; PE post-fusion",
-        edge=FRONTEND, sub_size=6.2)
+        edge=TOKENIZER, sub_size=6.2)
     box(ax, 56, YMID - 7.5, 19, 15, "Channel fusion",
         "pool over channel axis\nper $(b,n)$ location\nsingle-query PMA $O(C)$ · gated $O(C)$",
         edge=FUSION, sub_size=5.7)
@@ -228,8 +228,8 @@ def build() -> plt.Figure:
 
     # ---- DCP masker chip feeds the patch embed ---------------------------- #
     box(ax, 15, 57.0, 22, 6.2, "DCP visibility sampler", "Eq. 1 · token omission (never zero)",
-        edge=FRONTEND, title_size=7.2, sub_size=6.0)
-    arrow(ax, (26.0, 57.0), (26.0, 53.5), color=FRONTEND, lw=1.3)
+        edge=TOKENIZER, title_size=7.2, sub_size=6.0)
+    arrow(ax, (26.0, 57.0), (26.0, 53.5), color=TOKENIZER, lw=1.3)
 
     # ---- shared-weight bracket over the transformer ----------------------- #
     rrect(ax, 93.0, YMID - 10.2, 28.0, 19.4, edge=ENCODER, face="none", lw=1.3,
@@ -243,7 +243,7 @@ def build() -> plt.Figure:
     # ---- legends (large empty lower-left area) ---------------------------- #
     role_legend(
         ax, 13.0, 32.0,
-        [("frontend", FRONTEND), ("fusion", FUSION), ("encoder", ENCODER),
+        [("tokenizer", TOKENIZER), ("fusion", FUSION), ("encoder", ENCODER),
          ("decoder", DECODER), ("memory rows", MEMORY), ("loss / omitted", LOSS),
          ("fused tokens", FUSED), ("pooling", POOL)],
         title="module roles", pitch=2.2, fontsize=6.4, title_size=6.9,

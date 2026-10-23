@@ -11,7 +11,7 @@ They share one design system so they read as one authored set:
 * `figure_style.py` — the palette (Okabe-Ito), module-box / arrow / array-stack
   primitives, the channel colour table, and the `save_figure` helper. It also
   exposes a shared **role palette** so the same architecture role always gets
-  the same colour in every level (`FRONTEND` green, `FUSION` orange, `ENCODER`
+  the same colour in every level (`TOKENIZER` green, `FUSION` orange, `ENCODER`
   pink, `DECODER` violet, `MEMORY` gold, `LOSS` red, `FUSED` blue, `POOL` sky,
   `GHOST` muted), plus `legend` / `role_legend` / `channel_legend` and
   `padded_ghost` helpers. Per-channel colours stay in `CHANNEL_COLORS` and are
@@ -24,7 +24,7 @@ They share one design system so they read as one authored set:
 | **L0** | `level0_positioning.py` | padded dense ViT · dense cross-channel attention · ours | ChAda-ViT Fig 13 |
 | **L1** | `level1_system.py` | end-to-end system: training path + `encode()` branch | Panopticon Fig 1 / Perceiver-IO Fig 2 |
 | **L2** | `level2_layout.py` | axis-labelled tensor layout (the hero figure) | Perceiver-IO Fig 2 |
-| **L3** | `level3_frontend.py` | tied patch embed + additive channel embedding + post-fusion PE | ChannelViT Fig 1 / ChAda-ViT Fig 2 |
+| **L3** | `level3_tokenizer.py` | tied patch embed + additive channel embedding + post-fusion PE | ChannelViT Fig 1 / ChAda-ViT Fig 2 |
 | **L4** | `level4_fusion.py` | fusion internals (single query, projection-free K/V) + `IdentityGatedSum` channel-routed `O(C)` ablation | Perceiver-IO Fig 5 inset |
 | **L5** | `level5_masking.py` | DCP Eq. 1 (patch / channel / combined) + unified HCS channel sampler; token omission | ChAda-ViT Fig 2 MASK row |
 | **L6** | `level6_objective.py` | MAE objective: trained content-only descriptor, target self-attention, default/ablation losses | Panopticon teacher–student |
@@ -98,7 +98,7 @@ It is vector-first (PDF/SVG for the paper, PNG for preview), uses a
 colour-blind-safe Okabe-Ito palette, and annotates every module with its tensor
 shape. Two panels:
 
-* **A** — the end-to-end padding-free channel-fusion front-end.
+* **A** — the end-to-end padding-free channel-fusion tokenizer.
 * **B** — the set-native token layout (ragged grid, `(b,n)` attention groups,
   an omitted row, the padded tensor that is never materialised) plus the
   interchangeable fusion options and the DCP masking rule.

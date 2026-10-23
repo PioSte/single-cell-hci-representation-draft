@@ -13,7 +13,7 @@ grammar the reference architecture figures in ``references/`` use:
 Import from a figure script::
 
     from figure_style import (BLUE, GREEN, ORANGE, RED, VIOLET, INK, MUTED,
-                              CHANNEL_COLORS, FRONTEND, FUSION, ENCODER,
+                              CHANNEL_COLORS, TOKENIZER, FUSION, ENCODER,
                               DECODER, MEMORY, LOSS, FUSED, POOL,
                               tint, rrect, box, arrow,
                               edge_label, sq_bracket, panel_header,
@@ -25,7 +25,7 @@ Okabe-Ito palette (colour-blind safe).
 Role palette -- the same *role* always gets the same colour in every figure,
 so the L0-L8 set reads as one authored system:
 
-    FRONTEND  green   patch embed / tied Conv / spatial pos / additive z_c
+    TOKENIZER green   patch embed / tied Conv / spatial pos / additive z_c
     FUSION    orange  channel fusion (ChannelFusion + IdentityGatedSum)
     ENCODER   pink    transformer encoder + its memory-augmented blocks
     DECODER   violet  channel-aware decoder + reconstruction head
@@ -60,7 +60,7 @@ MUTED = "#5C5C5C"
 CHANNEL_COLORS = [BLUE, GREEN, ORANGE, PURPLE, VIOLET]
 
 # --- semantic role palette (see module docstring) ------------------------- #
-FRONTEND = GREEN
+TOKENIZER = GREEN
 FUSION = ORANGE
 ENCODER = PURPLE
 DECODER = VIOLET

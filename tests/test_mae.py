@@ -94,7 +94,7 @@ def test_encoder_input_length_is_present_locations():
     ]
     for c in range(5):
         visible[1][c, c % model.n_patches] = True
-    cs = model.frontend(images, ids, visible)
+    cs = model.tokenizer(images, ids, visible)
     n_visible = sum(int(v.sum()) for v in visible)
     assert cs.tokens.shape[0] == n_visible
 
@@ -246,7 +246,7 @@ def test_forward_and_encode_share_the_descriptor():
 def test_post_fusion_pe_and_no_patch_embed_pe():
     model = _model()
     assert tuple(model.fusion.spatial_pos.shape) == (1, model.n_patches, 32)
-    assert not hasattr(model.frontend.patch_embed, "spatial_pos")
+    assert not hasattr(model.tokenizer.patch_embed, "spatial_pos")
 
 
 def test_multi_query_descriptor_smoke():

@@ -1,6 +1,6 @@
 # Purpose of this repo
 
-This repo is a PyTorch reference implementation of a padding-free "channel-fusion" front-end for a high-content-imaging (HCI) foundation model, plus a channel-aware Masked Autoencoder (MAE) built on top of it. The design rationale and deviations are in `docs/design.md`.
+This repo is a PyTorch reference implementation of a padding-free "channel-fusion" tokenizer for a high-content-imaging (HCI) foundation model, plus a channel-aware Masked Autoencoder (MAE) built on top of it. The design rationale and deviations are in `docs/design.md`.
 
 ## The core problem it solves
 
@@ -23,4 +23,4 @@ The goal is a function f({E_1..E_C}) → [N, D] per sample whose size is indepen
 
 ## Naming
 
-`ChannelTokenizer` is the front-end (tied patch embed + additive identity); `ChannelEmbedding` is the learned per-channel-id table; `IdentityGatedSum` is the marker-routed O(C) fusion ablation; `grouped_attention` means padding-free batching by group id, not grouped-query attention.
+`ChannelTokenizer` produces the channel-set tokens (tied patch embed + additive identity); `ChannelEmbedding` is the learned per-channel-id table; `IdentityGatedSum` is the marker-routed O(C) fusion ablation; `grouped_attention` means padding-free batching by group id, not grouped-query attention.
