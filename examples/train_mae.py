@@ -27,7 +27,7 @@ def main() -> None:
     p.add_argument("--n-memory", type=int, default=4)
     p.add_argument("--lr", type=float, default=1e-3)
     p.add_argument("--c-max", type=int, default=8)
-    p.add_argument("--markers", type=int, default=32)
+    p.add_argument("--channel-ids", type=int, default=32)
     args = p.parse_args()
 
     torch.manual_seed(0)
@@ -37,7 +37,7 @@ def main() -> None:
         n_samples=256,
         image_size=args.image_size,
         c_max=args.c_max,
-        n_markers=args.markers,
+        n_channel_ids=args.channel_ids,
     )
     loader = DataLoader(
         ds, batch_size=args.batch_size, shuffle=True, collate_fn=collate_fn, drop_last=True
@@ -51,7 +51,7 @@ def main() -> None:
         decoder_depth=2,
         n_heads=args.n_heads,
         n_memory=args.n_memory,
-        num_markers=args.markers,
+        num_channel_ids=args.channel_ids,
         p_patch=0.5,
         p_channel=0.5,
     ).to(device)

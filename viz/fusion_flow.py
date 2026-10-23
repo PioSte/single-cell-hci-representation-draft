@@ -175,7 +175,7 @@ def fusion_flow(s: k.Scene):
     s.play(k.fade_in(desc, formula, step))
 
     # ===================================================================== #
-    # 1 -- context: channel-patch tokens, locations, segments.
+    # 1 -- context: channel-patch tokens, locations, groups.
     # ===================================================================== #
     loc_labels, stacks, grid = [], [], []
     counts = [3, 2]
@@ -208,9 +208,9 @@ def fusion_flow(s: k.Scene):
     )
     axis_p = k.Text("patch →", size=0.24, color=k.GRAY, x=0.0, y=-2.05, opacity=0.0)
     axis_s = k.Text("sample ↓", size=0.24, color=k.GRAY, x=-4.5, y=0.1, opacity=0.0)
-    c_seg = callout("one segment = the channels at one location", hl, "right", H0COL)
+    c_group = callout("one group = the channels at one location", hl, "right", H0COL)
     c_tok = callout("a channel token", stacks[9], "bottom", CH[0])
-    s.add(*grid, *stacks, *loc_labels, hl, axis_p, axis_s, c_seg, c_tok)
+    s.add(*grid, *stacks, *loc_labels, hl, axis_p, axis_s, c_group, c_tok)
     s.play(
         k.stagger([g.to(opacity=1.0) for g in grid], lag=0.05),
         k.stagger([st.to(opacity=1.0) for st in stacks], lag=0.015),
@@ -219,19 +219,19 @@ def fusion_flow(s: k.Scene):
         duration=0.6,
     )
     cap(
-        "a token is one channel-patch; a segment groups channels at one location",
-        "seg = sample_idx · N + patch_idx",
+        "a token is one channel-patch; a group holds the channels at one location",
+        "group_id = sample_idx · N + patch_idx",
     )
     s.play(hl.to(opacity=1.0), duration=0.3)
     s.play(k.indicate(hl), duration=0.5)
-    s.play(c_seg.to(opacity=1.0), c_tok.to(opacity=1.0), duration=0.5)
+    s.play(c_group.to(opacity=1.0), c_tok.to(opacity=1.0), duration=0.5)
     s.wait(0.3)
 
     # ===================================================================== #
     # 2 -- zoom into the highlighted location: its C channel tokens.
     # ===================================================================== #
     nxt("2 / 11")
-    s.play(k.fade_out(*grid, *stacks, *loc_labels, hl, axis_p, axis_s, c_seg, c_tok),
+    s.play(k.fade_out(*grid, *stacks, *loc_labels, hl, axis_p, axis_s, c_group, c_tok),
            duration=0.5)
     x_cells, x_nums, x_lab = [], [], []
     for c in range(C):

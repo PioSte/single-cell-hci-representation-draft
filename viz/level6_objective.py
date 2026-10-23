@@ -184,8 +184,8 @@ def build() -> plt.Figure:
             va="center", fontsize=5.4, color=FRONTEND, fontweight="bold",
             linespacing=1.15)
 
-    # Encoder module (SpatialTransformer) -- ENCODER role colour.
-    box(ax, 27.0, 43.0, 19.0, 21.0, "SpatialTransformer",
+    # Encoder module (TransformerEncoder) -- ENCODER role colour.
+    box(ax, 27.0, 43.0, 19.0, 21.0, "TransformerEncoder",
         "grouped self-attn\n$\\times L_e$ blocks", edge=ENCODER, sub_size=6.6)
 
     # Visible tokens + memory feed the encoder; encoder -> enc_all.

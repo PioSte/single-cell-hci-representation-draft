@@ -1,9 +1,9 @@
-"""Spatial transformer over fused tokens, with fixed-count memory tokens.
+"""Transformer encoder over fused tokens, with fixed-count memory tokens.
 
 Memory / register tokens are carried through the encoder (and handed to the
 decoder) as a cardinality-independent long-term memory.  Attention is again
-padding-free: the sequence is flattened over real tokens with per-sample
-segment ids.
+padding-free: the sequence is flattened over real tokens with per-sample group
+ids.
 """
 
 from __future__ import annotations
@@ -26,16 +26,16 @@ class TransformerBlock(nn.Module):
             nn.Linear(dim, hidden), nn.GELU(), nn.Dropout(dropout), nn.Linear(hidden, dim)
         )
 
-    def forward(self, x: torch.Tensor, seg: torch.Tensor, n_segments: int) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, group_id: torch.Tensor, n_groups: int) -> torch.Tensor:
         h = grouped_self_attention(
-            self.norm1(x), seg, n_segments, self.n_heads, dropout_p=0.0
+            self.norm1(x), group_id, n_groups, self.n_heads, dropout_p=0.0
         )
         x = x + self.dropout(h)
         x = x + self.dropout(self.mlp(self.norm2(x)))
         return x
 
 
-class SpatialTransformer(nn.Module):
+class TransformerEncoder(nn.Module):
     """Pre-norm transformer over ``[T, D]`` real tokens grouped by sample."""
 
     def __init__(
@@ -66,13 +66,13 @@ class SpatialTransformer(nn.Module):
         """
         device = tokens.device
         mem = self.memory.expand(n_samples, -1, -1).reshape(-1, self.memory.shape[-1])
-        mem_seg = torch.arange(n_samples, device=device).repeat_interleave(self.n_memory)
+        mem_group_id = torch.arange(n_samples, device=device).repeat_interleave(self.n_memory)
 
         x = torch.cat([mem, tokens], dim=0)
-        seg = torch.cat([mem_seg, sample_idx.to(device)], dim=0)
+        group_id = torch.cat([mem_group_id, sample_idx.to(device)], dim=0)
 
         for blk in self.blocks:
-            x = blk(x, seg, n_samples)
+            x = blk(x, group_id, n_samples)
         x = self.norm(x)
 
         n_mem = n_samples * self.n_memory

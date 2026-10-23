@@ -2,7 +2,7 @@
 
 Panel A shows :class:`ChannelFusion`, the default PMA-style pooling over the
 channel axis at each spatial location. Panel B shows
-:class:`HypernetworkWeightedSum`, the marker-identity-routed alternative for
+:class:`IdentityGatedSum`, the identity-routed alternative for
 high-channel-count panels. Both are ``O(C)`` per location: the default
 ``ChannelFusion`` uses a single shared query per location, so it never forms a
 ``C x C`` attention map. A bottom inset shows the rejected ``O(C^2)`` dense
@@ -209,14 +209,14 @@ def draw_panel_a(ax):
 
 
 # --------------------------------------------------------------------------- #
-# Panel B: HypernetworkWeightedSum (O(C) alternative)
+# Panel B: IdentityGatedSum (O(C) alternative)
 # --------------------------------------------------------------------------- #
 def draw_panel_b(ax):
-    """HypernetworkWeightedSum: identity -> weights, tokens -> values."""
+    """IdentityGatedSum: channel embedding -> weights, tokens -> values."""
     rrect(ax, 75.0, 28.0, 70.0, 53.5, edge=GHOST, face="none", lw=1.0,
           dashed=True, rounding=1.0, z=0)
     panel_header(ax, 76.0, 83.6, "B",
-                 "HypernetworkWeightedSum \u2014 $O(C)$")
+                 "IdentityGatedSum \u2014 $O(C)$")
 
     # two parallel branches: (left) identity -> weights, (right) values
     LX = [79.0, 85.0, 91.0]           # weight-branch column left edges
@@ -228,7 +228,7 @@ def draw_panel_b(ax):
     # ---- branch inputs ---------------------------------------------------- #
     rrect(ax, LX[0], 78.0, LX[2] + W - LX[0], 3.0, edge=FE,
           face=tint(FE, 0.86), lw=1.4, rounding=0.5)
-    ax.text(LC, 79.5, "marker identity $z_c$  ($D$)", ha="center",
+    ax.text(LC, 79.5, "channel embedding $z_c$  ($D$)", ha="center",
             va="center", fontsize=6.2, color=INK, fontweight="bold")
 
     rrect(ax, RX[0], 78.0, RX[2] + W - RX[0], 3.0, edge=FE,
@@ -430,7 +430,7 @@ def build() -> plt.Figure:
     # title
     ax.text(2, 87.0, "L4", ha="left", va="center", fontsize=15,
             fontweight="bold", color=INK)
-    ax.text(6.5, 87.0, "Channel fusion: PMA pooling vs hypernetwork routing",
+    ax.text(6.5, 87.0, "Channel fusion: PMA pooling vs identity-gated routing",
             ha="left", va="center", fontsize=12.2, fontweight="bold",
             color=INK)
 

@@ -7,7 +7,7 @@ for the four claimed properties:
 2. Permutation invariance — shuffling channel order does not change the result.
 3. Padding-free ≡ masked-padded — exact numeric equivalence (modulo float32 eps).
 4. Cost — per-location analytic FLOPs: dense ``C×C`` channel attention is
-   ``O(C²)``; the shipped fixed-query PMA and the hypernetwork weighted sum are
+   ``O(C²)``; the shipped fixed-query PMA and the identity-gated weighted sum are
    both ``O(C)``.
 
 This keeps the total runtime modest (< 60s) by using a tiny model (16×16, 2 spatial
@@ -47,7 +47,7 @@ from figure_style import (
 )
 
 # Import the model components
-from fuse_channels.fusion import dense_fusion_reference
+from fuse_channels.fusion import _dense_fusion_reference
 from fuse_channels.mae import ChannelFusionMAE
 
 OUT = Path(__file__).resolve().parent / "out"
@@ -69,11 +69,11 @@ def measure_cardinality_invariance(model, device, Cs=(1, 3, 6, 20, 60)):
     """Measure input size growth vs. constant descriptor size."""
     results = []
     print("\n=== Cardinality Invariance ===")
-    num_markers = 16
+    n_channel_ids = 16
     for C in Cs:
         images = [torch.randn(C, 1, 16, 16, device=device)]
         # Use modulo to keep channel_ids within valid range
-        channel_ids = [torch.arange(C, device=device) % num_markers]
+        channel_ids = [torch.arange(C, device=device) % n_channel_ids]
         _, descriptor = model.encode(images, channel_ids, pool="mean")
         shape = list(descriptor.shape)
         n_in = C * model.n_patches * descriptor.shape[-1]  # elements of [ΣC·N, D]
@@ -93,11 +93,11 @@ def measure_permutation_invariance(
     """Shuffle channel order several times at several C; measure max|Δ|."""
     print("\n=== Permutation Invariance ===")
     results = []
-    num_markers = 16
+    n_channel_ids = 16
     for C in Cs:
         torch.manual_seed(seed + C)
         images = [torch.randn(C, 1, 16, 16, device=device)]
-        channel_ids = [torch.arange(C, device=device) % num_markers]
+        channel_ids = [torch.arange(C, device=device) % n_channel_ids]
         _, desc1 = model.encode(images, channel_ids, pool="mean")
         for s in range(n_shuffles):
             perm = torch.randperm(C, device=device)
@@ -128,7 +128,7 @@ def measure_padding_free_equiv(model, device, seed=0):
         ]
         cs = model.frontend(images, channel_ids, visible)
         fused_padless, _ = model.fusion(cs)
-        fused_dense = dense_fusion_reference(model.fusion, cs)
+        fused_dense = _dense_fusion_reference(model.fusion, cs)
         diff = (fused_padless - fused_dense).abs().max().item()
         results.append({"batch": i, "Cs": comp, "diff": diff})
         print(f"batch {i} Cs={comp} → max|Δ|={diff:.2e}")
@@ -141,15 +141,15 @@ def analytic_cost(Cs, D):
     * fixed-query PMA (``ChannelFusion``): scores + weighted sum ``2·C·D``,
       plus the per-location output projection ``D²``;
     * dense ``C×C`` channel attention: ``2·C²·D``;
-    * ``HypernetworkWeightedSum``: per-token ``D→D`` MLP + ``D→Q`` head
+    * ``IdentityGatedSum``: per-token ``D→D`` MLP + ``D→Q`` head
       (``D² + D``) and a ``D→D`` value projection (``D²``) → ``C·(2·D² + D)``.
     """
-    attn, dense, hyper = [], [], []
+    attn, dense, gated = [], [], []
     for C in Cs:
         attn.append(2 * C * D + D * D)
         dense.append(2 * C * C * D)
-        hyper.append(C * (2 * D * D + D))
-    return np.array(attn), np.array(dense), np.array(hyper)
+        gated.append(C * (2 * D * D + D))
+    return np.array(attn), np.array(dense), np.array(gated)
 
 
 # --------------------------------------------------------------------------- #
@@ -170,7 +170,7 @@ def tidy(ax):
 # Figure
 # --------------------------------------------------------------------------- #
 def build_figure(card_results, perm_results, pad_results,
-                 Cs_cost, cost_attn, cost_dense, cost_hyper):
+                 Cs_cost, cost_attn, cost_dense, cost_gated):
     """Build the 4-panel figure."""
     fig = plt.figure(figsize=(14, 8.8))
     gs = fig.add_gridspec(2, 2, hspace=0.50, wspace=0.26,
@@ -291,8 +291,8 @@ def build_figure(card_results, perm_results, pad_results,
 
     ax_d.loglog(Cs_cost, cost_attn, "-", color=FUSED, linewidth=2.6,
                 label="ChannelFusion fixed-query PMA  ($O(C)$)")
-    ax_d.loglog(Cs_cost, cost_hyper, "-", color=FUSION, linewidth=2.6,
-                label="HypernetworkWeightedSum  ($O(C)$)")
+    ax_d.loglog(Cs_cost, cost_gated, "-", color=FUSION, linewidth=2.6,
+                label="IdentityGatedSum  ($O(C)$)")
     ax_d.loglog(Cs_cost, cost_dense, "--", color=LOSS, linewidth=2.6,
                 label="dense $C{\\times}C$ channel attention  ($O(C^2)$)")
 
@@ -304,10 +304,10 @@ def build_figure(card_results, perm_results, pad_results,
     ax_d.legend(loc="upper left", frameon=True, fontsize=8.0)
 
     C_end = Cs_cost[-1]
-    ratio = cost_dense[-1] / cost_hyper[-1]
+    ratio = cost_dense[-1] / cost_gated[-1]
     ax_d.text(0.97, 0.16,
               f"at $C$={C_end}: dense $C{{\\times}}C$ is\n"
-              f"{ratio:.1f}$\\times$ the hypernetwork\n"
+              f"{ratio:.1f}$\\times$ the identity-gated sum\n"
               "both trade-offs are $O(C)$;\n"
               "the shipped PMA is the cheapest",
               transform=ax_d.transAxes, ha="right", va="center", fontsize=8.4,
@@ -340,7 +340,7 @@ def main() -> None:
         decoder_depth=1,
         n_heads=4,
         n_memory=2,
-        num_markers=16,
+        num_channel_ids=16,
         fusion="attention",
     ).to(device).eval()
 
@@ -355,11 +355,11 @@ def main() -> None:
 
     D = card_results[0]["D"]
     Cs_cost = np.arange(1, 61)
-    cost_attn, cost_dense, cost_hyper = analytic_cost(Cs_cost, D)
+    cost_attn, cost_dense, cost_gated = analytic_cost(Cs_cost, D)
 
     # Build and save figure
     fig = build_figure(card_results, perm_results, pad_results,
-                       Cs_cost, cost_attn, cost_dense, cost_hyper)
+                       Cs_cost, cost_attn, cost_dense, cost_gated)
     save_figure(fig, OUT, args.stem, args.formats)
     plt.close(fig)
 

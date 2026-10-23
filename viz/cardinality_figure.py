@@ -200,7 +200,7 @@ def draw_invariance(ax):
     arrow(ax, (bus_x, 14.0), (52.0, 14.0), color=INK, lw=1.8, ms=11)
 
     node(ax, 52.5, 8.0, 30.0, 12.0,
-         "channel fusion", "PMA / hypernetwork $\\to$ $[B,N,D]$",
+         "channel fusion", "PMA / identity-gated $\\to$ $[B,N,D]$",
          edge=RED, title_size=9.0, sub_size=7.2)
     arrow(ax, (82.7, 14.0), (86.0, 14.0), color=INK, lw=1.8, ms=11)
     node(ax, 86.5, 8.5, 23.0, 11.0,

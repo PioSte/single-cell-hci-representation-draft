@@ -58,7 +58,7 @@ def draw_torchview() -> None:
         decoder_depth=2,
         n_heads=4,
         n_memory=4,
-        num_markers=16,
+        num_channel_ids=16,
     )
     model.eval()
     images = [torch.randn(2, 1, 16, 16), torch.randn(4, 1, 16, 16)]

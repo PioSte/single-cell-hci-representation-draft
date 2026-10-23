@@ -2,23 +2,23 @@ import torch
 from fuse_channels import ChannelSet
 
 
-def make_channel_set(C_list, N, D, n_markers=16, seed=0, with_identity=True):
+def make_channel_set(C_list, N, D, n_channel_ids=16, seed=0, with_channel_embed=True):
     """Build a ChannelSet with full (unmasked) channel sets."""
     g = torch.Generator().manual_seed(seed)
-    tokens, sample_idx, channel_idx, patch_idx, channel_id, identity = [], [], [], [], [], []
+    tokens, sample_idx, channel_idx, patch_idx, channel_id, channel_embed = [], [], [], [], [], []
     for b, C in enumerate(C_list):
         for c in range(C):
-            cid = int(torch.randint(0, n_markers, (1,), generator=g).item())
-            ident = torch.randn(D, generator=g)
+            cid = int(torch.randint(0, n_channel_ids, (1,), generator=g).item())
+            embed = torch.randn(D, generator=g)
             for n in range(N):
-                tokens.append(torch.randn(D, generator=g) + ident)
+                tokens.append(torch.randn(D, generator=g) + embed)
                 sample_idx.append(b)
                 channel_idx.append(c)
                 patch_idx.append(n)
                 channel_id.append(cid)
-                identity.append(ident)
+                channel_embed.append(embed)
     tokens = torch.stack(tokens)
-    cs = ChannelSet(
+    return ChannelSet(
         tokens=tokens,
         sample_idx=torch.tensor(sample_idx),
         channel_idx=torch.tensor(channel_idx),
@@ -26,10 +26,8 @@ def make_channel_set(C_list, N, D, n_markers=16, seed=0, with_identity=True):
         channel_id=torch.tensor(channel_id),
         n_samples=len(C_list),
         n_patches=N,
-        identity=torch.stack(identity) if with_identity else None,
+        channel_embed=torch.stack(channel_embed) if with_channel_embed else None,
     )
-    cs.seq_len = torch.bincount(cs.sample_idx, minlength=len(C_list))
-    return cs
 
 
 def permute_channels(cs):
@@ -37,7 +35,7 @@ def permute_channels(cs):
     import random
 
     rng = random.Random(0)
-    tokens, sample_idx, channel_idx, patch_idx, channel_id, identity = [], [], [], [], [], []
+    tokens, sample_idx, channel_idx, patch_idx, channel_id, channel_embed = [], [], [], [], [], []
     for b in range(cs.n_samples):
         sel = (cs.sample_idx == b).nonzero(as_tuple=True)[0]
         # group by channel
@@ -52,8 +50,10 @@ def permute_channels(cs):
                 channel_idx.append(new_c)
                 patch_idx.append(int(cs.patch_idx[t]))
                 channel_id.append(int(cs.channel_id[t]))
-                identity.append(cs.identity[t] if cs.identity is not None else None)
-    new = ChannelSet(
+                channel_embed.append(
+                    cs.channel_embed[t] if cs.channel_embed is not None else None
+                )
+    return ChannelSet(
         tokens=torch.stack(tokens),
         sample_idx=torch.tensor(sample_idx),
         channel_idx=torch.tensor(channel_idx),
@@ -61,7 +61,7 @@ def permute_channels(cs):
         channel_id=torch.tensor(channel_id),
         n_samples=cs.n_samples,
         n_patches=cs.n_patches,
-        identity=torch.stack(identity) if cs.identity is not None else None,
+        channel_embed=(
+            torch.stack(channel_embed) if cs.channel_embed is not None else None
+        ),
     )
-    new.seq_len = torch.bincount(new.sample_idx, minlength=cs.n_samples)
-    return new

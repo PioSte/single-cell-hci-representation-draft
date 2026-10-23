@@ -256,7 +256,7 @@ def build() -> plt.Figure:
 
     # ---- Identity embedding source ---------------------------------------- #
     emb_x, emb_y, emb_w, emb_h = 90.0, 37.0, 16.0, 10.0
-    box(ax, emb_x, emb_y, emb_w, emb_h, "nn.Embedding", "num_markers \u00d7 D",
+    box(ax, emb_x, emb_y, emb_w, emb_h, "nn.Embedding", "num_channel_ids \u00d7 D",
         edge=FRONTEND, title_size=7.8, sub_size=6.3)
     ax.text(emb_x + emb_w / 2, emb_y - 2.0, "$z_c$ lookup table",
             ha="center", va="center", fontsize=6.4, color=FRONTEND,

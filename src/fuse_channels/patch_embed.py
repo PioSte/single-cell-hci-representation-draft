@@ -1,4 +1,4 @@
-"""Channel-tied patch embedding and the channel-set front-end.
+"""Channel-tied patch embedding and the channel-set tokenizer.
 
 The projection is **tied across channels** (one shared kernel applied to every
 single-channel image); ChannelViT shows tied filters beat untied ones and give
@@ -15,7 +15,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from .container import ChannelSet
-from .identity import ChannelIdentity
+from .identity import ChannelEmbedding
 
 
 class ChannelTiedPatchEmbed(nn.Module):
@@ -44,7 +44,7 @@ class ChannelTiedPatchEmbed(nn.Module):
         images:
             list of ``[C_b, 1, H, W]`` tensors (one image per channel).
         channel_ids:
-            list of ``[C_b]`` marker ids.
+            list of ``[C_b]`` channel ids.
         visible:
             optional list of ``[C_b, n_patches]`` bool masks selecting which
             channel-patch tokens to *keep*.  Masked tokens are omitted, never
@@ -53,8 +53,7 @@ class ChannelTiedPatchEmbed(nn.Module):
         Returns
         -------
         tuple ``(tokens, meta)`` where ``meta`` holds ``sample_idx``,
-        ``channel_idx``, ``patch_idx``, ``channel_id``, ``channel_global`` and
-        ``seq_len``.
+        ``channel_idx``, ``patch_idx``, ``channel_id`` and ``channel_global``.
         """
         device = images[0].device
         counts = torch.tensor([im.shape[0] for im in images], device=device)
@@ -90,22 +89,20 @@ class ChannelTiedPatchEmbed(nn.Module):
             channel_global = channel_global[keep]
             patch_idx = patch_idx[keep]
 
-        seq_len = torch.bincount(sample_idx, minlength=n_samples)
         meta = dict(
             sample_idx=sample_idx,
             channel_idx=channel_idx,
             patch_idx=patch_idx,
             channel_id=channel_id,
             channel_global=channel_global,
-            seq_len=seq_len,
         )
         return feat, meta
 
 
-class ChannelFrontend(nn.Module):
-    """Patch embed -> additive channel identity -> :class:`ChannelSet`.
+class ChannelTokenizer(nn.Module):
+    """Patch embed -> additive channel embedding -> :class:`ChannelSet`.
 
-    Channel identity is a learnable per-marker table.
+    The channel embedding is a learnable per-channel-id table.
     """
 
     def __init__(
@@ -113,12 +110,12 @@ class ChannelFrontend(nn.Module):
         image_size: int,
         patch_size: int,
         dim: int,
-        identity: ChannelIdentity,
+        channel_embedding: ChannelEmbedding,
     ) -> None:
         super().__init__()
         self.patch_embed = ChannelTiedPatchEmbed(image_size, patch_size, dim)
         self.n_patches = self.patch_embed.n_patches
-        self.identity = identity
+        self.channel_embed = channel_embedding
 
     def forward(
         self,
@@ -131,19 +128,18 @@ class ChannelFrontend(nn.Module):
         channel_global = meta["channel_global"]
 
         ids_per_ch = torch.cat([c.to(tokens.device) for c in channel_ids])
-        ident_per_ch = self.identity(ids_per_ch)
-        identity = ident_per_ch[channel_global]
+        embed_per_ch = self.channel_embed(ids_per_ch)
+        channel_embed = embed_per_ch[channel_global]
 
         return ChannelSet(
-            tokens=tokens + identity,
+            tokens=tokens + channel_embed,
             sample_idx=meta["sample_idx"],
             channel_idx=meta["channel_idx"],
             patch_idx=meta["patch_idx"],
             channel_id=meta["channel_id"],
             n_samples=n_samples,
             n_patches=self.n_patches,
-            identity=identity,
-            seq_len=meta["seq_len"],
+            channel_embed=channel_embed,
         )
 
     # ------------------------------------------------------------------ #

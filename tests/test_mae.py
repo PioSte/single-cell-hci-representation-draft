@@ -24,7 +24,7 @@ def _model(**kw):
         decoder_depth=1,
         n_heads=4,
         n_memory=3,
-        num_markers=16,
+        num_channel_ids=16,
     )
     cfg.update(kw)
     return ChannelFusionMAE(**cfg)
@@ -116,8 +116,8 @@ def test_encode_attention_pool_replaces_mean():
     assert torch.isfinite(pooled0).all()
 
 
-def test_hypernetwork_fusion_mae():
-    model = _model(fusion="hypernetwork")
+def test_identity_gated_fusion_mae():
+    model = _model(fusion="identity_gated")
     images, ids = _batch()
     out = model(images, ids, generator=torch.Generator().manual_seed(1))
     assert torch.isfinite(out["loss"])

@@ -5,8 +5,10 @@ Two interchangeable pooling mechanisms are provided:
 
 * :class:`ChannelFusion` -- PMA-style attention pooling over the channel axis
   (the default; the same single-query per-location pattern used by Panopticon).
-* :class:`HypernetworkWeightedSum` -- ``O(C)`` hypernetwork-weighted sum, the
-  cheap alternative flagged in the handoff for 20-60 channel panels.
+* :class:`IdentityGatedSum` -- ``O(C)`` identity-gated weighted sum, the cheap
+  ablation for 20-60 channel panels.  It is *not* a hypernetwork: a small MLP
+  emits per-channel mixing weights from the channel embedding; it does not
+  generate network weights.
 
 ChannelViT and ChAda-ViT are precedents for cross-channel attention, but they
 use dense padded self-attention rather than fixed-query pooling.
@@ -22,14 +24,14 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from .container import ChannelSet
-from .ops import grouped_pool_attention, segment_softmax
+from .ops import grouped_pool_attention, grouped_softmax
 
 
-def _unique_segments(seg: torch.Tensor):
-    """Return ``(unique_sorted, counts, lookup)`` for a per-token segment id."""
-    uniq, counts = torch.unique(seg, return_counts=True)
-    order = torch.argsort(seg, stable=True)
-    lookup = torch.searchsorted(uniq, seg[order])
+def _unique_groups(group_id: torch.Tensor):
+    """Return ``(unique_sorted, counts, order, lookup)`` for per-token group ids."""
+    uniq, counts = torch.unique(group_id, return_counts=True)
+    order = torch.argsort(group_id, stable=True)
+    lookup = torch.searchsorted(uniq, group_id[order])
     return uniq, counts, order, lookup
 
 
@@ -95,26 +97,26 @@ class ChannelFusion(nn.Module):
         Q, H = self.n_queries, self.n_heads
         Dh = D // H
 
-        seg = cs.location_segments()
-        uniq, _, order, lookup = _unique_segments(seg)
-        n_seg = uniq.numel()
+        group_id = cs.location_group_ids()
+        uniq, _, order, lookup = _unique_groups(group_id)
+        n_groups = uniq.numel()
 
         tok = self.norm_kv(cs.tokens[order]).view(-1, H, Dh)
-        q = self.norm_q(self.queries).reshape(1, Q, H, Dh).expand(n_seg, Q, H, Dh)
+        q = self.norm_q(self.queries).reshape(1, Q, H, Dh).expand(n_groups, Q, H, Dh)
 
         out = grouped_pool_attention(
-            q, tok, tok, lookup, n_seg, self._attention_dropout()
+            q, tok, tok, lookup, n_groups, self._attention_dropout()
         )
-        out = self.proj_out(out.reshape(n_seg, Q, D))  # [n_seg, Q, D]
-        out = out.reshape(n_seg, Q * D)
+        out = self.proj_out(out.reshape(n_groups, Q, D))  # [n_groups, Q, D]
+        out = out.reshape(n_groups, Q * D)
 
         fused = out.new_zeros(B, N, Q * D)
-        sample_of_seg = uniq // N
-        patch_of_seg = uniq % N
-        fused[sample_of_seg, patch_of_seg] = out
+        sample_of_group = uniq // N
+        patch_of_group = uniq % N
+        fused[sample_of_group, patch_of_group] = out
 
         present = torch.zeros(B, N, dtype=torch.bool, device=cs.tokens.device)
-        present[sample_of_seg, patch_of_seg] = True
+        present[sample_of_group, patch_of_group] = True
         return fused, present
 
     # ------------------------------------------------------------------ #
@@ -126,7 +128,7 @@ class MultiheadAttentionPooling(nn.Module):
     """Pooling by multi-head attention (PMA) over a padding-free token set.
 
     A learned query (``n_queries`` of them) cross-attends to every real token
-    of each segment and emits a fixed-size descriptor per segment.  This is the
+    of each group and emits a fixed-size descriptor per group.  This is the
     same padding-free grouped-attention primitive as :class:`ChannelFusion`,
     factored out so the inference-time descriptor of
     :class:`~fuse_channels.mae.ChannelFusionMAE` can pool across all of a
@@ -147,10 +149,10 @@ class MultiheadAttentionPooling(nn.Module):
     ------
     x:
         ``[T, D]`` real tokens (no padding).
-    seg:
-        ``[T]`` segment id of each token, in ``[0, n_segments)``.
-    n_segments:
-        total number of segments.  Segments without any token pool to zeros.
+    group_id:
+        ``[T]`` group id of each token, in ``[0, n_groups)``.
+    n_groups:
+        total number of groups.  Groups without any token pool to zeros.
     """
 
     def __init__(
@@ -178,15 +180,15 @@ class MultiheadAttentionPooling(nn.Module):
         return self.dropout if self.training else 0.0
 
     def forward(
-        self, x: torch.Tensor, seg: torch.Tensor, n_segments: int
+        self, x: torch.Tensor, group_id: torch.Tensor, n_groups: int
     ) -> torch.Tensor:
-        """Return ``[n_segments, n_queries * dim]`` attention-pooled descriptors."""
+        """Return ``[n_groups, n_queries * dim]`` attention-pooled descriptors."""
         H, Dh, Q = self.n_heads, self.dim // self.n_heads, self.n_queries
-        out = x.new_zeros(n_segments, Q * self.dim)
+        out = x.new_zeros(n_groups, Q * self.dim)
         if x.numel() == 0:
             return out
 
-        uniq, _, order, lookup = _unique_segments(seg)
+        uniq, _, order, lookup = _unique_groups(group_id)
         n_uniq = uniq.numel()
         tok = self.norm_kv(x[order]).view(-1, H, Dh)
         q = self.norm_q(self.queries).reshape(1, Q, H, Dh).expand(n_uniq, Q, H, Dh)
@@ -204,12 +206,12 @@ class MultiheadAttentionPooling(nn.Module):
         return f"dim={self.dim}, n_heads={self.n_heads}, n_queries={self.n_queries}"
 
 
-class HypernetworkWeightedSum(nn.Module):
-    """``joint = Σ_c softmax_c(MLP(identity_c)) · V_c`` -- ``O(C)``, no padding.
+class IdentityGatedSum(nn.Module):
+    """``joint = Σ_c softmax_c(MLP(channel_embed_c)) · V_c`` -- ``O(C)``, no padding.
 
     Preferred when quadratic channel-attention cost matters (e.g. 60-channel
-    multiplexed panels).  Weights are produced from the *channel identity*
-    (``ChannelSet.identity``) so routing stays marker-aware.
+    multiplexed panels).  Weights are produced from the *channel embedding*
+    (``ChannelSet.channel_embed``) so routing stays identity-aware.
     """
 
     def __init__(
@@ -233,32 +235,32 @@ class HypernetworkWeightedSum(nn.Module):
         self.out_norm = nn.LayerNorm(dim)
 
     def forward(self, cs: ChannelSet):
-        if cs.identity is not None:
-            w_in = cs.identity
-        else:  # fall back to token features if identity was not materialised
+        if cs.channel_embed is not None:
+            w_in = cs.channel_embed
+        else:  # fall back to token features if the embedding was not materialised
             w_in = cs.tokens
         logits = self.weight_net(w_in)  # [T, Q]
         values = self.out_norm(self.value_proj(cs.tokens))  # [T, D]
 
-        seg = cs.location_segments()
-        uniq, _, _, lookup = _unique_segments(seg)
-        n_seg = uniq.numel()
+        group_id = cs.location_group_ids()
+        uniq, _, _, lookup = _unique_groups(group_id)
+        n_groups = uniq.numel()
 
-        weights = segment_softmax(logits, lookup, n_seg)  # [T, Q]
+        weights = grouped_softmax(logits, lookup, n_groups)  # [T, Q]
         contrib = weights.unsqueeze(-1) * values.unsqueeze(1)  # [T, Q, D]
-        out = values.new_zeros(n_seg, self.n_queries, self.dim)
+        out = values.new_zeros(n_groups, self.n_queries, self.dim)
         out.index_add_(0, lookup, contrib)
-        out = out.reshape(n_seg, self.n_queries * self.dim)
+        out = out.reshape(n_groups, self.n_queries * self.dim)
 
         N = cs.n_patches
         fused = out.new_zeros(cs.n_samples, N, self.n_queries * self.dim)
-        sample_of_seg = uniq // N
-        patch_of_seg = uniq % N
-        fused[sample_of_seg, patch_of_seg] = out
+        sample_of_group = uniq // N
+        patch_of_group = uniq % N
+        fused[sample_of_group, patch_of_group] = out
         present = torch.zeros(
             cs.n_samples, N, dtype=torch.bool, device=cs.tokens.device
         )
-        present[sample_of_seg, patch_of_seg] = True
+        present[sample_of_group, patch_of_group] = True
         return fused, present
 
 
@@ -266,7 +268,7 @@ class HypernetworkWeightedSum(nn.Module):
 # Masked-padded reference implementation -- used by tests to prove exact
 # padding-free equivalence.  NOT used in the model path.
 # ---------------------------------------------------------------------- #
-def dense_fusion_reference(fusion: ChannelFusion, cs: ChannelSet) -> torch.Tensor:
+def _dense_fusion_reference(fusion: ChannelFusion, cs: ChannelSet) -> torch.Tensor:
     """Dense ``[B, C_max, N, D]`` + mask reference for ``ChannelFusion``.
 
     Implements the exact same math as :meth:`ChannelFusion.forward` but

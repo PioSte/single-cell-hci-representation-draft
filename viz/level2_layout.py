@@ -211,7 +211,7 @@ def draw_encoder_memory(ax):
     axis_text(ax, x + w / 2, top + 2.2, "$D$", size=7.5)
 
     # module title / role sits above the frame, clear of the flow arrows
-    ax.text(x + w / 2, top + 4.6, "encoder $\\cdot$ SpatialTransformer",
+    ax.text(x + w / 2, top + 4.6, "encoder $\\cdot$ TransformerEncoder",
             ha="center", va="center", fontsize=7.8, fontweight="bold",
             color=INK)
     ax.text(x + w / 2, top + 3.35, "$+M$ memory tokens $\\cdot\\ \\times L$ blocks",

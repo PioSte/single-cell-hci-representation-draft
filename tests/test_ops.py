@@ -5,7 +5,7 @@ from fuse_channels import (
     grouped_cross_attention,
     grouped_pool_attention,
     grouped_self_attention,
-    segment_softmax,
+    grouped_softmax,
 )
 
 
@@ -14,13 +14,13 @@ def test_grouped_self_attention_matches_dense():
     T, H, Dh = 11, 2, 4
     D = H * Dh
     x = torch.randn(T, D)
-    seg = torch.tensor([0, 0, 0, 1, 1, 2, 2, 2, 2, 3, 4])
-    n_seg = 5
+    group_id = torch.tensor([0, 0, 0, 1, 1, 2, 2, 2, 2, 3, 4])
+    n_groups = 5
 
-    out = grouped_self_attention(x, seg, n_seg, H)
+    out = grouped_self_attention(x, group_id, n_groups, H)
 
-    for s in range(n_seg):
-        idx = (seg == s).nonzero(as_tuple=True)[0]
+    for g in range(n_groups):
+        idx = (group_id == g).nonzero(as_tuple=True)[0]
         if idx.numel() == 0:
             continue
         xs = x[idx].view(1, idx.numel(), H, Dh).permute(0, 2, 1, 3)
@@ -34,9 +34,9 @@ def test_grouped_pool_attention_basic():
     H, Dh = 2, 4
     T = 6
     k = torch.randn(T, H, Dh)
-    seg = torch.tensor([0, 0, 0, 1, 1, 1])
-    q = torch.randn(2, 1, H, Dh)  # one query per segment
-    out = grouped_pool_attention(q, k, k, seg, 2)
+    group_id = torch.tensor([0, 0, 0, 1, 1, 1])
+    q = torch.randn(2, 1, H, Dh)  # one query per group
+    out = grouped_pool_attention(q, k, k, group_id, 2)
     assert out.shape == (2, 1, H, Dh)
     assert torch.isfinite(out).all()
 
@@ -44,19 +44,19 @@ def test_grouped_pool_attention_basic():
 def test_grouped_cross_attention_basic():
     torch.manual_seed(0)
     q = torch.randn(5, 8)
-    q_seg = torch.tensor([0, 0, 0, 1, 1])
+    q_group_id = torch.tensor([0, 0, 0, 1, 1])
     k = torch.randn(6, 8)
-    kv_seg = torch.tensor([0, 0, 0, 0, 1, 1])
-    out = grouped_cross_attention(q, q_seg, k, kv_seg, 2, 2)
+    kv_group_id = torch.tensor([0, 0, 0, 0, 1, 1])
+    out = grouped_cross_attention(q, q_group_id, k, kv_group_id, 2, 2)
     assert out.shape == q.shape
     assert torch.isfinite(out).all()
 
 
-def test_segment_softmax():
+def test_grouped_softmax():
     logits = torch.tensor([1.0, 2.0, 3.0, 10.0, 0.0])
-    seg = torch.tensor([0, 0, 0, 1, 1])
-    w = segment_softmax(logits, seg, 2)
+    group_id = torch.tensor([0, 0, 0, 1, 1])
+    w = grouped_softmax(logits, group_id, 2)
     assert torch.allclose(w[:3].sum(), torch.tensor(1.0), atol=1e-6)
     assert torch.allclose(w[3:].sum(), torch.tensor(1.0), atol=1e-6)
-    # within segment 0, ordering preserved
+    # within group 0, ordering preserved
     assert w[0] < w[1] < w[2]

@@ -20,7 +20,7 @@ from typing import List, Optional, Sequence
 import torch
 
 
-class DCPMasker:
+class DCPVisibilitySampler:
     def __init__(
         self,
         n_patches: int,
@@ -90,10 +90,3 @@ class DCPMasker:
                     visible[c] = True
             out.append(visible)
         return out
-
-
-def visible_to_masked(
-    images: Sequence[torch.Tensor], visible: Sequence[torch.Tensor]
-) -> List[torch.Tensor]:
-    """Return the per-sample masked (``~visible``) boolean masks."""
-    return [~v for v in visible]

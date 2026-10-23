@@ -1,16 +1,16 @@
 import torch
 
-from fuse_channels import DCPMasker
+from fuse_channels import DCPVisibilitySampler
 
 
 def _images(C_list, N, seed=0):
     g = torch.Generator().manual_seed(seed)
-    # images are [C,1,H,W]; the masker only uses C and the device, so H=W=1
+    # images are [C,1,H,W]; the sampler only uses C and the device, so H=W=1
     return [torch.randn(C, 1, 1, 1, generator=g) for C in C_list]
 
 
 def test_never_masks_all_channels_or_tokens():
-    masker = DCPMasker(n_patches=4, p_patch=0.9, p_channel=1.0)
+    masker = DCPVisibilitySampler(n_patches=4, p_patch=0.9, p_channel=1.0)
     for seed in range(50):
         g = torch.Generator().manual_seed(seed)
         imgs = _images([1, 2, 3, 5, 8], 4, seed=seed)
@@ -26,7 +26,7 @@ def test_never_masks_all_channels_or_tokens():
 
 
 def test_channel_mode_masks_whole_channels():
-    masker = DCPMasker(n_patches=4, p_patch=0.0, p_channel=1.0)
+    masker = DCPVisibilitySampler(n_patches=4, p_patch=0.0, p_channel=1.0)
     g = torch.Generator().manual_seed(0)
     imgs = _images([6], 4)
     visible = masker(imgs, generator=g)[0]
@@ -39,18 +39,10 @@ def test_channel_mode_masks_whole_channels():
 
 
 def test_spatial_mode_is_per_patch():
-    masker = DCPMasker(n_patches=8, p_patch=0.5, p_channel=0.0)
+    masker = DCPVisibilitySampler(n_patches=8, p_patch=0.5, p_channel=0.0)
     g = torch.Generator().manual_seed(0)
     imgs = _images([4], 8)
     visible = masker(imgs, generator=g)[0]
     # in spatial mode a channel may be partially visible
     partially = (visible.any(dim=1) & (~visible).any(dim=1)).any()
     assert bool(partially)
-
-
-def test_visible_to_masked():
-    from fuse_channels import visible_to_masked
-
-    v = [torch.tensor([[True, False], [False, False]])]
-    m = visible_to_masked([torch.zeros(2, 1, 1, 1)], v)[0]
-    assert torch.equal(m, ~v[0])

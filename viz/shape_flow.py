@@ -242,7 +242,7 @@ def shape_flow(s: k.Scene):
     )
     s.play(k.draw(arrow_enc))
     cap(
-        "memory + visible tokens go through the transformer (per-sample segments)",
+        "memory + visible tokens go through the transformer (per-sample groups)",
         "[B·M + Kf, D] = [8 + Kf, 192]",
         k.TEAL,
     )

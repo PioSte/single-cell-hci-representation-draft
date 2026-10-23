@@ -73,9 +73,9 @@ GRID_H = (C_MAX - 1) * PITCH + CELL            # padded-grid height
 def draw_shared_input(ax, cx):
     """Multi-marker input set (ragged)."""
     cw, pitch = 4.8, 5.8
-    n_markers = 3
-    x0 = cx - (n_markers * cw + (n_markers - 1) * 1.0) / 2
-    for i in range(n_markers):
+    n_channel_ids = 3
+    x0 = cx - (n_channel_ids * cw + (n_channel_ids - 1) * 1.0) / 2
+    for i in range(n_channel_ids):
         c = CHANNEL_COLORS[i]
         xx = x0 + i * (cw + 1.0)
         rrect(ax, xx, INPUT_TILE_Y, cw, cw, edge=c, face=tint(c, 0.72), lw=1.4)

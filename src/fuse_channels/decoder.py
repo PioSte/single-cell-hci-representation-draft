@@ -2,9 +2,9 @@
 
 One decoder is shared across *all* channels (per-channel decoders do not scale
 past a handful of channels).  Each reconstruction query is conditioned on the
-**target channel's identity embedding** and the **target spatial position**, and
+**target channel's embedding** and the **target spatial position**, and
 cross-attends to the encoder's memory + visible tokens.  This turns the additive
-identity embedding into a *target specification* so one shared decoder can be
+channel embedding into a *target specification* so one shared decoder can be
 used for all channels.
 """
 
@@ -33,13 +33,14 @@ class DecoderBlock(nn.Module):
     def forward(
         self,
         q: torch.Tensor,
-        q_seg: torch.Tensor,
+        q_group_id: torch.Tensor,
         kv: torch.Tensor,
-        kv_seg: torch.Tensor,
-        n_segments: int,
+        kv_group_id: torch.Tensor,
+        n_groups: int,
     ) -> torch.Tensor:
         h = grouped_cross_attention(
-            self.norm_q(q), q_seg, self.norm_kv(kv), kv_seg, n_segments, self.n_heads
+            self.norm_q(q), q_group_id, self.norm_kv(kv), kv_group_id,
+            n_groups, self.n_heads,
         )
         q = q + self.dropout(self.attn_out(h))
         q = q + self.dropout(self.mlp(self.norm_ff(q)))
@@ -72,27 +73,27 @@ class ChannelAwareDecoder(nn.Module):
     def forward(
         self,
         enc_tokens: torch.Tensor,
-        enc_seg: torch.Tensor,
+        enc_group_id: torch.Tensor,
         n_samples: int,
-        target_seg: torch.Tensor,
+        target_group_id: torch.Tensor,
         target_patch: torch.Tensor,
-        target_identity: torch.Tensor,
+        target_channel_embed: torch.Tensor,
     ) -> torch.Tensor:
         """Predict raw pixels for the requested (sample, channel, patch) targets.
 
         Parameters
         ----------
-        enc_tokens, enc_seg:
-            encoder output ``[Ke, D]`` and its per-sample segment ids.
-        target_seg, target_patch, target_identity:
+        enc_tokens, enc_group_id:
+            encoder output ``[Ke, D]`` and its per-sample group ids.
+        target_group_id, target_patch, target_channel_embed:
             ``[Kt]`` sample ids, ``[Kt]`` patch positions and ``[Kt, D]``
-            additive identity vectors of the target channels.
+            additive channel-embedding vectors of the target channels.
         """
         q = (
             self.mask_token
             + self.spatial_pos[target_patch]
-            + self.target_proj(target_identity)
+            + self.target_proj(target_channel_embed)
         )
         for blk in self.blocks:
-            q = blk(q, target_seg, enc_tokens, enc_seg, n_samples)
+            q = blk(q, target_group_id, enc_tokens, enc_group_id, n_samples)
         return self.head(self.norm(q))

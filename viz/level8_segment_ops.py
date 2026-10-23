@@ -1,10 +1,10 @@
-"""L8 -- padding-free segmented-attention primitive (methods-box figure).
+"""L8 -- padding-free grouped-attention primitive (methods-box figure).
 
 Shows how ``grouped_self_attention`` / ``grouped_pool_attention`` /
-``segment_softmax`` work: the flattened token list ``[T, D]`` + ``seg: [T]``
-layout, the sort-by-segment bucketing, batched SDPA over groups of equal length,
+``grouped_softmax`` work: the flattened token list ``[T, D]`` + ``group_id: [T]``
+layout, the sort-by-group bucketing, batched SDPA over groups of equal length,
 and scatter-back.  Draws the equivalence to a dense ``[B, T_max, D]`` tensor +
-``-inf`` attention mask reference, and why the segmented form is exactly that
+``-inf`` attention mask reference, and why the grouped form is exactly that
 without materialising padding (cf. FlashAttention varlen / cu_seqlens).
 
 Usage::
@@ -36,7 +36,7 @@ OUT.mkdir(parents=True, exist_ok=True)
 
 # --------------------------------------------------------------------------- #
 # Shared row grid -- every token stack uses these, so a token can be tracked
-# row-for-row across stages (stage-1 seg column, [T,D] brackets, stage-2 group
+# row-for-row across stages (stage-1 group_id column, [T,D] brackets, stage-2 group
 # separators and the stage-4 scatter-back all line up).
 # --------------------------------------------------------------------------- #
 W_TOK, H_TOK, PITCH = 14.0, 2.5, 3.2
@@ -45,20 +45,20 @@ Y0 = 45.0
 STACK_TOP = Y0 + (N_TOK - 1) * PITCH + H_TOK
 ARROW_Y = Y0 + 15.4  # aligned with the L=3 batch row in stage 3
 
-# Flattened input order: segments are interleaved (s0 blue, s1 green,
-# s2 orange), so the stable argsort visibly regroups them.
+# Flattened input order: groups are interleaved (g0 blue, g1 green,
+# g2 orange), so the stable argsort visibly regroups them.
 IN_SPECS = [
     (BLUE, 0), (GREEN, 1), (ORANGE, 2),
     (BLUE, 0), (GREEN, 1), (ORANGE, 2),
     (BLUE, 0), (ORANGE, 2),
 ]
-# After ``order = argsort(seg, stable=True)``: grouped by segment id.
+# After ``order = argsort(group_id, stable=True)``: grouped by group id.
 SORTED_SPECS = [
     (BLUE, 0), (BLUE, 0), (BLUE, 0),
     (GREEN, 1), (GREEN, 1),
     (ORANGE, 2), (ORANGE, 2), (ORANGE, 2),
 ]
-# (first_row, last_row, segment_id, colour, length) for the sorted stack.
+# (first_row, last_row, group_id, colour, length) for the sorted stack.
 GROUPS = [
     (0, 2, 0, BLUE, 3),
     (3, 4, 1, GREEN, 2),
@@ -71,7 +71,7 @@ GROUPS = [
 # --------------------------------------------------------------------------- #
 def draw_token_column(ax, x, specs, face=0.80):
     """A vertical [T, D] token column; returns the top y of the stack."""
-    for i, (c, _seg) in enumerate(specs):
+    for i, (c, _group) in enumerate(specs):
         rrect(ax, x, Y0 + i * PITCH, W_TOK, H_TOK, edge=c,
               face=tint(c, face), lw=1.2)
     return Y0 + (len(specs) - 1) * PITCH + H_TOK
@@ -85,40 +85,40 @@ def bracket_and_shape(ax, x, top):
 
 
 def draw_input_tokens(ax, x):
-    """[T, D] flattened tokens + the ``seg: [T]`` id column."""
-    for i, (c, seg_id) in enumerate(IN_SPECS):
-        ax.text(x - 1.0, Y0 + i * PITCH + H_TOK / 2, f"$s_{seg_id}$",
+    """[T, D] flattened tokens + the ``group_id: [T]`` id column."""
+    for i, (c, group_id) in enumerate(IN_SPECS):
+        ax.text(x - 1.0, Y0 + i * PITCH + H_TOK / 2, f"$g_{group_id}$",
                 ha="right", va="center", fontsize=6.8, color=c,
                 fontweight="bold")
 
     top = draw_token_column(ax, x, IN_SPECS)
     bracket_and_shape(ax, x, top)
 
-    # seg: [T] integer id column, to the right of the [T, D] bracket.
+    # group_id: [T] integer id column, to the right of the [T, D] bracket.
     sx = x + W_TOK + 7.0
     sw = 3.5
-    ax.text(sx + sw / 2, top + 2.0, "$\\mathtt{seg}$", ha="center",
+    ax.text(sx + sw / 2, top + 2.0, "$\\mathtt{group\\_id}$", ha="center",
             va="center", fontsize=8.0, fontweight="bold", color=MUTED)
-    for i, (_c, seg_id) in enumerate(IN_SPECS):
+    for i, (_c, group_id) in enumerate(IN_SPECS):
         rrect(ax, sx, Y0 + i * PITCH, sw, H_TOK, edge=MUTED,
               face="#F4F4F4", lw=1.0)
-        ax.text(sx + sw / 2, Y0 + i * PITCH + H_TOK / 2, str(seg_id),
+        ax.text(sx + sw / 2, Y0 + i * PITCH + H_TOK / 2, str(group_id),
                 ha="center", va="center", fontsize=7.2, color=INK)
     return top, sx + sw
 
 
 def draw_sorted_tokens(ax, x):
-    """[T, D] after ``argsort(seg, stable=True)``, grouped by segment."""
+    """[T, D] after ``argsort(group_id, stable=True)``, grouped by group."""
     top = draw_token_column(ax, x, SORTED_SPECS)
 
-    for (i0, i1, seg_id, c, length) in GROUPS:
+    for (i0, i1, group_id, c, length) in GROUPS:
         if i0 > 0:  # dotted separator between adjacent groups
             yy = Y0 + i0 * PITCH
             ax.plot([x - 0.7, x + W_TOK + 0.7], [yy, yy],
                     color=MUTED, lw=1.0, linestyle=":", zorder=2)
         yc = Y0 + (i0 + i1) / 2 * PITCH + H_TOK / 2
         # length label clearly attached to this group, left of the column
-        ax.text(x - 1.4, yc, f"$L_{{{seg_id}}}{{=}}{length}$",
+        ax.text(x - 1.4, yc, f"$L_{{{group_id}}}{{=}}{length}$",
                 ha="right", va="center", fontsize=6.8, color=c,
                 fontweight="bold")
 
@@ -127,7 +127,7 @@ def draw_sorted_tokens(ax, x):
 
 
 def draw_batched_groups(ax, x):
-    """Batched SDPA: equal-length segments grouped into one call each."""
+    """Batched SDPA: equal-length groups batched into one call each."""
     cell, cpitch = 2.8, 3.2
 
     def row(y, n, c):
@@ -135,21 +135,21 @@ def draw_batched_groups(ax, x):
             rrect(ax, x + i * cpitch, y, cell, cell, edge=c,
                   face=tint(c, 0.75), lw=1.1, rounding=0.3)
 
-    # --- L = 3, batch M = 2 (segments s0 blue and s2 orange) --------------- #
+    # --- L = 3, batch M = 2 (groups g0 blue and g2 orange) ---------------- #
     blue_y, orange_y = Y0 + 14.0, Y0 + 10.5
     row(blue_y, 3, BLUE)
     row(orange_y, 3, ORANGE)
     ax.text(x + 3.0, Y0 + 20.4, "length $L{=}3$", ha="center", va="center",
             fontsize=7.5, fontweight="bold", color=INK)
-    ax.text(x + 3.0, Y0 + 18.7, "batch $M{=}2$: $s_0 + s_2$", ha="center",
+    ax.text(x + 3.0, Y0 + 18.7, "batch $M{=}2$: $g_0 + g_2$", ha="center",
             va="center", fontsize=6.2, color=MUTED)
 
-    # --- L = 2, batch M = 1 (segment s1 green) ----------------------------- #
+    # --- L = 2, batch M = 1 (group g1 green) ------------------------------- #
     green_y = Y0 + 3.0
     row(green_y, 2, GREEN)
     ax.text(x + 3.0, Y0 + 9.0, "length $L{=}2$", ha="center", va="center",
             fontsize=7.5, fontweight="bold", color=INK)
-    ax.text(x + 3.0, Y0 + 7.3, "batch $M{=}1$: $s_1$", ha="center",
+    ax.text(x + 3.0, Y0 + 7.3, "batch $M{=}1$: $g_1$", ha="center",
             va="center", fontsize=6.2, color=MUTED)
 
 
@@ -189,20 +189,20 @@ def build() -> plt.Figure:
 
     # ---- title ------------------------------------------------------------ #
     panel_header(ax, 2, 79, "L8",
-                 "Segmented-attention primitive: padding-free batched SDPA")
+                 "Grouped-attention primitive: padding-free batched SDPA")
 
     # ---- stage headings --------------------------------------------------- #
     head_y, sub_y = STACK_TOP + 4.5, STACK_TOP + 2.2
 
-    # Stage 1: flattened tokens + seg ids
+    # Stage 1: flattened tokens + group ids
     ax.text(10.0, head_y, "① flattened tokens", ha="center", va="center",
             fontsize=8.0, fontweight="bold", color=INK)
-    _top1, seg_right = draw_input_tokens(ax, 3.5)
+    _top1, group_right = draw_input_tokens(ax, 3.5)
 
-    # Stage 2: sort by segment
-    ax.text(41.0, head_y, "② sort by segment", ha="center", va="center",
+    # Stage 2: sort by group
+    ax.text(41.0, head_y, "② sort by group", ha="center", va="center",
             fontsize=8.0, fontweight="bold", color=INK)
-    ax.text(41.0, sub_y, "$\\mathtt{order} = \\mathtt{argsort(seg, stable)}$",
+    ax.text(41.0, sub_y, "$\\mathtt{order} = \\mathtt{argsort(group\\_id, stable)}$",
             ha="center", va="center", fontsize=6.8, color=MUTED)
     draw_sorted_tokens(ax, 34.0)
 
@@ -221,7 +221,7 @@ def build() -> plt.Figure:
     draw_output_tokens(ax, 84.0)
 
     # ---- inter-stage arrows (same y so the flow reads straight) ----------- #
-    arrow(ax, (seg_right + 0.6, ARROW_Y), (33.0, ARROW_Y))
+    arrow(ax, (group_right + 0.6, ARROW_Y), (33.0, ARROW_Y))
     arrow(ax, (54.5, ARROW_Y), (57.0, ARROW_Y))
     arrow(ax, (68.0, ARROW_Y), (83.0, ARROW_Y))
 
@@ -238,18 +238,18 @@ def build() -> plt.Figure:
             va="center", fontsize=6.2, fontweight="bold", color=LOSS)
     ax.text(120.5, Y0 + 11.2, "Tokens from different", ha="center",
             va="center", fontsize=7.2, fontweight="bold", color=INK)
-    ax.text(120.5, Y0 + 8.9, "segments NEVER interact", ha="center",
+    ax.text(120.5, Y0 + 8.9, "groups NEVER interact", ha="center",
             va="center", fontsize=7.2, fontweight="bold", color=INK)
     ax.text(120.5, Y0 + 6.4, "⇒ exactly per-sample /", ha="center",
             va="center", fontsize=6.5, color=MUTED, style="italic")
     ax.text(120.5, Y0 + 5.1, "per-location attention", ha="center",
             va="center", fontsize=6.5, color=MUTED, style="italic")
 
-    # ---- legends (segment ids are NOT channel identity) ------------------- #
+    # ---- legends (group ids are NOT channel identity) --------------------- #
     legend(ax, 2.0, 43.0,
-           [("$s_0$", BLUE, "fill"), ("$s_1$", GREEN, "fill"),
-            ("$s_2$", ORANGE, "fill")],
-           title="segment IDs (not channels)", pitch=2.3, fontsize=6.6)
+           [("$g_0$", BLUE, "fill"), ("$g_1$", GREEN, "fill"),
+            ("$g_2$", ORANGE, "fill")],
+           title="group IDs (not channels)", pitch=2.3, fontsize=6.6)
     legend(ax, 52.0, 43.0,
            [("SDPA primitive", FUSED, "fill"),
             ("hard constraint", LOSS, "fill"),
@@ -264,21 +264,21 @@ def build() -> plt.Figure:
             ha="center", va="center", fontsize=8.5, fontweight="bold",
             color=INK)
 
-    # segmented form (left) -- what we actually compute
-    seg_x, seg_w = 14.0, 8.0
-    seg_h, seg_pitch = 1.8, 2.4
-    seg_bottom = bot_c - (7 * seg_pitch + seg_h) / 2
-    ax.text(seg_x + seg_w / 2, eq_y - 3.5, "segmented form", ha="center",
+    # grouped form (left) -- what we actually compute
+    grp_x, grp_w = 14.0, 8.0
+    grp_h, grp_pitch = 1.8, 2.4
+    grp_bottom = bot_c - (7 * grp_pitch + grp_h) / 2
+    ax.text(grp_x + grp_w / 2, eq_y - 3.5, "grouped form", ha="center",
             va="center", fontsize=7.0, fontweight="bold", color=GREEN)
-    ax.text(seg_x + seg_w / 2, eq_y - 5.0, "(what we compute)", ha="center",
+    ax.text(grp_x + grp_w / 2, eq_y - 5.0, "(what we compute)", ha="center",
             va="center", fontsize=6.2, color=MUTED, style="italic")
     for i, c in enumerate([BLUE, BLUE, BLUE, GREEN, GREEN,
                            ORANGE, ORANGE, ORANGE]):
-        rrect(ax, seg_x, seg_bottom + i * seg_pitch, seg_w, seg_h, edge=c,
+        rrect(ax, grp_x, grp_bottom + i * grp_pitch, grp_w, grp_h, edge=c,
               face=tint(c, 0.8), lw=1.0)
-    ax.text(seg_x + seg_w + 0.7, seg_bottom + 3.5 * seg_pitch, "$[T, D]$",
+    ax.text(grp_x + grp_w + 0.7, grp_bottom + 3.5 * grp_pitch, "$[T, D]$",
             ha="left", va="center", fontsize=7.0, color=INK)
-    ax.text(seg_x + seg_w / 2, seg_bottom - 2.2, "✓", ha="center",
+    ax.text(grp_x + grp_w / 2, grp_bottom - 2.2, "✓", ha="center",
             va="center", fontsize=18, color=GREEN, fontweight="bold")
 
     # padded + mask ghost (right) -- never materialised

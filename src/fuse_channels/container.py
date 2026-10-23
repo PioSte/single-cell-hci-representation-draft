@@ -19,22 +19,24 @@ class ChannelSet:
     Attributes
     ----------
     tokens:
-        ``[T, D]`` patch embeddings (already projected; identity/pos optional).
+        ``[T, D]`` patch embeddings (already projected; channel embedding and
+        position optional).
     sample_idx:
         ``[T]`` sample id in ``[0, n_samples)``.
     channel_idx:
-        ``[T]`` channel position within its sample in ``[0, C_b)``.
+        ``[T]`` *panel position* of the channel within its sample, in
+        ``[0, C_b)``.
     patch_idx:
         ``[T]`` spatial patch position in ``[0, n_patches)``.
     channel_id:
-        ``[T]`` marker identity id (constant across the patches of a channel).
-    identity:
-        ``[T, D]`` additive channel-identity vector (learnable), if already
+        ``[T]`` channel *identity key* indexing the embedding table (constant
+        across the patches of a channel).  Unlike ``channel_idx`` this is a
+        dataset-level channel id, not a panel position.
+    channel_embed:
+        ``[T, D]`` additive channel-embedding vector (learnable), if already
         computed.
     n_samples, n_patches:
         batch size and (fixed) number of spatial patches.
-    seq_len:
-        ``[n_samples]`` number of visible tokens per sample.
     """
 
     tokens: torch.Tensor
@@ -44,26 +46,9 @@ class ChannelSet:
     channel_id: torch.Tensor
     n_samples: int
     n_patches: int
-    identity: Optional[torch.Tensor] = None
-    seq_len: Optional[torch.Tensor] = None
+    channel_embed: Optional[torch.Tensor] = None
 
     # ------------------------------------------------------------------ #
-    def to(self, device) -> "ChannelSet":
-        def mv(x):
-            return x.to(device) if torch.is_tensor(x) else x
-
-        return ChannelSet(
-            tokens=mv(self.tokens),
-            sample_idx=mv(self.sample_idx),
-            channel_idx=mv(self.channel_idx),
-            patch_idx=mv(self.patch_idx),
-            channel_id=mv(self.channel_id),
-            n_samples=self.n_samples,
-            n_patches=self.n_patches,
-            identity=mv(self.identity),
-            seq_len=mv(self.seq_len),
-        )
-
-    def location_segments(self) -> torch.Tensor:
-        """Segment id per token for *per-spatial-location* channel attention."""
+    def location_group_ids(self) -> torch.Tensor:
+        """Group id per token for *per-spatial-location* channel attention."""
         return self.sample_idx * self.n_patches + self.patch_idx

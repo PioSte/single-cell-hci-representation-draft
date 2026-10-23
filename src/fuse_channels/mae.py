@@ -3,8 +3,9 @@
 Pipeline
 --------
 ``images`` -> DCP masking (token omission) -> channel-tied patch embed +
-additive identity -> padding-free channel fusion -> memory-augmented spatial
-transformer -> channel-aware shared decoder -> patch-normalized pixel loss.
+additive channel embedding -> padding-free channel fusion -> memory-augmented
+transformer encoder -> channel-aware shared decoder -> patch-normalized pixel
+loss.
 
 Masking omits rows from the flattened token tensor; no mask tokens and no attention masks
 are used for masking.  The encoder only ever sees *visible* tokens.
@@ -19,12 +20,12 @@ import torch.nn as nn
 
 from .container import ChannelSet
 from .decoder import ChannelAwareDecoder
-from .encoder import SpatialTransformer
-from .fusion import ChannelFusion, HypernetworkWeightedSum, MultiheadAttentionPooling
-from .identity import ChannelIdentity
+from .encoder import TransformerEncoder
+from .fusion import ChannelFusion, IdentityGatedSum, MultiheadAttentionPooling
+from .identity import ChannelEmbedding
 from .losses import normalized_patch_mse
-from .masking import DCPMasker
-from .patch_embed import ChannelFrontend
+from .masking import DCPVisibilitySampler
+from .patch_embed import ChannelTokenizer
 
 
 class ChannelFusionMAE(nn.Module):
@@ -38,7 +39,7 @@ class ChannelFusionMAE(nn.Module):
         n_heads: int = 6,
         n_memory: int = 4,
         n_queries: int = 1,
-        num_markers: int = 16,
+        num_channel_ids: int = 16,
         fusion: str = "attention",
         p_patch: float = 0.5,
         p_channel: float = 0.5,
@@ -46,8 +47,8 @@ class ChannelFusionMAE(nn.Module):
         super().__init__()
         self.patch_size = patch_size
 
-        identity = ChannelIdentity(dim, num_markers)
-        self.frontend = ChannelFrontend(image_size, patch_size, dim, identity)
+        channel_embedding = ChannelEmbedding(dim, num_channel_ids)
+        self.frontend = ChannelTokenizer(image_size, patch_size, dim, channel_embedding)
         n_patches = self.frontend.n_patches
         self.n_patches = n_patches
 
@@ -55,8 +56,8 @@ class ChannelFusionMAE(nn.Module):
             self.fusion = ChannelFusion(
                 dim, n_heads=n_heads, n_queries=n_queries, n_patches=n_patches
             )
-        elif fusion == "hypernetwork":
-            self.fusion = HypernetworkWeightedSum(
+        elif fusion == "identity_gated":
+            self.fusion = IdentityGatedSum(
                 dim, n_queries=n_queries, n_patches=n_patches
             )
         else:
@@ -65,7 +66,7 @@ class ChannelFusionMAE(nn.Module):
         out_dim = n_queries * dim
         self.fuse_proj = nn.Identity() if out_dim == dim else nn.Linear(out_dim, dim)
 
-        self.encoder = SpatialTransformer(
+        self.encoder = TransformerEncoder(
             dim, encoder_depth, n_heads, n_memory=n_memory
         )
         self.pooler = MultiheadAttentionPooling(dim, n_heads=n_heads, n_queries=1)
@@ -73,7 +74,9 @@ class ChannelFusionMAE(nn.Module):
             dim, decoder_depth, n_heads, patch_dim=patch_size * patch_size,
             n_patches=n_patches,
         )
-        self.masker = DCPMasker(n_patches, p_patch=p_patch, p_channel=p_channel)
+        self.masker = DCPVisibilitySampler(
+            n_patches, p_patch=p_patch, p_channel=p_channel
+        )
 
     # ------------------------------------------------------------------ #
     def forward(
@@ -95,46 +98,47 @@ class ChannelFusionMAE(nn.Module):
 
         # -- padding-free encoder input: only present locations ---------- #
         enc_tokens = fused[present]  # [Kf, D]
-        enc_seg = torch.arange(B, device=device).repeat_interleave(present.sum(1))
-        mem_out, tok_out = self.encoder(enc_tokens, enc_seg, B)
+        enc_group_id = torch.arange(B, device=device).repeat_interleave(present.sum(1))
+        mem_out, tok_out = self.encoder(enc_tokens, enc_group_id, B)
         enc_all = torch.cat([mem_out, tok_out], dim=0)
-        mem_seg = torch.arange(B, device=device).repeat_interleave(
+        mem_group_id = torch.arange(B, device=device).repeat_interleave(
             self.encoder.n_memory
         )
-        enc_all_seg = torch.cat([mem_seg, enc_seg], dim=0)
+        enc_all_group_id = torch.cat([mem_group_id, enc_group_id], dim=0)
 
         # -- decoder targets: the masked channel-patches ----------------- #
         counts = torch.tensor([im.shape[0] for im in images], device=device)
         offsets = torch.zeros(B + 1, dtype=torch.long, device=device)
         offsets[1:] = torch.cumsum(counts, dim=0)
 
-        tgt_seg, tgt_ch, tgt_patch = [], [], []
+        tgt_group_id, tgt_ch, tgt_patch = [], [], []
         for b in range(B):
             m = ~visible[b]
             ci, pi = m.nonzero(as_tuple=True)
-            tgt_seg.append(torch.full_like(ci, b))
+            tgt_group_id.append(torch.full_like(ci, b))
             tgt_ch.append(ci)
             tgt_patch.append(pi)
-        tgt_seg = torch.cat(tgt_seg, 0)
+        tgt_group_id = torch.cat(tgt_group_id, 0)
         tgt_ch = torch.cat(tgt_ch, 0)
         tgt_patch = torch.cat(tgt_patch, 0)
 
-        if tgt_seg.numel() == 0:
+        if tgt_group_id.numel() == 0:
             zero = fused.sum() * 0.0
             return {"loss": zero, "pred": None, "target": None}
 
-        gidx = offsets[tgt_seg] + tgt_ch  # global channel index of each target
+        gidx = offsets[tgt_group_id] + tgt_ch  # global channel index of each target
 
-        # identity of the target channels (recomputed; also feeds the decoder)
+        # embedding of the target channels (recomputed; also feeds the decoder)
         ids_per_ch = torch.cat([c.to(device) for c in channel_ids])
-        ident_per_ch = self.frontend.identity(ids_per_ch)
-        tgt_identity = ident_per_ch[gidx]
+        embed_per_ch = self.frontend.channel_embed(ids_per_ch)
+        tgt_channel_embed = embed_per_ch[gidx]
 
         pred = self.decoder(
-            enc_all, enc_all_seg, B, tgt_seg, tgt_patch, tgt_identity
+            enc_all, enc_all_group_id, B, tgt_group_id, tgt_patch,
+            tgt_channel_embed,
         )
 
-        patch_targets = ChannelFrontend.extract_patches(images, self.patch_size)
+        patch_targets = ChannelTokenizer.extract_patches(images, self.patch_size)
         target = patch_targets[gidx, :, tgt_patch]  # [Kt, patch_dim]
         target_cid = ids_per_ch[gidx]
 
@@ -166,8 +170,7 @@ class ChannelFusionMAE(nn.Module):
 
         * ``"attention"`` (default) -- pooling by multi-head attention (PMA),
           a learned query cross-attends to the memory + visible tokens;
-        * ``"mean"`` -- mean over the visible tokens;
-        * ``"memory"`` -- mean over the fixed-count memory tokens.
+        * ``"mean"`` -- mean over the visible tokens.
         """
         visible = [
             torch.ones(im.shape[0], self.n_patches, dtype=torch.bool, device=im.device)
@@ -178,25 +181,23 @@ class ChannelFusionMAE(nn.Module):
         fused = self.fuse_proj(fused)
         B, D = fused.shape[0], fused.shape[-1]
         enc_tokens = fused[present]
-        enc_seg = torch.arange(B, device=images[0].device).repeat_interleave(
+        enc_group_id = torch.arange(B, device=images[0].device).repeat_interleave(
             present.sum(1)
         )
-        mem_out, tok_out = self.encoder(enc_tokens, enc_seg, B)
+        mem_out, tok_out = self.encoder(enc_tokens, enc_group_id, B)
         if pool == "attention":
-            mem_seg = torch.arange(B, device=images[0].device).repeat_interleave(
+            mem_group_id = torch.arange(B, device=images[0].device).repeat_interleave(
                 self.encoder.n_memory
             )
             pooled = self.pooler(
                 torch.cat([mem_out, tok_out], dim=0),
-                torch.cat([mem_seg, enc_seg], dim=0),
+                torch.cat([mem_group_id, enc_group_id], dim=0),
                 B,
             )
         elif pool == "mean":
             pooled = tok_out.new_zeros(B, D)
-            pooled.index_add_(0, enc_seg, tok_out)
+            pooled.index_add_(0, enc_group_id, tok_out)
             pooled = pooled / present.sum(1).clamp_min(1).unsqueeze(-1)
-        elif pool == "memory":  # mean over memory tokens
-            pooled = mem_out.reshape(B, self.encoder.n_memory, D).mean(1)
         else:
             raise ValueError(f"unknown pool '{pool}'")
         return mem_out, pooled

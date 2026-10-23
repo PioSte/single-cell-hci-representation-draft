@@ -32,9 +32,9 @@ def _():
         ChannelFusion,
         ChannelFusionMAE,
         ChannelSet,
-        dense_fusion_reference,
     )
     from fuse_channels import __version__
+    from fuse_channels.fusion import _dense_fusion_reference as dense_fusion_reference
 
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -101,23 +101,23 @@ def _(mo):
 def _(ChannelSet, math, torch):
     DIM = 64
     NP = 4  # spatial patches per channel
-    N_MARKERS = 32
+    N_CHANNEL_IDS = 32
 
     def make_set(C, seed=0, include_identity=True, n_samples=1):
         """A full ``n_samples``-batch of ``C``-channel sets (canonical (c,n) order)."""
         g = torch.Generator().manual_seed(seed)
-        tokens, si, ci, pi, cid, ident = [], [], [], [], [], []
+        tokens, si, ci, pi, cid, embed = [], [], [], [], [], []
         for b in range(n_samples):
             for c in range(C):
-                marker = int(torch.randint(0, N_MARKERS, (1,), generator=g).item())
+                channel_id = int(torch.randint(0, N_CHANNEL_IDS, (1,), generator=g).item())
                 vec = torch.randn(DIM, generator=g)
                 for n in range(NP):
                     tokens.append(torch.randn(DIM, generator=g) + vec)
                     si.append(b)
                     ci.append(c)
                     pi.append(n)
-                    cid.append(marker)
-                    ident.append(vec)
+                    cid.append(channel_id)
+                    embed.append(vec)
         cs = ChannelSet(
             tokens=torch.stack(tokens),
             sample_idx=torch.tensor(si),
@@ -126,11 +126,10 @@ def _(ChannelSet, math, torch):
             channel_id=torch.tensor(cid),
             n_samples=n_samples,
             n_patches=NP,
-            identity=torch.stack(ident),
+            channel_embed=torch.stack(embed),
         )
-        cs.seq_len = torch.bincount(cs.sample_idx, minlength=n_samples)
         if not include_identity:
-            cs.tokens = cs.tokens - cs.identity
+            cs.tokens = cs.tokens - cs.channel_embed
         return cs
 
     def permute_set(cs, seed=0):
@@ -150,8 +149,7 @@ def _(ChannelSet, math, torch):
             channel_id=cs.channel_id[idx],
             n_samples=cs.n_samples,
             n_patches=cs.n_patches,
-            identity=cs.identity[idx],
-            seq_len=cs.seq_len.clone(),
+            channel_embed=cs.channel_embed[idx],
         )
 
     def select_channels(cs, keep_mask):
@@ -165,8 +163,7 @@ def _(ChannelSet, math, torch):
             channel_id=cs.channel_id[keep],
             n_samples=cs.n_samples,
             n_patches=cs.n_patches,
-            identity=cs.identity[keep],
-            seq_len=torch.bincount(cs.sample_idx[keep], minlength=cs.n_samples),
+            channel_embed=cs.channel_embed[keep],
         )
 
     @torch.no_grad()
@@ -405,7 +402,7 @@ def _(mo):
 
 @app.cell
 def _(mo, torch):
-    def structured_batch(B, seed, H=16, c_min=2, c_max=5, n_markers=16):
+    def structured_batch(B, seed, H=16, c_min=2, c_max=5, n_channel_ids=16):
         """Channels share a spatial latent (so imputation is learnable)."""
         g = torch.Generator().manual_seed(seed)
         k = torch.tensor([[1.0, 2, 1], [2, 4, 2], [1, 2, 1]]).view(1, 1, 3, 3)
@@ -420,7 +417,7 @@ def _(mo, torch):
             bias = torch.randn(c, 1, 1, 1, generator=g)
             img = z * gain + bias + 0.1 * torch.randn(c, 1, H, H, generator=g)
             imgs.append(img)
-            ids.append(torch.randperm(n_markers, generator=g)[:c])
+            ids.append(torch.randperm(n_channel_ids, generator=g)[:c])
         return imgs, ids
 
     mae_steps = mo.ui.slider(50, 800, value=400, step=50, label="MAE training steps")
@@ -439,7 +436,7 @@ def _(ChannelFusionMAE, mae_steps, mo, structured_batch, torch):
         decoder_depth=2,
         n_heads=4,
         n_memory=4,
-        num_markers=16,
+        num_channel_ids=16,
     )
     train_imgs, train_ids = structured_batch(24, seed=1)
     opt = torch.optim.AdamW(mae.parameters(), lr=2e-3, weight_decay=0.01)

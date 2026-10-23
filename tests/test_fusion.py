@@ -3,10 +3,10 @@ import torch
 from fuse_channels import (
     ChannelFusion,
     ChannelSet,
-    HypernetworkWeightedSum,
+    IdentityGatedSum,
     MultiheadAttentionPooling,
-    dense_fusion_reference,
 )
+from fuse_channels.fusion import _dense_fusion_reference
 from helpers import make_channel_set, permute_channels
 
 D = 16
@@ -41,7 +41,7 @@ def test_padding_free_equivalence():
     # mixed channel counts
     cs = make_channel_set([1, 3, 6, 2], N, D)
     fused, _ = fusion(cs)
-    ref = dense_fusion_reference(fusion, cs)
+    ref = _dense_fusion_reference(fusion, cs)
     assert torch.allclose(fused, ref, atol=1e-5, rtol=1e-4)
 
 
@@ -54,10 +54,6 @@ def test_omission_equivalence():
 
     # remove channel 2 (all its patches)
     keep = ~((cs.sample_idx == 0) & (cs.channel_idx == 2))
-    cs_rem = make_channel_set([3], N, D, seed=5)
-    # rebuild with the same tokens minus channel 2
-    from fuse_channels import ChannelSet
-
     red = ChannelSet(
         tokens=cs.tokens[keep],
         sample_idx=cs.sample_idx[keep],
@@ -66,7 +62,7 @@ def test_omission_equivalence():
         channel_id=cs.channel_id[keep],
         n_samples=1,
         n_patches=N,
-        identity=cs.identity[keep] if cs.identity is not None else None,
+        channel_embed=cs.channel_embed[keep] if cs.channel_embed is not None else None,
     )
     out_rem, _ = fusion(red)
     # removing one channel should change the result but not blow it up
@@ -88,12 +84,12 @@ def test_permutation_invariance():
 
 
 def test_identity_ablation():
-    """Output depends on the additive channel-identity embedding."""
+    """Output depends on the additive channel-embedding vector."""
     fusion = _fusion(seed=4)
     fusion.eval()
     cs = make_channel_set([3], N, D)
     stripped = make_channel_set([3], N, D, seed=0)
-    stripped.tokens = stripped.tokens - stripped.identity  # strip identity
+    stripped.tokens = stripped.tokens - stripped.channel_embed  # strip embedding
     a, _ = fusion(cs)
     b, _ = fusion(stripped)
     assert not torch.allclose(a, b)
@@ -129,26 +125,26 @@ def test_multihead_attention_pooling():
     pool = MultiheadAttentionPooling(D, n_heads=HEADS, n_queries=1)
     pool.eval()
     x = torch.randn(7, D)
-    seg = torch.tensor([0, 0, 0, 1, 2, 2, 2])
-    out = pool(x, seg, 4)
+    group_id = torch.tensor([0, 0, 0, 1, 2, 2, 2])
+    out = pool(x, group_id, 4)
     assert out.shape == (4, D)
     assert torch.isfinite(out).all()
-    # a segment with no tokens pools to zeros (not NaN)
+    # a group with no tokens pools to zeros (not NaN)
     assert torch.equal(out[3], torch.zeros(D))
 
-    # pooling is invariant to the order of tokens inside a segment
+    # pooling is invariant to the order of tokens inside a group
     perm = torch.tensor([2, 0, 1, 3, 6, 4, 5])
-    out_perm = pool(x[perm], seg[perm], 4)
+    out_perm = pool(x[perm], group_id[perm], 4)
     assert torch.allclose(out, out_perm, atol=1e-5, rtol=1e-4)
 
     # n_queries>1 returns a wider fixed-size descriptor
     pool_multi = MultiheadAttentionPooling(D, n_heads=HEADS, n_queries=3)
-    out_multi = pool_multi(x, seg, 4)
+    out_multi = pool_multi(x, group_id, 4)
     assert out_multi.shape == (4, 3 * D)
 
 
-def test_hypernetwork_weighted_sum():
-    net = HypernetworkWeightedSum(D, n_queries=1, n_patches=N)
+def test_identity_gated_sum():
+    net = IdentityGatedSum(D, n_queries=1, n_patches=N)
     cs = make_channel_set([2, 5, 9], N, D)
     out, present = net(cs)
     assert out.shape == (3, N, D)
@@ -180,10 +176,10 @@ def test_dropout_disabled_in_eval():
     pool = MultiheadAttentionPooling(D, n_heads=HEADS, n_queries=1, dropout=0.5)
     pool.eval()
     x = torch.randn(7, D)
-    seg = torch.tensor([0, 0, 0, 1, 2, 2, 2])
+    group_id = torch.tensor([0, 0, 0, 1, 2, 2, 2])
     with torch.no_grad():
-        p1 = pool(x, seg, 4)
-        p2 = pool(x, seg, 4)
+        p1 = pool(x, group_id, 4)
+        p2 = pool(x, group_id, 4)
     assert torch.equal(p1, p2)
 
 
