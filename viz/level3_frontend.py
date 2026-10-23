@@ -130,8 +130,8 @@ def build() -> plt.Figure:
     ax.text(6.5, 77.5, "Frontend: channel-tied patch embed + additive identity",
             ha="left", va="center", fontsize=12.2, fontweight="bold", color=INK)
     ax.text(2, 73.8,
-            "Two channels share one projection W and one spatial_pos, but each "
-            "adds its own marker identity z_c.",
+            "Two channels share one projection W, but each adds its own marker "
+            "identity z_c; the spatial position is added after fusion.",
             ha="left", va="center", fontsize=7.4, color=MUTED, style="italic")
     ax.text(2, 70.9,
             "Position \u2260 channel identity  |  DCP-omitted = absent row (never a zero card)",
@@ -139,7 +139,7 @@ def build() -> plt.Figure:
             fontweight="bold")
     ax.text(2, 67.9,
             "Shapes:  $[1,H,W]$  \u2192  Conv2d  \u2192  $[N,D]$  "
-            "$+[1,N,D]$ (spatial)  $+[D]$ (identity)  \u2192  ragged "
+            "$+[D]$ (identity)  \u2192  ragged "
             "$[\\Sigma C \\cdot N, D]$     (D = token embedding dim)",
             ha="left", va="center", fontsize=6.8, color=INK)
 
@@ -151,9 +151,8 @@ def build() -> plt.Figure:
     tile_x, tile_s = 4.0, 9.0
     conv_x, conv_w = 18.0, 9.0
     stack_x, stack_w, stack_h, stack_pitch, n_patches = 32.0, 7.0, 1.5, 2.0, 4
-    sp_x, sp_w, sp_h = 45.0, 12.0, 8.0
-    z_x, z_w, z_h = 63.0, 6.0, 4.0
-    out_x = 75.0
+    z_x, z_w, z_h = 45.0, 6.0, 4.0
+    out_x = 63.0
     omit_idx = 1                                # DCP-omitted row in channel 1
     stack_htot = (n_patches - 1) * stack_pitch + stack_h
 
@@ -181,21 +180,9 @@ def build() -> plt.Figure:
         ax.text(stack_x + stack_w / 2, top + 1.9, "$[N, D]$", ha="center",
                 va="center", fontsize=6.8, color=MUTED)
 
-        # + spatial_pos
-        arrow(ax, (stack_x + stack_w, yc), (sp_x, yc), color=color)
-        ax.text((stack_x + stack_w + sp_x) / 2, yc + 2.4, "$+$", ha="center",
-                va="center", fontsize=9.5, fontweight="bold", color=INK)
-        rrect(ax, sp_x, yc - sp_h / 2, sp_w, sp_h, edge=GREEN,
-              face=tint(GREEN, 0.82), lw=1.3, rounding=0.4)
-        ax.text(sp_x + sp_w / 2, yc + 1.8, "spatial_pos", ha="center",
-                va="center", fontsize=7.2, fontweight="bold", color=INK,
-                zorder=4)
-        ax.text(sp_x + sp_w / 2, yc - 1.8, "$[1, N, D]$", ha="center",
-                va="center", fontsize=6.3, color=MUTED, zorder=4)
-
         # + identity z_c  (per-channel colour)
-        arrow(ax, (sp_x + sp_w, yc), (z_x, yc), color=color)
-        ax.text((sp_x + sp_w + z_x) / 2, yc + 2.4, "$+$", ha="center",
+        arrow(ax, (stack_x + stack_w, yc), (z_x, yc), color=color)
+        ax.text((stack_x + stack_w + z_x) / 2, yc + 2.4, "$+$", ha="center",
                 va="center", fontsize=9.5, fontweight="bold", color=INK)
         draw_identity_card(ax, z_x, yc - z_h / 2, z_w, z_h, color,
                            f"$z_{lane}$")
@@ -244,16 +231,6 @@ def build() -> plt.Figure:
     ax.text(cx, 33.6, "(tied, not\nper-channel)", ha="center", va="center",
             fontsize=6.1, color=MUTED, zorder=4, linespacing=1.5)
 
-    # ---- Shared spatial_pos frame ----------------------------------------- #
-    frame_y0 = lane_yc[1] - sp_h / 2 - 1.5
-    frame_y1 = lane_yc[0] + sp_h / 2 + 1.5
-    rrect(ax, sp_x - 0.8, frame_y0, sp_w + 1.6, frame_y1 - frame_y0,
-          edge=FRONTEND, face="none", lw=1.1, dashed=True, rounding=0.6, z=2)
-    ax.text(sp_x + sp_w / 2, (lane_yc[0] + lane_yc[1]) / 2,
-            "spatial_pos is shared\nby every channel\n(position \u2260 identity)",
-            ha="center", va="center", fontsize=6.3, color=FRONTEND,
-            fontweight="bold", style="italic", linespacing=1.6, zorder=4)
-
     # ---- Identity embedding source ---------------------------------------- #
     emb_x, emb_y, emb_w, emb_h = 90.0, 37.0, 16.0, 10.0
     box(ax, emb_x, emb_y, emb_w, emb_h, "nn.Embedding", "num_channel_ids \u00d7 D",
@@ -278,7 +255,7 @@ def build() -> plt.Figure:
             fontsize=6.4, fontweight="bold", color=INK, zorder=4)
     ax.text(35.0, 42.9, "(additive)", ha="center", va="center",
             fontsize=6.4, fontweight="bold", color=INK, zorder=4)
-    ax.text(35.0, 40.2, "proj(patch)\n$+$ spatial_pos[n]\n$+$ $z_c$",
+    ax.text(35.0, 40.2, "proj(patch)\n$+$ $z_c$",
             ha="center", va="center", fontsize=5.9, color=MUTED, zorder=4,
             linespacing=1.5)
 
@@ -321,7 +298,7 @@ def build() -> plt.Figure:
 
     bullets = [
         "\u2022 One shared Conv2d W for every channel (tied)",
-        "\u2022 spatial_pos $[1, N, D]$ is shared (\u2260 identity)",
+        "\u2022 spatial pos is added after channel fusion",
         "\u2022 $z_c$ = Embedding(marker_id), added per token",
         "\u2022 DCP omission \u2192 absent row, never a zero card",
         "\u2022 No padding tokens, no zero embeddings",

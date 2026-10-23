@@ -13,8 +13,10 @@ from .losses import normalized_patch_mse
 from .mae import ChannelFusionMAE
 from .masking import DCPVisibilitySampler
 from .ops import (
+    grouped_attention,
     grouped_cross_attention,
     grouped_pool_attention,
+    grouped_projected_self_attention,
     grouped_self_attention,
     grouped_softmax,
 )
@@ -35,8 +37,10 @@ __all__ = [
     "DCPVisibilitySampler",
     "ChannelFusionMAE",
     "normalized_patch_mse",
+    "grouped_attention",
     "grouped_cross_attention",
     "grouped_pool_attention",
+    "grouped_projected_self_attention",
     "grouped_self_attention",
     "grouped_softmax",
 ]

@@ -106,7 +106,7 @@ def _(ChannelSet, math, torch):
     def make_set(C, seed=0, include_identity=True, n_samples=1):
         """A full ``n_samples``-batch of ``C``-channel sets (canonical (c,n) order)."""
         g = torch.Generator().manual_seed(seed)
-        tokens, si, ci, pi, cid, embed = [], [], [], [], [], []
+        tokens, si, ci, pi, cid, embed, cgid = [], [], [], [], [], [], []
         for b in range(n_samples):
             for c in range(C):
                 channel_id = int(torch.randint(0, N_CHANNEL_IDS, (1,), generator=g).item())
@@ -118,6 +118,7 @@ def _(ChannelSet, math, torch):
                     pi.append(n)
                     cid.append(channel_id)
                     embed.append(vec)
+                    cgid.append(b * C + c)
         cs = ChannelSet(
             tokens=torch.stack(tokens),
             sample_idx=torch.tensor(si),
@@ -127,6 +128,7 @@ def _(ChannelSet, math, torch):
             n_samples=n_samples,
             n_patches=NP,
             channel_embed=torch.stack(embed),
+            channel_group_id=torch.tensor(cgid),
         )
         if not include_identity:
             cs.tokens = cs.tokens - cs.channel_embed
@@ -150,6 +152,7 @@ def _(ChannelSet, math, torch):
             n_samples=cs.n_samples,
             n_patches=cs.n_patches,
             channel_embed=cs.channel_embed[idx],
+            channel_group_id=cs.channel_group_id[idx],
         )
 
     def select_channels(cs, keep_mask):
@@ -164,6 +167,7 @@ def _(ChannelSet, math, torch):
             n_samples=cs.n_samples,
             n_patches=cs.n_patches,
             channel_embed=cs.channel_embed[keep],
+            channel_group_id=cs.channel_group_id[keep],
         )
 
     @torch.no_grad()
@@ -188,7 +192,7 @@ def _(ChannelSet, math, torch):
 @app.cell
 def _(ChannelFusion, DIM, NP, torch):
     torch.manual_seed(1234)
-    fusion = ChannelFusion(DIM, n_heads=4, n_queries=1, n_patches=NP)
+    fusion = ChannelFusion(DIM, n_heads=4, n_patches=NP)
     fusion.eval()
     return (fusion,)
 

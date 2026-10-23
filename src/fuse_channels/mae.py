@@ -3,9 +3,15 @@
 Pipeline
 --------
 ``images`` -> DCP masking (token omission) -> channel-tied patch embed +
-additive channel embedding -> padding-free channel fusion -> memory-augmented
-transformer encoder -> channel-aware shared decoder -> patch-normalized pixel
-loss.
+additive channel embedding -> padding-free channel fusion (+ post-fusion
+positional embedding) -> memory-augmented transformer encoder -> trained PMA
+descriptor -> channel-aware shared decoder -> patch-normalized pixel loss.
+
+The descriptor is computed in :meth:`forward` from the encoder's *content*
+tokens only (``tok_out``, not the memory tokens), appended as one extra
+per-sample token to the decoder KV, and therefore receives gradients from the
+reconstruction loss.  ``encode(pool="attention")`` returns that same
+descriptor.  ``pool="mean"`` remains the content-only mean ablation.
 
 Masking omits rows from the flattened token tensor; no mask tokens and no attention masks
 are used for masking.  The encoder only ever sees *visible* tokens.
@@ -13,12 +19,11 @@ are used for masking.  The encoder only ever sees *visible* tokens.
 
 from __future__ import annotations
 
-from typing import List, Optional, Sequence
+from typing import Optional, Sequence
 
 import torch
 import torch.nn as nn
 
-from .container import ChannelSet
 from .decoder import ChannelAwareDecoder
 from .encoder import TransformerEncoder
 from .fusion import ChannelFusion, IdentityGatedSum, MultiheadAttentionPooling
@@ -43,9 +48,11 @@ class ChannelFusionMAE(nn.Module):
         fusion: str = "attention",
         p_patch: float = 0.5,
         p_channel: float = 0.5,
+        dropout: float = 0.0,
     ) -> None:
         super().__init__()
         self.patch_size = patch_size
+        self.n_queries = n_queries
 
         channel_embedding = ChannelEmbedding(dim, num_channel_ids)
         self.frontend = ChannelTokenizer(image_size, patch_size, dim, channel_embedding)
@@ -54,25 +61,29 @@ class ChannelFusionMAE(nn.Module):
 
         if fusion == "attention":
             self.fusion = ChannelFusion(
-                dim, n_heads=n_heads, n_queries=n_queries, n_patches=n_patches
+                dim, n_heads=n_heads, n_patches=n_patches, dropout=dropout
             )
         elif fusion == "identity_gated":
-            self.fusion = IdentityGatedSum(
-                dim, n_queries=n_queries, n_patches=n_patches
-            )
+            self.fusion = IdentityGatedSum(dim, n_patches=n_patches)
         else:
             raise ValueError(f"unknown fusion '{fusion}'")
 
-        out_dim = n_queries * dim
-        self.fuse_proj = nn.Identity() if out_dim == dim else nn.Linear(out_dim, dim)
-
         self.encoder = TransformerEncoder(
-            dim, encoder_depth, n_heads, n_memory=n_memory
+            dim, encoder_depth, n_heads, n_memory=n_memory, dropout=dropout
         )
-        self.pooler = MultiheadAttentionPooling(dim, n_heads=n_heads, n_queries=1)
+        # n_queries controls only the descriptor pooler; the readout is averaged
+        # back to [B, D] so the descriptor can be one decoder KV token.
+        self.pooler = MultiheadAttentionPooling(
+            dim,
+            n_heads=n_heads,
+            n_queries=n_queries,
+            dropout=dropout,
+            post_sab=n_queries > 1,
+            readout="mean",
+        )
         self.decoder = ChannelAwareDecoder(
             dim, decoder_depth, n_heads, patch_dim=patch_size * patch_size,
-            n_patches=n_patches,
+            n_patches=n_patches, dropout=dropout,
         )
         self.masker = DCPVisibilitySampler(
             n_patches, p_patch=p_patch, p_channel=p_channel
@@ -93,18 +104,24 @@ class ChannelFusionMAE(nn.Module):
             visible = self.masker(images, generator=generator)
 
         cs = self.frontend(images, channel_ids, visible)
-        fused, present = self.fusion(cs)
-        fused = self.fuse_proj(fused)  # [B, N, D]
+        fused, present = self.fusion(cs)  # [B, N, D] incl. post-fusion PE
 
         # -- padding-free encoder input: only present locations ---------- #
         enc_tokens = fused[present]  # [Kf, D]
         enc_group_id = torch.arange(B, device=device).repeat_interleave(present.sum(1))
         mem_out, tok_out = self.encoder(enc_tokens, enc_group_id, B)
-        enc_all = torch.cat([mem_out, tok_out], dim=0)
+
+        # -- trained descriptor from content tokens only ----------------- #
+        desc = self.pooler(tok_out, enc_group_id, B)  # [B, D]
+
+        enc_all = torch.cat([mem_out, tok_out, desc], dim=0)
         mem_group_id = torch.arange(B, device=device).repeat_interleave(
             self.encoder.n_memory
         )
-        enc_all_group_id = torch.cat([mem_group_id, enc_group_id], dim=0)
+        desc_group_id = torch.arange(B, device=device)
+        enc_all_group_id = torch.cat(
+            [mem_group_id, enc_group_id, desc_group_id], dim=0
+        )
 
         # -- decoder targets: the masked channel-patches ----------------- #
         counts = torch.tensor([im.shape[0] for im in images], device=device)
@@ -124,7 +141,14 @@ class ChannelFusionMAE(nn.Module):
 
         if tgt_group_id.numel() == 0:
             zero = fused.sum() * 0.0
-            return {"loss": zero, "pred": None, "target": None}
+            return {
+                "loss": zero,
+                "pred": None,
+                "target": None,
+                "descriptor": desc,
+                "visible": visible,
+                "present": present,
+            }
 
         gidx = offsets[tgt_group_id] + tgt_ch  # global channel index of each target
 
@@ -148,6 +172,7 @@ class ChannelFusionMAE(nn.Module):
             "pred": pred,
             "target": target,
             "target_channel_id": target_cid,
+            "descriptor": desc,
             "visible": visible,
             "present": present,
         }
@@ -168,9 +193,10 @@ class ChannelFusionMAE(nn.Module):
         ``pool`` selects how the padding-free encoder outputs are reduced to
         ``[B, D]``:
 
-        * ``"attention"`` (default) -- pooling by multi-head attention (PMA),
-          a learned query cross-attends to the memory + visible tokens;
-        * ``"mean"`` -- mean over the visible tokens.
+        * ``"attention"`` (default) -- pooling by multi-head attention (PMA)
+          over the content tokens; this is the same descriptor the training
+          forward computes and appends to the decoder KV;
+        * ``"mean"`` -- mean over the content tokens (ablation).
         """
         visible = [
             torch.ones(im.shape[0], self.n_patches, dtype=torch.bool, device=im.device)
@@ -178,7 +204,6 @@ class ChannelFusionMAE(nn.Module):
         ]
         cs = self.frontend(images, channel_ids, visible)
         fused, present = self.fusion(cs)
-        fused = self.fuse_proj(fused)
         B, D = fused.shape[0], fused.shape[-1]
         enc_tokens = fused[present]
         enc_group_id = torch.arange(B, device=images[0].device).repeat_interleave(
@@ -186,14 +211,7 @@ class ChannelFusionMAE(nn.Module):
         )
         mem_out, tok_out = self.encoder(enc_tokens, enc_group_id, B)
         if pool == "attention":
-            mem_group_id = torch.arange(B, device=images[0].device).repeat_interleave(
-                self.encoder.n_memory
-            )
-            pooled = self.pooler(
-                torch.cat([mem_out, tok_out], dim=0),
-                torch.cat([mem_group_id, enc_group_id], dim=0),
-                B,
-            )
+            pooled = self.pooler(tok_out, enc_group_id, B)
         elif pool == "mean":
             pooled = tok_out.new_zeros(B, D)
             pooled.index_add_(0, enc_group_id, tok_out)

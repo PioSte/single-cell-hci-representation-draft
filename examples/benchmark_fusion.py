@@ -29,6 +29,7 @@ def make_set(B, C, N, D, seed=0):
         n_samples=B,
         n_patches=N,
         channel_embed=embed,
+        channel_group_id=torch.arange(B * C).repeat_interleave(N),
     )
 
 
@@ -50,8 +51,8 @@ def bench(module, cs, iters=20):
 def main() -> None:
     B, C, N, D = 8, 60, 16, 128
     cs = make_set(B, C, N, D)
-    attn = ChannelFusion(D, n_heads=4, n_queries=1, n_patches=N)
-    gated = IdentityGatedSum(D, n_queries=1, n_patches=N)
+    attn = ChannelFusion(D, n_heads=4, n_patches=N)
+    gated = IdentityGatedSum(D, n_patches=N)
 
     t_attn = bench(attn, cs)
     t_gated = bench(gated, cs)

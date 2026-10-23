@@ -32,6 +32,12 @@ class ChannelSet:
         ``[T]`` channel *identity key* indexing the embedding table (constant
         across the patches of a channel).  Unlike ``channel_idx`` this is a
         dataset-level channel id, not a panel position.
+    channel_group_id:
+        ``[T]`` global channel index across the whole batch (constant across a
+        channel's patches).  Unlike ``channel_id`` this is a *position* in the
+        concatenated batch, so it uniquely identifies one channel instance even
+        when the same identity appears twice.  Used by :class:`IdentityGatedSum`
+        to evaluate its channel MLP once per channel.
     channel_embed:
         ``[T, D]`` additive channel-embedding vector (learnable), if already
         computed.
@@ -47,6 +53,7 @@ class ChannelSet:
     n_samples: int
     n_patches: int
     channel_embed: Optional[torch.Tensor] = None
+    channel_group_id: Optional[torch.Tensor] = None
 
     # ------------------------------------------------------------------ #
     def location_group_ids(self) -> torch.Tensor:

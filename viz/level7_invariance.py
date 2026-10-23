@@ -136,12 +136,12 @@ def measure_padding_free_equiv(model, device, seed=0):
 
 
 def analytic_cost(Cs, D):
-    """Per-location analytic multiply-adds (dominant terms, Q=1 queries).
+    """Per-location analytic multiply-adds (dominant terms).
 
     * fixed-query PMA (``ChannelFusion``): scores + weighted sum ``2·C·D``,
       plus the per-location output projection ``D²``;
     * dense ``C×C`` channel attention: ``2·C²·D``;
-    * ``IdentityGatedSum``: per-token ``D→D`` MLP + ``D→Q`` head
+    * ``IdentityGatedSum``: one per-channel ``D→D`` MLP + ``D→1`` head
       (``D² + D``) and a ``D→D`` value projection (``D²``) → ``C·(2·D² + D)``.
     """
     attn, dense, gated = [], [], []
@@ -345,7 +345,7 @@ def main() -> None:
     ).to(device).eval()
 
     print(f"Model: {model.n_patches} patches, dim={model.fusion.dim}, "
-          f"n_queries={model.fusion.n_queries}")
+          f"n_queries={model.n_queries}")
 
     # Run measurements
     with torch.no_grad():

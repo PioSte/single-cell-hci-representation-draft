@@ -1,6 +1,6 @@
 import torch
 
-from fuse_channels import ChannelFusionMAE
+from fuse_channels import ChannelFusionMAE, DecoderBlock, TransformerBlock
 
 
 def _batch(seed=0, C_list=(2, 4, 3), image_size=8):
@@ -38,6 +38,46 @@ def test_forward_smoke():
     assert out["pred"].shape[-1] == 16  # patch_size**2
     out["loss"].backward()
     assert any(p.grad is not None for p in model.parameters())
+
+
+def test_encoder_and_decoder_use_standard_projections():
+    """Encoder blocks and decoder blocks carry Q/K/V/O projections."""
+    enc = TransformerBlock(32, 4)
+    enc_params = set(dict(enc.named_parameters()))
+    for name in ("q_proj.weight", "k_proj.weight", "v_proj.weight", "out_proj.weight"):
+        assert name in enc_params, name
+
+    dec = DecoderBlock(32, 4)
+    dec_params = set(dict(dec.named_parameters()))
+    # target self-attention
+    for name in (
+        "self_q_proj.weight",
+        "self_k_proj.weight",
+        "self_v_proj.weight",
+        "self_out_proj.weight",
+    ):
+        assert name in dec_params, name
+    # cross-attention
+    for name in ("q_proj.weight", "k_proj.weight", "v_proj.weight", "out_proj.weight"):
+        assert name in dec_params, name
+
+
+def test_decoder_target_self_attention_mixes_queries():
+    """A target query's prediction changes when a sibling target query changes."""
+    torch.manual_seed(0)
+    dec = DecoderBlock(32, 4)
+    dec.eval()
+    kv = torch.randn(5, 32)
+    kv_group_id = torch.zeros(5, dtype=torch.long)
+    q_group_id = torch.zeros(2, dtype=torch.long)
+    qa = torch.randn(2, 32)
+    qb = qa.clone()
+    qb[1] += torch.randn(32)  # only the second target query changes
+    with torch.no_grad():
+        a = dec(qa, q_group_id, kv, kv_group_id, 1)
+        b = dec(qb, q_group_id, kv, kv_group_id, 1)
+    # self-attention makes the sibling change propagate to query 0
+    assert not torch.allclose(a[0], b[0])
 
 
 def test_padding_free_encoder_input():
@@ -116,8 +156,56 @@ def test_encode_attention_pool_replaces_mean():
     assert torch.isfinite(pooled0).all()
 
 
+def test_descriptor_is_trained_by_the_mae_loss():
+    """Every pooler parameter receives a gradient from the reconstruction loss."""
+    model = _model()
+    images, ids = _batch()
+    out = model(images, ids, generator=torch.Generator().manual_seed(1))
+    out["loss"].backward()
+    missing = [
+        name for name, p in model.pooler.named_parameters() if p.grad is None
+    ]
+    assert not missing, f"pooler parameters without gradients: {missing}"
+
+
+def test_forward_and_encode_share_the_descriptor():
+    """encode(pool='attention') returns the descriptor trained in forward."""
+    model = _model()
+    model.eval()
+    images, ids = _batch()
+    visible = [
+        torch.ones(im.shape[0], model.n_patches, dtype=torch.bool) for im in images
+    ]
+    with torch.no_grad():
+        out = model(images, ids, visible=visible)
+        _, pooled = model.encode(images, ids, pool="attention")
+    assert out["pred"] is None  # nothing masked
+    assert out["descriptor"].shape == pooled.shape == (3, 32)
+    assert torch.allclose(out["descriptor"], pooled, atol=1e-6)
+
+
+def test_post_fusion_pe_and_no_patch_embed_pe():
+    model = _model()
+    assert tuple(model.fusion.spatial_pos.shape) == (1, model.n_patches, 32)
+    assert not hasattr(model.frontend.patch_embed, "spatial_pos")
+
+
+def test_multi_query_descriptor_smoke():
+    model = _model(n_queries=3)
+    images, ids = _batch()
+    out = model(images, ids, generator=torch.Generator().manual_seed(1))
+    assert torch.isfinite(out["loss"])
+    out["loss"].backward()
+    model.eval()
+    _, pooled = model.encode(images, ids, pool="attention")
+    assert pooled.shape == (3, 32)
+    assert torch.isfinite(pooled).all()
+
+
 def test_identity_gated_fusion_mae():
     model = _model(fusion="identity_gated")
     images, ids = _batch()
     out = model(images, ids, generator=torch.Generator().manual_seed(1))
     assert torch.isfinite(out["loss"])
+    out["loss"].backward()
+    assert model.fusion.weight_net[0].weight.grad is not None

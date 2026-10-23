@@ -9,9 +9,8 @@ model:
 * every shape downstream of the fusion is independent of ``C``.
 
 Two simplifications: DCP masking is shown as location-level removal although the
-real masker selects per channel-patch token before the fusion, and ``[B, D]`` is
-the inference-time :meth:`~fuse_channels.mae.ChannelFusionMAE.encode` descriptor,
-not a training-forward intermediate.
+real masker selects per channel-patch token before the fusion, and ``[B, D]``
+is the trained descriptor that the forward pass also appends to the decoder KV.
 
 The grid of cells is a literal picture of the tensor axes: rows are channels
 (grouped by sample), columns are spatial patches, and the third axis ``D`` is
@@ -31,7 +30,7 @@ import kinemo as k
 # --------------------------------------------------------------------------- #
 # Toy input, chosen to mirror the module defaults in mae.py.
 #   B samples, channels C_b in {3, 2}, H = W = 32, patch P = 8 -> N = 16 patches,
-#   feature width D = 192, Q = 1 learned query, M = 4 memory tokens.
+#   feature width D = 192, one learned fusion query, M = 4 memory tokens.
 # --------------------------------------------------------------------------- #
 B = 2
 C = (3, 2)
@@ -172,8 +171,8 @@ def shape_flow(s: k.Scene):
         duration=0.5,
     )
     cap(
-        "one tied 1→D filter + a shared spatial position + identity z_c",
-        "[ΣC, N, D] = [5, 16, 192]",
+        "one tied 1\u2192D filter + identity z_c (position is added after fusion)",
+        "[\u03a3C, N, D] = [5, 16, 192]",
     )
     s.play(*[k.indicate(p) for p in patch.values()], duration=0.6)
     legend = k.Text(
@@ -207,8 +206,8 @@ def shape_flow(s: k.Scene):
     s.play(*merge, duration=0.9, ease=k.ease.in_out)
     s.play(*[f.to(opacity=1.0) for f in fused.values()], duration=0.4)
     cap(
-        "a learned query pools the channels at each location — C is summed away",
-        "[B, N, Q·D] → [B, N, D] = [2, 16, 192]",
+        "a learned query pools the channels at each location, then + spatial pos",
+        "[B, N, D] = [2, 16, 192]",
         k.YELLOW,
     )
     s.play(*[k.indicate(f) for f in fused.values()], duration=0.7)

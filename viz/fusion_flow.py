@@ -9,7 +9,7 @@ patch) and follows its channel tokens through every operation:
     -> shared Linear -> scatter into [B, N, Q*D]
 
 The numbers come from a real ``ChannelFusion`` forward pass with an
-illustrative ``dim=4, n_heads=2, n_queries=1`` (the model default is ``dim=192,
+illustrative ``dim=4, n_heads=2`` (the model default is ``dim=192,
 n_heads=6``; a 192-wide vector is unreadable, the math is identical).  That
 probe also confirmed the structural facts this animation leans on:
 
@@ -34,7 +34,7 @@ import kinemo as k
 
 # --------------------------------------------------------------------------- #
 # Numbers from one real ChannelFusion forward pass
-#   dim=4, heads=2, Dh=2, n_queries=1, C=3 channels at patch j=1.
+#   dim=4, heads=2, Dh=2, one learned query, C=3 channels at patch j=1.
 # --------------------------------------------------------------------------- #
 D = 4
 H = 2
@@ -437,7 +437,7 @@ def fusion_flow(s: k.Scene):
     s.wait(0.3)
 
     # ===================================================================== #
-    # 10 -- scatter back into [B, N, Q·D]: presence, not padding.
+    # 10 -- scatter back into [B, N, D]: presence, not padding.
     # ===================================================================== #
     nxt("10 / 11")
     s.play(k.fade_out(Wm, cm, pm, e_W, e_c, e_p9, c_W, c_c, c_p9), duration=0.4)
@@ -475,7 +475,7 @@ def fusion_flow(s: k.Scene):
     )
     cap(
         "one fused vector per present location: no C_max, no pad slot",
-        "[ΣC, N, D]  →  [B, N, Q·D]        present = any visible channel",
+        "[ΣC, N, D]  →  [B, N, D]        present = any visible channel",
         FUSEDCOL,
     )
     s.wait(0.3)

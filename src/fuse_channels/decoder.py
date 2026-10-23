@@ -2,10 +2,12 @@
 
 One decoder is shared across *all* channels (per-channel decoders do not scale
 past a handful of channels).  Each reconstruction query is conditioned on the
-**target channel's embedding** and the **target spatial position**, and
-cross-attends to the encoder's memory + visible tokens.  This turns the additive
-channel embedding into a *target specification* so one shared decoder can be
-used for all channels.
+**target channel's embedding** and the **target spatial position**, then runs
+grouped self-attention over the target queries of its sample (so correlated
+masked channel-patches can coordinate) before cross-attending to the encoder's
+memory + visible tokens + trained descriptor.  This turns the additive channel
+embedding into a *target specification* so one shared decoder can be used for
+all channels.
 """
 
 from __future__ import annotations
@@ -13,22 +15,39 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
-from .ops import grouped_cross_attention
+from .ops import grouped_attention, grouped_projected_self_attention
 
 
 class DecoderBlock(nn.Module):
+    """Pre-norm target self-attention + cross-attention + MLP."""
+
     def __init__(self, dim: int, n_heads: int, mlp_ratio: float = 4.0, dropout: float = 0.0):
         super().__init__()
+        assert dim % n_heads == 0, "dim must be divisible by n_heads"
         self.n_heads = n_heads
+        # target self-attention
+        self.norm_self = nn.LayerNorm(dim)
+        self.self_q_proj = nn.Linear(dim, dim)
+        self.self_k_proj = nn.Linear(dim, dim)
+        self.self_v_proj = nn.Linear(dim, dim)
+        self.self_out_proj = nn.Linear(dim, dim)
+        # cross-attention to the encoder representation
         self.norm_q = nn.LayerNorm(dim)
         self.norm_kv = nn.LayerNorm(dim)
+        self.q_proj = nn.Linear(dim, dim)
+        self.k_proj = nn.Linear(dim, dim)
+        self.v_proj = nn.Linear(dim, dim)
+        self.out_proj = nn.Linear(dim, dim)
+        # feed-forward
         self.norm_ff = nn.LayerNorm(dim)
         self.dropout = nn.Dropout(dropout)
         hidden = int(dim * mlp_ratio)
         self.mlp = nn.Sequential(
             nn.Linear(dim, hidden), nn.GELU(), nn.Dropout(dropout), nn.Linear(hidden, dim)
         )
-        self.attn_out = nn.Linear(dim, dim)
+
+    def _attention_dropout(self) -> float:
+        return self.dropout.p if self.training else 0.0
 
     def forward(
         self,
@@ -38,11 +57,33 @@ class DecoderBlock(nn.Module):
         kv_group_id: torch.Tensor,
         n_groups: int,
     ) -> torch.Tensor:
-        h = grouped_cross_attention(
-            self.norm_q(q), q_group_id, self.norm_kv(kv), kv_group_id,
-            n_groups, self.n_heads,
+        # target queries attend to each other (one group per sample)
+        h = self.norm_self(q)
+        self_attn = grouped_projected_self_attention(
+            self.self_q_proj(h),
+            self.self_k_proj(h),
+            self.self_v_proj(h),
+            q_group_id,
+            n_groups,
+            self.n_heads,
+            dropout_p=self._attention_dropout(),
         )
-        q = q + self.dropout(self.attn_out(h))
+        q = q + self.dropout(self.self_out_proj(self_attn))
+
+        # then to the encoder representation
+        hq = self.norm_q(q)
+        hkv = self.norm_kv(kv)
+        cross = grouped_attention(
+            self.q_proj(hq),
+            q_group_id,
+            self.k_proj(hkv),
+            self.v_proj(hkv),
+            kv_group_id,
+            n_groups,
+            self.n_heads,
+            dropout_p=self._attention_dropout(),
+        )
+        q = q + self.dropout(self.out_proj(cross))
         q = q + self.dropout(self.mlp(self.norm_ff(q)))
         return q
 

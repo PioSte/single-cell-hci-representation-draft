@@ -4,6 +4,10 @@ Memory / register tokens are carried through the encoder (and handed to the
 decoder) as a cardinality-independent long-term memory.  Attention is again
 padding-free: the sequence is flattened over real tokens with per-sample group
 ids.
+
+Blocks are standard pre-norm transformer blocks: LayerNorm, explicit
+Q/K/V projections, scaled dot-product attention, an output projection, then a
+residual MLP.
 """
 
 from __future__ import annotations
@@ -11,26 +15,43 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
-from .ops import grouped_self_attention
+from .ops import grouped_projected_self_attention
 
 
 class TransformerBlock(nn.Module):
+    """Standard pre-norm transformer block over grouped ``[T, D]`` tokens."""
+
     def __init__(self, dim: int, n_heads: int, mlp_ratio: float = 4.0, dropout: float = 0.0):
         super().__init__()
+        assert dim % n_heads == 0, "dim must be divisible by n_heads"
         self.norm1 = nn.LayerNorm(dim)
         self.norm2 = nn.LayerNorm(dim)
         self.n_heads = n_heads
+        self.q_proj = nn.Linear(dim, dim)
+        self.k_proj = nn.Linear(dim, dim)
+        self.v_proj = nn.Linear(dim, dim)
+        self.out_proj = nn.Linear(dim, dim)
         self.dropout = nn.Dropout(dropout)
         hidden = int(dim * mlp_ratio)
         self.mlp = nn.Sequential(
             nn.Linear(dim, hidden), nn.GELU(), nn.Dropout(dropout), nn.Linear(hidden, dim)
         )
 
+    def _attention_dropout(self) -> float:
+        return self.dropout.p if self.training else 0.0
+
     def forward(self, x: torch.Tensor, group_id: torch.Tensor, n_groups: int) -> torch.Tensor:
-        h = grouped_self_attention(
-            self.norm1(x), group_id, n_groups, self.n_heads, dropout_p=0.0
+        h = self.norm1(x)
+        attn = grouped_projected_self_attention(
+            self.q_proj(h),
+            self.k_proj(h),
+            self.v_proj(h),
+            group_id,
+            n_groups,
+            self.n_heads,
+            dropout_p=self._attention_dropout(),
         )
-        x = x + self.dropout(h)
+        x = x + self.dropout(self.out_proj(attn))
         x = x + self.dropout(self.mlp(self.norm2(x)))
         return x
 

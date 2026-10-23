@@ -77,6 +77,58 @@ def grouped_self_attention(
     return out
 
 
+def grouped_projected_self_attention(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    group_id: torch.Tensor,
+    n_groups: int,
+    n_heads: int,
+    dropout_p: float = 0.0,
+) -> torch.Tensor:
+    """Self-attention over projected ``q``/``k``/``v`` sharing one group id.
+
+    ``q``, ``k`` and ``v`` are ``[T, D]`` projections of the *same* token set
+    (so every token is both a query and a key/value), and ``group_id[i]``
+    identifies the group of all three rows ``i``.  Groups are independent, so
+    this is exactly the encoder / target self-attention path: equal-length
+    groups are batched into a single SDPA call instead of looping per group.
+
+    Returns ``[T, D]`` in the input token order.
+    """
+    T, D = q.shape
+    out = torch.zeros_like(q)
+    if T == 0:
+        return out
+    assert D % n_heads == 0, "D must be divisible by n_heads"
+    head_dim = D // n_heads
+
+    lengths, offsets = _lengths_and_offsets(group_id, n_groups)
+    order = torch.argsort(group_id, stable=True)
+    q_sorted = q[order]
+    k_sorted = k[order]
+    v_sorted = v[order]
+    out_sorted = torch.empty_like(q_sorted)
+    ar = None
+
+    for L in torch.unique(lengths).tolist():
+        if L == 0:
+            continue
+        group_ids = torch.nonzero(lengths == L, as_tuple=False).squeeze(1)
+        offs = offsets[group_ids]
+        if ar is None or ar.numel() < L:
+            ar = torch.arange(L, device=q.device)
+        idx = offs[:, None] + ar[None, :]  # [M, L]
+        qq = q_sorted[idx].view(-1, L, n_heads, head_dim).permute(0, 2, 1, 3)
+        kk = k_sorted[idx].view(-1, L, n_heads, head_dim).permute(0, 2, 1, 3)
+        vv = v_sorted[idx].view(-1, L, n_heads, head_dim).permute(0, 2, 1, 3)
+        o = F.scaled_dot_product_attention(qq, kk, vv, dropout_p=dropout_p)
+        out_sorted[idx] = o.permute(0, 2, 1, 3).reshape(-1, L, D)
+
+    out[order] = out_sorted
+    return out
+
+
 def grouped_pool_attention(
     q: torch.Tensor,
     k: torch.Tensor,
@@ -122,6 +174,61 @@ def grouped_pool_attention(
     return out
 
 
+def grouped_attention(
+    q: torch.Tensor,
+    q_group_id: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    kv_group_id: torch.Tensor,
+    n_groups: int,
+    n_heads: int,
+    dropout_p: float = 0.0,
+) -> torch.Tensor:
+    """Arbitrary-query cross-attention within groups (loops over groups).
+
+    The general primitive behind the decoder's cross-attention to the encoder
+    output, where the query and key/value lengths differ per group.  For
+    self-attention (one shared token set) prefer the bucketed
+    :func:`grouped_projected_self_attention`.  Queries, keys and values are
+    independent ``[T, D]`` tensors; every group is attended separately, so no
+    attention mask is ever materialised.
+
+    Parameters
+    ----------
+    q:
+        ``[Tq, D]`` query features.
+    q_group_id:
+        ``[Tq]`` group id of each query.
+    k, v:
+        ``[Tk, D]`` / ``[Tv, D]`` key and value features.
+    kv_group_id:
+        ``[Tk]`` group id of each key/value token.
+    n_groups:
+        total number of groups; empty query/key sets produce zeros.
+    """
+    Tq, D = q.shape
+    out = torch.zeros_like(q)
+    if Tq == 0 or k.shape[0] == 0:
+        return out
+    assert D % n_heads == 0, "D must be divisible by n_heads"
+    head_dim = D // n_heads
+    qh = q.view(Tq, n_heads, head_dim)
+    kh = k.view(k.shape[0], n_heads, head_dim)
+    vh = v.view(v.shape[0], n_heads, head_dim)
+
+    for g in range(n_groups):
+        qi = torch.nonzero(q_group_id == g, as_tuple=False).squeeze(1)
+        ki = torch.nonzero(kv_group_id == g, as_tuple=False).squeeze(1)
+        if qi.numel() == 0 or ki.numel() == 0:
+            continue
+        qq = qh[qi].permute(1, 0, 2).unsqueeze(0)  # [1, H, Lq, Dh]
+        kk = kh[ki].permute(1, 0, 2).unsqueeze(0)  # [1, H, Lk, Dh]
+        vv = vh[ki].permute(1, 0, 2).unsqueeze(0)  # [1, H, Lk, Dh]
+        o = F.scaled_dot_product_attention(qq, kk, vv, dropout_p=dropout_p)
+        out[qi] = o.squeeze(0).permute(1, 0, 2).reshape(-1, D)
+    return out
+
+
 def grouped_cross_attention(
     q: torch.Tensor,
     q_group_id: torch.Tensor,
@@ -131,29 +238,11 @@ def grouped_cross_attention(
     n_heads: int,
     dropout_p: float = 0.0,
 ) -> torch.Tensor:
-    """Arbitrary-query cross-attention within groups (loops over groups).
-
-    Used by the decoder, where the number of groups is the batch size (small)
-    while both the query and key sets are variable length.
-    """
-    Tq, D = q.shape
-    out = torch.zeros_like(q)
-    if Tq == 0 or k.shape[0] == 0:
-        return out
-    head_dim = D // n_heads
-    qh = q.view(Tq, n_heads, head_dim)
-    kh = k.view(k.shape[0], n_heads, head_dim)
-
-    for g in range(n_groups):
-        qi = torch.nonzero(q_group_id == g, as_tuple=False).squeeze(1)
-        ki = torch.nonzero(kv_group_id == g, as_tuple=False).squeeze(1)
-        if qi.numel() == 0 or ki.numel() == 0:
-            continue
-        qq = qh[qi].permute(1, 0, 2).unsqueeze(0)  # [1, H, Lq, Dh]
-        kk = kh[ki].permute(1, 0, 2).unsqueeze(0)  # [1, H, Lk, Dh]
-        o = F.scaled_dot_product_attention(qq, kk, kk, dropout_p=dropout_p)
-        out[qi] = o.squeeze(0).permute(1, 0, 2).reshape(-1, D)
-    return out
+    """Cross-attention with ``k == v`` (kept as a thin alias of
+    :func:`grouped_attention` for existing callers/tests)."""
+    return grouped_attention(
+        q, q_group_id, k, k, kv_group_id, n_groups, n_heads, dropout_p
+    )
 
 
 def grouped_softmax(

@@ -2,8 +2,10 @@
 
 The projection is **tied across channels** (one shared kernel applied to every
 single-channel image); ChannelViT shows tied filters beat untied ones and give
-better robustness to varying channel sets.  A *shared* spatial positional
-embedding is added so that position and channel identity stay disentangled.
+better robustness to varying channel sets.  The spatial positional embedding is
+added *after* channel fusion (see :class:`~fuse_channels.fusion.ChannelFusion`),
+so channel attention is position-agnostic and position enters the encoder as a
+clean additive signal.
 """
 
 from __future__ import annotations
@@ -19,7 +21,7 @@ from .identity import ChannelEmbedding
 
 
 class ChannelTiedPatchEmbed(nn.Module):
-    """``Conv2d(1 -> dim)`` shared by all channels, plus shared spatial pos."""
+    """``Conv2d(1 -> dim)`` shared by all channels.  No positional embedding."""
 
     def __init__(self, image_size: int, patch_size: int, dim: int) -> None:
         super().__init__()
@@ -28,8 +30,6 @@ class ChannelTiedPatchEmbed(nn.Module):
         self.patch_size = patch_size
         self.n_patches = (image_size // patch_size) ** 2
         self.proj = nn.Conv2d(1, dim, kernel_size=patch_size, stride=patch_size)
-        self.spatial_pos = nn.Parameter(torch.zeros(1, self.n_patches, dim))
-        nn.init.trunc_normal_(self.spatial_pos, std=0.02)
 
     def forward(
         self,
@@ -62,7 +62,6 @@ class ChannelTiedPatchEmbed(nn.Module):
         x = torch.cat([im.to(device) for im in images], dim=0)  # [ΣC,1,H,W]
         feat = self.proj(x)  # [ΣC, dim, h, w]
         feat = feat.flatten(2).transpose(1, 2)  # [ΣC, N, dim]
-        feat = feat + self.spatial_pos  # shared across channels
         total_ch = feat.shape[0]
         feat = feat.reshape(total_ch * self.n_patches, -1)  # [ΣC*N, dim]
 
@@ -140,6 +139,7 @@ class ChannelTokenizer(nn.Module):
             n_samples=n_samples,
             n_patches=self.n_patches,
             channel_embed=channel_embed,
+            channel_group_id=channel_global,
         )
 
     # ------------------------------------------------------------------ #
