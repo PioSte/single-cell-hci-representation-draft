@@ -10,7 +10,7 @@ Module for an HCI Foundation Model"* and its MAE follow-up.
 ## What problem it solves
 
 An HCI image is a set of per-channel embeddings `{E_c ∈ R^D}` where the channel
-count `C` varies from 1 to 20–60+, channel order is meaningless, and panels
+count `C` varies from 1 to 5+, channel order is meaningless, and panels
 differ across labs. We need
 
 ```
