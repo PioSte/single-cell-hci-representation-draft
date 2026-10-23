@@ -326,7 +326,7 @@ def draw_components(ax) -> None:
     )
     bullets = [
         "spatial mask sampled independently per channel",
-        "dynamic channel masking: how many, then which",
+        "HCS channel mask: how many visible, then which",
         "masked channel-patch = a dropped row",
         "never zeroed, never padded, no $[-\\infty]$ attention",
     ]

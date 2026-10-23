@@ -1,9 +1,11 @@
 """L5 -- Dynamic Channel-Patch (DCP) masking: token omission, not zero-padding.
 
-Shows the two masking modes (channel mode: whole channels masked via
-count-then-subset; patch mode: independent spatial mask per channel), the
-safety guards (never mask every token, keep >= min_visible_channels with
-content), and the ragged token list before/after with dashed-frame omitted rows.
+Shows the three DCP regions of ChA-MAEViT Eq. 1 -- patch (fixed count per
+channel via randperm), channel (whole channels via HCS: sample m ~ U{1..C},
+then a uniform m-subset), and their union -- the safety guards (never mask
+every token, keep >= min_visible_channels with content, resample rather than
+ever reveal a whole channel row), and the ragged token list before/after with
+dashed-frame omitted rows.
 
 Makes explicit: ``omitted row == masked-padded row (present, but -inf attention)``,
 but the code uses **only omission** -- never zeroed, never padded, no -inf mask.
@@ -150,9 +152,9 @@ def build() -> plt.Figure:
     # ---- title ------------------------------------------------------------ #
     panel_header(ax, 2, 82, "L5", "Dynamic Channel-Patch masking (token omission)")
 
-    # ---- two modes section ------------------------------------------------ #
+    # ---- three regions section -------------------------------------------- #
     ax.text(2.0, 73.5,
-            "Two masking modes (per sample, chosen with $p_{\\mathrm{channel}}$ / $p_{\\mathrm{patch}}$):",
+            "Three DCP regions (Eq. 1), one mode per batch by default ($s \\sim \\mathcal{U}(0,1)$):",
             ha="left", va="center", fontsize=8.8, fontweight="bold", color=INK)
 
     # Channel mode: whole channels masked -> constant down the channel rows.
@@ -165,29 +167,30 @@ def build() -> plt.Figure:
                             "Channel mode",
                             "mask constant down\neach channel's row")
     ax.text(x_ch + GRID_N * PITCH / 2 - 0.3, bot_ch - 2.8,
-            "sample $k$, then which $k$ via randperm",
+            "HCS: sample $m$, then a uniform $m$-subset",
             ha="center", va="center", fontsize=6.8, color=GREEN,
             style="italic")
 
     # Patch mode: independent spatial mask per channel.
+    # floor(N * r_p) = 3 masked positions in every channel row.
     mask_patch = [
-        [True, True, False, True, False, True],
-        [False, True, True, False, True, True],
+        [True, True, False, True, False, False],
+        [False, True, True, False, True, False],
         [True, False, True, True, False, False],
-        [True, True, True, False, True, False],
-        [False, False, True, True, True, True],
+        [True, False, False, True, False, True],
+        [False, True, True, True, False, False],
     ]
     x_pt = 29.0
     bot_pt = draw_mask_grid(ax, x_pt, GRID_Y0, GRID_C, GRID_N, mask_patch,
                             "Patch mode",
                             "independent spatial mask\nper channel")
     ax.text(x_pt + GRID_N * PITCH / 2 - 0.3, bot_pt - 2.8,
-            "$\\mathrm{rand}(C_b, N) \\geq p_{\\mathrm{patch}}$",
+            "$\\lfloor N \\cdot r_p \\rfloor$ per channel via randperm",
             ha="center", va="center", fontsize=6.8, color=ORANGE,
             style="italic")
 
     # ---- guards section (LOSS red: safety / never-zero warnings) ---------- #
-    g_top, g_bot = 70.5, 44.0
+    g_top, g_bot = 70.5, 42.0
     rrect(ax, COLS_RIGHT, g_bot, PANEL_RIGHT - COLS_RIGHT, g_top - g_bot,
           edge=LOSS, face=tint(LOSS, 0.94), lw=1.3, dashed=False, rounding=0.7)
     gx = (COLS_RIGHT + PANEL_RIGHT) / 2
@@ -200,6 +203,10 @@ def build() -> plt.Figure:
     ax.text(gx, g_top - 17.5, "\u2022 Keep \u2265 min_visible_channels",
             ha="center", va="center", fontsize=7.4, color=INK)
     ax.text(gx, g_top - 21.0, "channels with some content",
+            ha="center", va="center", fontsize=6.4, color=MUTED, style="italic")
+    ax.text(gx, g_top - 25.2, "\u2022 Resample \u2264 10\u00d7; never reveal",
+            ha="center", va="center", fontsize=6.8, color=INK)
+    ax.text(gx, g_top - 27.8, "a whole channel row",
             ha="center", va="center", fontsize=6.4, color=MUTED, style="italic")
 
     # ---- token omission visualization ------------------------------------- #

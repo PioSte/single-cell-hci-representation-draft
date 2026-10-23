@@ -28,7 +28,22 @@ def main() -> None:
     p.add_argument("--lr", type=float, default=1e-3)
     p.add_argument("--c-max", type=int, default=8)
     p.add_argument("--channel-ids", type=int, default=32)
+    p.add_argument("--p-patch", type=float, default=0.5)
+    p.add_argument("--p-channel", type=float, default=0.5)
+    p.add_argument("--patch-ratio", type=float, default=0.75)
+    p.add_argument(
+        "--mode-sampling", choices=("batch", "sample"), default="batch"
+    )
+    p.add_argument(
+        "--hcs",
+        action="store_true",
+        help="HCS-only DCP (sets --p-patch 0 --p-channel 1)",
+    )
     args = p.parse_args()
+
+    p_patch, p_channel = args.p_patch, args.p_channel
+    if args.hcs:
+        p_patch, p_channel = 0.0, 1.0
 
     torch.manual_seed(0)
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -52,8 +67,10 @@ def main() -> None:
         n_heads=args.n_heads,
         n_memory=args.n_memory,
         num_channel_ids=args.channel_ids,
-        p_patch=0.5,
-        p_channel=0.5,
+        p_patch=p_patch,
+        p_channel=p_channel,
+        patch_ratio=args.patch_ratio,
+        mode_sampling=args.mode_sampling,
     ).to(device)
 
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0.05)

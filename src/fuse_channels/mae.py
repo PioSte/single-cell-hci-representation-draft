@@ -13,8 +13,15 @@ per-sample token to the decoder KV, and therefore receives gradients from the
 reconstruction loss.  ``encode(pool="attention")`` returns that same
 descriptor.  ``pool="mean"`` remains the content-only mean ablation.
 
-Masking omits rows from the flattened token tensor; no mask tokens and no attention masks
-are used for masking.  The encoder only ever sees *visible* tokens.
+Masking follows ChA-MAEViT Eq. 1 (patch, channel, or combined regions; see
+:mod:`fuse_channels.masking`).  Masking omits rows from the flattened token
+tensor; no mask tokens and no attention masks are used.  The encoder only ever
+sees *visible* tokens.  Channels dropped by the channel region stay in
+``images`` and are reconstructed as targets, so HCS and DCP's channel masking
+are the same mechanism.
+
+``p_patch=0, p_channel=1`` is HCS-only, ``p_patch=1, p_channel=0`` is
+patch-only, and ``p_patch=p_channel=0`` is the combined region.
 """
 
 from __future__ import annotations
@@ -48,6 +55,10 @@ class ChannelFusionMAE(nn.Module):
         fusion: str = "attention",
         p_patch: float = 0.5,
         p_channel: float = 0.5,
+        patch_ratio: float = 0.75,
+        mode_sampling: str = "batch",
+        min_visible_channels: int = 1,
+        max_masked_channels_frac: float = 1.0,
         dropout: float = 0.0,
     ) -> None:
         super().__init__()
@@ -86,7 +97,13 @@ class ChannelFusionMAE(nn.Module):
             n_patches=n_patches, dropout=dropout,
         )
         self.masker = DCPVisibilitySampler(
-            n_patches, p_patch=p_patch, p_channel=p_channel
+            n_patches,
+            p_patch=p_patch,
+            p_channel=p_channel,
+            patch_ratio=patch_ratio,
+            mode_sampling=mode_sampling,
+            min_visible_channels=min_visible_channels,
+            max_masked_channels_frac=max_masked_channels_frac,
         )
 
     # ------------------------------------------------------------------ #

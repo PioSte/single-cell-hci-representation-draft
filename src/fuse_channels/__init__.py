@@ -11,7 +11,7 @@ from .fusion import (
 from .identity import ChannelEmbedding
 from .losses import normalized_patch_mse
 from .mae import ChannelFusionMAE
-from .masking import DCPVisibilitySampler
+from .masking import DCPVisibilitySampler, HierarchicalChannelSampler
 from .ops import (
     grouped_attention,
     grouped_cross_attention,
@@ -35,6 +35,7 @@ __all__ = [
     "ChannelAwareDecoder",
     "DecoderBlock",
     "DCPVisibilitySampler",
+    "HierarchicalChannelSampler",
     "ChannelFusionMAE",
     "normalized_patch_mse",
     "grouped_attention",

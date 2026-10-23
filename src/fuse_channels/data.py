@@ -1,9 +1,11 @@
 """Synthetic data for smoke tests / examples.
 
 Real HCI panels are variable-channel; this toy mirrors that structure: every
-sample has its own channel count and its own (unordered) channel-id subset, and
-channels are generated from a shared low-rank latent so that cross-channel
-structure exists for the MAE to learn.
+sample has its own channel count and its own (unordered) channel-id subset.
+Each channel image is an independent random field smoothed by a fixed 3x3 blur,
+plus a per-channel offset derived from its channel id: there is no shared
+across-channel latent, and the only structure tying channels together is the
+channel-id offset.
 """
 
 from __future__ import annotations
