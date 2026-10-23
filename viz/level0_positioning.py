@@ -2,7 +2,7 @@
 
 Three-column comparison in the ChAda-ViT Fig 13 idiom:
 (a) Padded dense ViT -- stack channels into [B, C_max, N, D], explicit pad rows + -inf mask
-(b) Dense cross-channel attention (ChannelViT / ChAda-ViT) -- padded channel axis, additive channel embedding
+(b) Dense joint self-attention over C·N tokens (ChannelViT; ChAda-ViT pads/masks) -- additive channel embedding
 (c) Ours - padding-free channel fusion -- ragged [Sigma C*N, D] -> per-(b,n) fusion -> [B,N,D]; NO pad/mask
 
 All three columns share the same scale and width; the stages are aligned at
@@ -171,12 +171,12 @@ def draw_column_a(ax, x0):
 
 
 # --------------------------------------------------------------------------- #
-# Column (b): Dense cross-channel attention
+# Column (b): Dense joint self-attention over C·N tokens
 # --------------------------------------------------------------------------- #
 def draw_column_b(ax, x0):
-    """Dense cross-channel attention (ChannelViT / ChAda-ViT)."""
+    """Dense joint self-attention over C·N tokens (ChannelViT; ChAda pads)."""
     cx = x0 + COL_W / 2
-    panel_header(ax, x0, HEADER_Y, "(b)", "Dense cross-channel attn", color=INK)
+    panel_header(ax, x0, HEADER_Y, "(b)", "Dense joint self-attn", color=INK)
 
     draw_shared_input(ax, cx)
     arrow(ax, (cx, INPUT_TILE_Y), (cx, TENSOR_TOP + 0.3), color=MUTED)
@@ -194,9 +194,9 @@ def draw_column_b(ax, x0):
     arrow(ax, (cx, TENSOR_BOT - 0.2), (cx, FUSE_BOX_Y + FUSE_BOX_H),
           color=FRONTEND, lw=1.2)
 
-    # Dense C x C channel attention -- the rejected baseline (muted + dashed)
+    # Dense joint self-attention -- the rejected baseline (muted + dashed)
     dashed_module(ax, x0, TRANS_BOX_Y, COL_W, TRANS_BOX_H,
-                  "Dense channel attn", "$O(C_{\\max}^2)$ · rejected",
+                  "Dense joint self-attn", "$O((C_{\\max}N)^2)$ · rejected",
                   edge=MUTED, title_size=7.4, sub_size=6.2)
     arrow(ax, (cx, FUSE_BOX_Y), (cx, TRANS_BOX_Y + TRANS_BOX_H), lw=1.3,
           color=MUTED)
@@ -212,7 +212,7 @@ def draw_column_b(ax, x0):
     rrect(ax, x0, TAKEAWAY_Y, COL_W, TAKEAWAY_H, edge=MUTED,
           face=tint(MUTED, 0.92), lw=1.0, rounding=0.5, z=2)
     ax.text(cx, TAKEAWAY_Y + TAKEAWAY_H / 2,
-            "Still $O(C_{\\max})$ overhead;\n"
+            "Full $C\\cdot N$ joint attention;\n"
             "additive identity, explicit mask",
             ha="center", va="center", fontsize=6.6, color=MUTED, linespacing=1.3)
 

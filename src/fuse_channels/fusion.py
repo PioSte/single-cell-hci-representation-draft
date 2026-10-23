@@ -101,6 +101,11 @@ class ChannelFusion(nn.Module):
         ``fused`` is ``[B, N, D]`` (post-fusion PE added) and ``present`` is a
         boolean mask marking locations that had at least one channel.
         """
+        if cs.n_patches != self.n_patches:
+            raise ValueError(
+                f"ChannelFusion was built for n_patches={self.n_patches}, "
+                f"got ChannelSet.n_patches={cs.n_patches}"
+            )
         B, N, D = cs.n_samples, cs.n_patches, self.dim
         H = self.n_heads
         Dh = D // H
@@ -286,6 +291,11 @@ class IdentityGatedSum(nn.Module):
         nn.init.trunc_normal_(self.spatial_pos, std=0.02)
 
     def forward(self, cs: ChannelSet):
+        if cs.n_patches != self.n_patches:
+            raise ValueError(
+                f"IdentityGatedSum was built for n_patches={self.n_patches}, "
+                f"got ChannelSet.n_patches={cs.n_patches}"
+            )
         if cs.channel_embed is None:
             raise ValueError("IdentityGatedSum requires ChannelSet.channel_embed")
         if cs.channel_group_id is None:

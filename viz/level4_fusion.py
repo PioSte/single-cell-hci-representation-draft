@@ -7,9 +7,9 @@ axis. Panel B shows :class:`IdentityGatedSum`, the channel-routed ``O(C)``
 ablation for high-channel-count panels; its channel MLP runs once per channel
 and is broadcast to that channel's patches. Both are ``O(C)`` per location and
 both add the learned post-fusion spatial positional embedding before returning
-``[B, N, D]``. A bottom inset shows the rejected ``O(C^2)`` dense ``C x C``
-channel self-attention baseline (ChannelViT / ChAda-ViT), which requires
-padding and an attention mask.
+``[B, N, D]``. A bottom inset shows a hypothetical rejected ``O(C^2)`` dense
+``C x C`` per-location block; the actual ChannelViT/ChAda-ViT baselines attend
+over the full ``C·N`` sequence (``O((C·N)^2)``), and only ChAda-ViT pads/masks.
 
 Usage::
 
@@ -316,7 +316,7 @@ def draw_panel_b(ax):
 # Bottom inset: the rejected dense C x C baseline (O(C^2))
 # --------------------------------------------------------------------------- #
 def draw_inset(ax):
-    """Dense C x C channel self-attention -- the rejected O(C^2) baseline."""
+    """Hypothetical dense C x C per-location block -- the rejected O(C^2) baseline."""
     x0, x1 = 82.0, 145.0
     y0, y1 = 3.0, 27.0
     cxm = (x0 + x1) / 2
@@ -325,12 +325,12 @@ def draw_inset(ax):
           lw=1.4, dashed=True, rounding=0.8, z=1)
 
     ax.text(cxm, y1 - 2.4,
-            "Rejected baseline \u2014 dense $C\\times C$ channel "
-            "self-attention",
+            "Rejected baseline \u2014 hypothetical dense $C\\times C$ "
+            "per-location block",
             ha="center", va="center", fontsize=7.0, color=REJ,
             fontweight="bold", zorder=4)
     ax.text(cxm, y1 - 4.6,
-            "ChannelViT / ChAda-ViT  \u00b7  quadratic in $C$",
+            "not the exact ChannelViT/ChAda-ViT $C\\cdot N$ baseline",
             ha="center", va="center", fontsize=6.0, color=MUTED,
             style="italic", zorder=4)
 

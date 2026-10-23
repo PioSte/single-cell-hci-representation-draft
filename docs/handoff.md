@@ -105,9 +105,10 @@ path, or PyTorch nested tensors as optional kernel accelerations of the same
 computation; **hypernetwork-weighted sum**
 (`w_c = MLP(channel_embed_c)`, `joint = Σ_c softmax(w)_c · E_c`) — `O(C)`
 per location. Like the fixed-query `ChannelFusion` PMA (also `O(C)`), it avoids
-the `O(C²)` cost of dense `C×C` cross-channel attention (ChannelViT /
-ChAda-ViT); it trades the attention softmax for marker-identity routing, which
-is preferable when 20–60-channel panels make the constant factor matter.
+the `O((C·N)²)` cost of full joint attention over the `C·N` channel-patch
+sequence (ChannelViT; ChAda-ViT pads and masks); it trades the attention
+softmax for channel-identity routing, which is preferable when 20–60-channel
+panels make the constant factor matter.
 
 ## 4. HCI-specific requirements (must-have)
 

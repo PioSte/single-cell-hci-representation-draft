@@ -94,8 +94,9 @@ visible channel token).
 - `proj_out: Linear(D, D)` is the only learned output projection →
   `[Kf, D]`; scatter to `[B, N, D]`; add `spatial_pos`.
 - Cost: `O(C·D)` per `(b,n)` location plus the `D²` output projection —
-  **`O(C)` scaling**, not the `O(C²)` of dense `C×C` channel self-attention
-  (the ChannelViT / ChAda-ViT baseline).
+  **`O(C)` scaling**, not a dense `C×C` per-location block. ChannelViT and
+  ChAda-ViT attend over the full `C·N` sequence (`O((C·N)²)`); only ChAda-ViT
+  pads and masks.
 
 ### `IdentityGatedSum` (ablation, `O(C)`)
 
@@ -113,7 +114,7 @@ visible channel token).
 
 ### Padding-free reference
 
-`_dense_fusion_reference` is a private, test-only implementation of the same
+`_dense_fusion_reference` is a private, test/viz-only implementation of the same
 `ChannelFusion` math on a materialised `[B, C_max, N, D]` tensor plus an
 attention mask. It is **not** in the model path.
 

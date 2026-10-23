@@ -1,6 +1,7 @@
 import inspect
 from dataclasses import replace
 
+import pytest
 import torch
 
 from fuse_channels import (
@@ -320,6 +321,15 @@ def test_identity_gated_sum_requires_channel_embed():
         pass
     else:  # pragma: no cover
         raise AssertionError("missing channel_embed must raise")
+
+
+def test_fusion_rejects_patch_count_mismatch():
+    """Fusion modules validate the ChannelSet patch count they were built for."""
+    cs = make_channel_set([2], N + 1, D)
+    with pytest.raises(ValueError, match="n_patches"):
+        _fusion()(cs)
+    with pytest.raises(ValueError, match="n_patches"):
+        IdentityGatedSum(D, n_patches=N)(cs)
 
 
 def test_no_pad_artifacts():

@@ -179,7 +179,7 @@ gated_out, present = gated(cs)
 | `src/fuse_channels/container.py` | `ChannelSet`: flattened variable-channel token batch |
 | `src/fuse_channels/identity.py` | `ChannelEmbedding`: learned per-channel-id additive table |
 | `src/fuse_channels/patch_embed.py` | `ChannelTiedPatchEmbed`, `ChannelTokenizer` |
-| `src/fuse_channels/fusion.py` | `ChannelFusion`, `IdentityGatedSum`, `MultiheadAttentionPooling`; `_dense_fusion_reference` (private, test-only) |
+| `src/fuse_channels/fusion.py` | `ChannelFusion`, `IdentityGatedSum`, `MultiheadAttentionPooling`; `_dense_fusion_reference` (private, test/viz-only) |
 | `src/fuse_channels/encoder.py` | `TransformerEncoder` / `TransformerBlock` with memory tokens |
 | `src/fuse_channels/decoder.py` | `ChannelAwareDecoder` / `DecoderBlock` |
 | `src/fuse_channels/masking.py` | `DCPVisibilitySampler` (Eq. 1) and `HierarchicalChannelSampler` (HCS) |
@@ -191,8 +191,8 @@ gated_out, present = gated(cs)
 | `examples/benchmark_fusion.py` | fusion throughput comparison at `C = 60` |
 | `docs/design.md` | design rationale, reference corrections, deviations |
 
-`_dense_fusion_reference` is a test-only dense-padded reference used to prove
-the padding-free math; it is not part of the model path or the public API.
+`_dense_fusion_reference` is a test/viz-only dense-padded reference used to
+prove the padding-free math; it is not part of the model path or the public API.
 
 ## Acceptance criteria
 
