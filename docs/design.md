@@ -1,9 +1,9 @@
 # Design notes
 
 This document records the design decisions behind the shipped implementation,
-the trade-offs they accept, and the places where the earlier prose (and the
-literature summary) were wrong. The historical specification is
-[`handoff.md`](handoff.md); the current API is in [`../README.md`](../README.md).
+the trade-offs they accept, and the places where earlier prose (and the
+literature summary) were wrong. The current API is in
+[`../README.md`](../README.md).
 Citation line numbers refer to the extracted paper texts under
 `references/*/paper.md`.
 

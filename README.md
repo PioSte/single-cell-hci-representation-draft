@@ -4,10 +4,9 @@ A PyTorch implementation of the **padding-free channel-fusion front-end** for a
 high-content-imaging (HCI) foundation model, plus a channel-aware Masked
 Autoencoder (MAE) built on top of it.
 
-It implements the design in the handoff message *"Padding-Free Channel-Fusion
-Module for an HCI Foundation Model"* (`docs/handoff.md`) and its MAE follow-up.
-Where the shipped code differs, the deviations are listed at the end and
-explained in [`docs/design.md`](docs/design.md).
+It implements a padding-free channel-fusion module for an HCI foundation model
+and its MAE follow-up. The design rationale, trade-offs, and deviations from the
+literature are in [`docs/design.md`](docs/design.md).
 
 ## What problem it solves
 
@@ -266,9 +265,9 @@ uv run python viz/paper_figure.py            # -> viz/out/architecture.{pdf,svg,
 uv run python viz/cardinality_figure.py      # -> viz/out/cardinality.{pdf,svg,png}
 ```
 
-## Deviations from the handoff/reference
+## Design deviations
 
-The implementation keeps the handoff's core decisions but differs in several
+The implementation differs from the earlier reference designs in several
 specifics: HCS and DCP's channel region are unified into one channel-subset
 sampler; the decoder consumes the encoder representation + memory + a trained
 descriptor and conditions on the target channel embedding, not "unmasked

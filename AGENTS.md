@@ -1,6 +1,6 @@
 # Purpose of this repo
 
-This repo is a PyTorch reference implementation of a padding-free "channel-fusion" front-end for a high-content-imaging (HCI) foundation model, plus a channel-aware Masked Autoencoder (MAE) built on top of it. It is the code counterpart to a written design handoff (reproduced in `docs/handoff.md`); the current design rationale and deviations are in `docs/design.md`.
+This repo is a PyTorch reference implementation of a padding-free "channel-fusion" front-end for a high-content-imaging (HCI) foundation model, plus a channel-aware Masked Autoencoder (MAE) built on top of it. The design rationale and deviations are in `docs/design.md`.
 
 ## The core problem it solves
 
@@ -19,7 +19,6 @@ The goal is a function f({E_1..E_C}) → [N, D] per sample whose size is indepen
 - `examples/` — `train_mae.py` (synthetic variable-channel training), `linear_probe.py` (frozen-encoder probe), `benchmark_fusion.py`
 - `viz/` — visualizations (included in this repo)
 - `references/` — background papers
-- `docs/handoff.md` — historical specification (see its implementation notes)
 - `docs/design.md` — design rationale and corrected reference claims
 
 ## Naming
