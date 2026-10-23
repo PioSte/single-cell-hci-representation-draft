@@ -39,6 +39,13 @@ def main() -> None:
         action="store_true",
         help="HCS-only DCP (sets --p-patch 0 --p-channel 1)",
     )
+    p.add_argument(
+        "--loss",
+        choices=("mae", "cha_maevit"),
+        default="mae",
+        help="mae: patch-normalized MSE (default); "
+        "cha_maevit: raw-pixel L2 + Fourier L1 ablation",
+    )
     args = p.parse_args()
 
     p_patch, p_channel = args.p_patch, args.p_channel
@@ -71,6 +78,7 @@ def main() -> None:
         p_channel=p_channel,
         patch_ratio=args.patch_ratio,
         mode_sampling=args.mode_sampling,
+        loss=args.loss,
     ).to(device)
 
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0.05)

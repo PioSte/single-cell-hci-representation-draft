@@ -5,7 +5,11 @@ Pipeline
 ``images`` -> DCP masking (token omission) -> channel-tied patch embed +
 additive channel embedding -> padding-free channel fusion (+ post-fusion
 positional embedding) -> memory-augmented transformer encoder -> trained PMA
-descriptor -> channel-aware shared decoder -> patch-normalized pixel loss.
+descriptor -> channel-aware shared decoder -> reconstruction loss.
+
+``loss="mae"`` (default) is the standard patch-normalized MSE.
+``loss="cha_maevit"`` selects ChA-MAEViT Eq. 2 (raw-pixel L2 plus Fourier L1)
+as an ablation.
 
 The descriptor is computed in :meth:`forward` from the encoder's *content*
 tokens only (``tok_out``, not the memory tokens), appended as one extra
@@ -35,9 +39,14 @@ from .decoder import ChannelAwareDecoder
 from .encoder import TransformerEncoder
 from .fusion import ChannelFusion, IdentityGatedSum, MultiheadAttentionPooling
 from .identity import ChannelEmbedding
-from .losses import normalized_patch_mse
+from .losses import cha_maevit_recon_loss, normalized_patch_mse
 from .masking import DCPVisibilitySampler
 from .patch_embed import ChannelTokenizer
+
+_LOSSES = {
+    "mae": normalized_patch_mse,
+    "cha_maevit": cha_maevit_recon_loss,
+}
 
 
 class ChannelFusionMAE(nn.Module):
@@ -60,10 +69,17 @@ class ChannelFusionMAE(nn.Module):
         min_visible_channels: int = 1,
         max_masked_channels_frac: float = 1.0,
         dropout: float = 0.0,
+        loss: str = "mae",
     ) -> None:
         super().__init__()
+        if loss not in _LOSSES:
+            raise ValueError(
+                f"unknown loss '{loss}'; expected one of {sorted(_LOSSES)}"
+            )
         self.patch_size = patch_size
         self.n_queries = n_queries
+        self.loss_name = loss
+        self._loss_fn = _LOSSES[loss]
 
         channel_embedding = ChannelEmbedding(dim, num_channel_ids)
         self.frontend = ChannelTokenizer(image_size, patch_size, dim, channel_embedding)
@@ -183,7 +199,7 @@ class ChannelFusionMAE(nn.Module):
         target = patch_targets[gidx, :, tgt_patch]  # [Kt, patch_dim]
         target_cid = ids_per_ch[gidx]
 
-        loss = normalized_patch_mse(pred, target)
+        loss = self._loss_fn(pred, target)
         return {
             "loss": loss,
             "pred": pred,
