@@ -11,6 +11,27 @@ research handoff (message `83a9cb8b…`, plus the MAE follow-up `f87fe1bd…` in
 **fixed-size joint embedding**, with **no padding tokens**, tuned for
 high-content-imaging (HCI) foundation models.
 
+> **Implementation notes (2026-10-23).** This file is the historical design
+> specification and is kept as written. The shipped implementation supersedes
+> two points of it:
+>
+> * the decoder consumes the encoder representation + memory tokens + the
+>   target channel's identity embedding (not "unmasked channel tokens");
+> * channels dropped by HCS/DCP channel masking remain in `images` and are
+>   reconstructed as targets, so HCS and DCP's channel region are one
+>   mechanism.
+>
+> In addition, the descriptor is trained and appended to the decoder KV, and
+> the default loss is patch-normalized MSE with the ChA-MAEViT objective as an
+> ablation. The §2 citation summary is also historical: ChannelViT
+> concatenates `C·N` tokens (it does not pad) and only ChAda-ViT pads; both
+> attend over `C·N` tokens rather than a per-location `C×C` block. The
+> `[ΣC, D]` in the §3 pseudo-code is the pre-patch per-channel embedding;
+> after patch embedding the front-end flattens `[ΣC·N, D]`.
+>
+> Current API: [`../README.md`](../README.md). Rationale, trade-offs, and the
+> corrected reference claims: [`design.md`](design.md).
+
 ---
 
 ## 1. Problem statement

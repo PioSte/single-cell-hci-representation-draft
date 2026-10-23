@@ -5,112 +5,93 @@ high-content-imaging (HCI) foundation model, plus a channel-aware Masked
 Autoencoder (MAE) built on top of it.
 
 It implements the design in the handoff message *"Padding-Free Channel-Fusion
-Module for an HCI Foundation Model"* and its MAE follow-up.
+Module for an HCI Foundation Model"* (`docs/handoff.md`) and its MAE follow-up.
+Where the shipped code differs, the deviations are listed at the end and
+explained in [`docs/design.md`](docs/design.md).
 
 ## What problem it solves
 
 An HCI image is a set of per-channel embeddings `{E_c ∈ R^D}` where the channel
-count `C` varies from 1 to 5+, channel order is meaningless, and panels
-differ across labs. We need
+count `C` varies from 1 to 5+ (much larger in multiplexed panels), channel
+order is meaningless, and panels differ across labs. We need a representation
+whose size is independent of `C`:
 
 ```
-f({E_1 .. E_C}) -> R^{k x D},   output size independent of C,
+f({E_1 .. E_C}) -> [N, D] per sample, then -> [D] descriptor,
 ```
 
-without concatenation blow-up, with channel identity preserved, data-dependent
-weighting, and **no padding tokens**.
+without concatenation blow-up, with channel identity preserved, and with **no
+padding tokens**. `C` appears only in the front-end input length `ΣC·N`; the
+fused output is `[B, N, D]` (`N` is fixed by the image and patch size) and the
+pooled descriptor is `[B, D]`.
 
-## Design (settled in the handoff)
+## Architecture
 
 ```
-per-channel (tied) patch embed
-    + additive channel-identity embedding (learnable)
-    + shared spatial positional embedding
-    -> padding-free channel-axis attention pooling (PMA) to a fixed bottleneck
-    -> memory-augmented spatial transformer
-    -> (MAE) channel-aware shared decoder conditioned on channel identity
+per-channel tied Conv2d(1 -> D) patch embed        (no positional embedding here)
+    + additive ChannelEmbedding (per channel id)
+    -> per-location channel fusion: one learned query over the C channel tokens
+       (ChannelFusion, K = V = LayerNormed tokens)  + post-fusion spatial PE
+    -> padding-free transformer encoder over [present locations, D]
+       with fixed-count memory tokens
+    -> trained content-only PMA descriptor [B, D]   (appended to decoder KV)
+    -> channel-aware shared decoder: target-identity + target-position queries,
+       target self-attention, cross-attention to encoder representation + memory
 ```
 
-* **Channel-tied projection** — one shared filter across channels (ChannelViT).
-* **Additive channel identity** — a learned per-marker embedding, added to
-  every patch token and never normalized across the channel axis.
-* **Padding-free** — tokens are flattened `[ΣC, D]` with segment ids; no
-  `[B, C_max, D]` tensor and no attention masks for cardinality. Masking is
-  token *omission*, never zeroing.
-* **PMA pooling** — a fixed learned query cross-attends over the channel set at
-  each spatial location (`ChannelFusion`, `O(C)` per location), or a
-  marker-identity-routed hypernetwork-weighted sum (`HypernetworkWeightedSum`).
-  Both avoid the `O(C²)` dense `C×C` cross-channel attention of ChannelViT /
-  ChAda-ViT.
-* **PMA descriptor** — at inference the encoder output is reduced to a fixed
-  `[B, D]` joint embedding by pooling by multi-head attention
-  (`MultiheadAttentionPooling`), not a variable-length mean.
-* **MAE** — DCP masking (independently per-channel spatial masks + dynamic
-  channel masking), fixed-count memory tokens, and a shared decoder that is
-  conditioned on the *target* channel's identity.
+* **Channel-tied projection.** One `Conv2d(1, D, kernel_size=patch_size,
+  stride=patch_size)` is shared by every channel (ChannelViT's tied filters).
+  There is no positional embedding at this stage; position is added after
+  fusion.
+* **Additive channel identity.** `ChannelEmbedding` is a learned
+  `num_channel_ids × D` table. The row for a channel id is added to every patch
+  token of that channel; it is never normalized across the channel axis.
+* **Padding-free.** Front-end tokens are flattened `[ΣC·N, D]` with integer
+  group ids; no `[B, C_max, N, D]` tensor and no attention masks for
+  cardinality are ever materialised. Masking is token *omission*, never
+  zeroing. The encoder receives one token per **present** `(sample, patch)`
+  location, so its input length is the number of present locations, not the
+  number of visible channel-patches.
+* **Per-location fusion.** `ChannelFusion` reduces the `C` channels at each
+  `(sample, patch)` location with one shared learned query, costing `O(C)` per
+  location. Keys and values are the LayerNormed tokens themselves (no K/V
+  projections; the Panopticon-style simplification); the query and the output
+  projection are learned. `IdentityGatedSum` is the `O(C)` marker-routed
+  ablation: `joint = Σ_c softmax_c(MLP(channel_embed_c)) · V_c`.
+* **Post-fusion positional embedding.** Both fusion modules add the learned
+  spatial PE to the `[B, N, D]` fused output, so channel attention is
+  position-agnostic and position enters the encoder once per location.
+* **Encoder and descriptor.** Standard pre-norm Q/K/V/O transformer blocks run
+  over the flattened real tokens with fixed-count memory tokens. The `[B, D]`
+  descriptor is a PMA-style pool over the encoder's *content* tokens (not the
+  memory tokens), is trained through the MAE loss, and is appended as one token
+  per sample to the decoder KV.
+* **Decoder.** One decoder is shared across all channels. Each target query is
+  `mask token + target spatial PE + target channel embedding`; queries
+  self-attend within each sample, then cross-attend to the encoder
+  representation + memory + descriptor. A fully dropped channel has no encoder
+  evidence, only its identity query, so identity acts as a **target
+  specification** as well as an input feature.
+* **Masking.** DCP (ChA-MAEViT Eq. 1): patch-only, channel-only, or combined
+  regions, with the region probabilities separate from `patch_ratio`. HCS is
+  the channel-subset sampler used by the channel region (and is available as
+  `p_patch=0, p_channel=1`). Channels dropped by the channel region stay in
+  `images` and are reconstructed as targets.
+* **Loss.** Default `normalized_patch_mse` (standard MAE patch-normalized MSE).
+  `loss="cha_maevit"` selects the ChA-MAEViT ablation: raw-pixel L2 plus
+  Fourier-amplitude L1 (`lambda_f=0.01`).
 
-### Channel identity
+### Why additive channel embedding
 
-Each marker id indexes one row of a learned table, `ChannelIdentity`
-(`nn.Embedding(num_markers, dim)`). The match is exact integer indexing — not
-similarity, distance, or content:
-
-```python
-ident_per_ch = self.identity(ids_per_ch)      # [ΣC] ids -> [ΣC, dim], one row per channel
-identity     = ident_per_ch[channel_global]   # broadcast to that channel's N patch tokens
-tokens       = tokens + identity
-```
-
-* One row per marker id, learned; the same row is reused for every occurrence
-  of that id (all patches, samples, batch) — that's the tying.
-* `channel_global`/`channel_idx` only broadcast; the semantic match is entirely
-  `channel_id -> row`.
-* The table is a closed set of `num_markers` rows: an id with no trained row
-  cannot be represented. Gradients reach only the rows that appeared; unused
-  rows get no gradient (though an optimizer with weight decay, e.g. the `AdamW`
-  in the example, still decays them toward zero).
-
-The alternative — concatenating a one-hot id to the token — is deliberately not
-used:
-
-1. **After the next linear projection they are the same function — concat only
-   costs more.** If you `concat(x, onehot(m))` and multiply by a weight, you get
-   `W_x x + W_e · onehot(m) = W_x x + E[m]`. That second term *is* the embedding
-   lookup; the one-hot path is just a verbose parameterization of the additive
-   bias. The differences are: the token width becomes `D + num_markers` (so
-   attention and MLP cost inflate for every layer), and the architecture is now
-   hard-wired to the size of the marker registry. The embedding gives the
-   identical identity signal at `num_markers × D` params without touching the
-   network width.
-2. **Every reference architecture uses the additive learned embedding.**
-   ChannelViT: "learnable channel embeddings ... added to the patch tokens"
-   (`references/channelvit/paper.md:17,99`). ChAda-ViT: additive `chan_c`
-   alongside shared spatial pos (`chada-vit/paper.md:129`). ChA-MAEViT: channel
-   tokens added to patch tokens in encoder and decoder
-   (`cha-maevit/paper.md:113`). Panopticon: additive wavelength PE
-   (`panopticon/paper.md:94,106`). Perceiver IO: identity is a learned dense
-   modality/task embedding combined with the token (`perceiver-io/paper.md:103,546`)
-   — a learned code, not a raw one-hot (their one-hot labels are data, not the
-   modality code).
-3. **The one direct one-hot ablation is negative.** ChannelViT Table 11
-   (`channelvit/paper.md:704`): feeding "one-hot encoding of each channel
-   combination" + MLP = 66.86, learned combination embeddings = 61.98, versus
-   additive per-channel embeddings + shared classifier = 68.09. Their
-   interpretation (`:714`): the shared classifier "regularizes the ViT to embed
-   inputs with different channel combinations into the same space" — explicit
-   identity features let the model specialize instead of sharing.
-4. **One-hot codes are orthogonal; learned embeddings carry similarity.** A
-   one-hot makes every marker equidistant — the model must learn all pairwise
-   relations from scratch and cannot express "Hoechst is DAPI-like." Learned
-   dense embeddings share statistical strength across markers and can place
-   related channels close; ChannelViT shows the learned channel embeddings
-   become correlated and interpretable for related channels
-   (`channelvit/paper.md:245-255`). Panopticon's fine wavelength encoding is the
-   explicit smooth-similarity version and beats coarse/no identity
-   (`panopticon/paper.md:198`). This is the standard "learned embedding vs
-   one-hot input" argument from NLP/ViT positional embeddings (Perceiver:
-   identity should be a *feature* the net can use or ignore,
-   `perceiver/paper.md:120,132`).
+A learned table is the width-efficient parameterization of the same additive
+identity bias that `concat(x, onehot(m)) @ W` learns:
+`W_x x + W_e · onehot(m) = W_x x + E[m]`. The concat path widens every token to
+`D + num_channel_ids` and pays that width in every attention and MLP layer; the
+table carries the same signal at fixed width and `num_channel_ids × D`
+parameters. Identity is not optional: ChannelViT's mean-embedding ablation
+(Table 10) collapses accuracy from 57.60/68.09 to 1.26/2.49 on JUMP-CP. The
+full derivation, the Table 11 caveat, and the corrected reference claims are in
+[`docs/design.md`](docs/design.md).
 
 ## Install
 
@@ -130,7 +111,9 @@ from fuse_channels import ChannelFusionMAE
 model = ChannelFusionMAE(
     image_size=16, patch_size=8, dim=192,
     encoder_depth=4, decoder_depth=2, n_heads=6,
-    n_memory=4, num_markers=32,        # learnable identity table
+    n_memory=4, num_channel_ids=32,   # size of the learnable identity table
+    fusion="attention",               # or "identity_gated" (ablation)
+    loss="mae",                       # or "cha_maevit" (ablation)
 )
 
 # a batch is a list of variable-channel images: [C_b, 1, H, W]
@@ -140,67 +123,124 @@ ids = [torch.randint(0, 32, (3,)), torch.randint(0, 32, (7,))]
 out = model(images, ids)
 out["loss"].backward()
 
-# inference representation (no masking); descriptor is attention-pooled
-mem, descriptor = model.encode(images, ids)   # descriptor: [B, D]
-# model.encode(images, ids, pool="mean")  # or the old mean pool
+# inference representation (no masking): the descriptor is the trained PMA pool
+mem, descriptor = model.encode(images, ids)               # descriptor: [B, D]
+_, mean_descriptor = model.encode(images, ids, pool="mean")  # ablation
 ```
 
 ### Just the fusion module
 
 ```python
-from fuse_channels import ChannelFrontend, ChannelIdentity, ChannelFusion, ChannelSet
+import torch
+from fuse_channels import (
+    ChannelEmbedding,
+    ChannelFusion,
+    ChannelSet,
+    ChannelTokenizer,
+    IdentityGatedSum,
+)
 
-frontend = ChannelFrontend(image_size=16, patch_size=8, dim=192,
-                           identity=ChannelIdentity(192, num_markers=32))
-fusion = ChannelFusion(192, n_heads=6, n_queries=1, n_patches=4)
+images = [torch.randn(3, 1, 16, 16), torch.randn(7, 1, 16, 16)]
+ids = [torch.randint(0, 32, (3,)), torch.randint(0, 32, (7,))]
 
-cs: ChannelSet = frontend(images, ids)      # real tokens only
-fused, present = fusion(cs)                 # [B, 4, 192]; no channel padding
+embedding = ChannelEmbedding(192, num_channel_ids=32)
+frontend = ChannelTokenizer(16, 8, 192, embedding)
+fusion = ChannelFusion(192, n_heads=6, n_patches=4)   # one query per location
+
+cs: ChannelSet = frontend(images, ids)   # real tokens only; cs.channel_embed is [ΣC·N, 192]
+fused, present = fusion(cs)              # [B, 4, 192]; no channel padding
+
+# the O(C) marker-routed ablation
+gated = IdentityGatedSum(192, n_patches=4)
+gated_out, present = gated(cs)
 ```
+
+### Identities and group ids
+
+* `ChannelSet.channel_id` is the **identity key**: a dataset-level channel id
+  that indexes the `ChannelEmbedding` table and is constant across that
+  channel's patches. It is not a panel position.
+* `ChannelSet.channel_idx` is the **panel position** of the channel inside its
+  sample (`0 .. C_b - 1`). It is bookkeeping only; reordering panels leaves the
+  fused output unchanged.
+* `ChannelSet.channel_group_id` identifies one channel *instance* across the
+  whole batch. `IdentityGatedSum` uses it to evaluate its channel MLP once per
+  channel and broadcast to that channel's patches.
+* `grouped_attention` (and the other `grouped_*` primitives) means
+  padding-free batching by integer group id, **not** grouped-query attention.
+  Encoder, decoder, and descriptor pooling group by sample; fusion groups by
+  `(sample, patch)` location.
 
 ## Layout
 
 | file | contents |
 | --- | --- |
-| `ops.py` | padding-free grouped attention primitives |
-| `container.py` | `ChannelSet`: flattened variable-channel token batch |
-| `identity.py` | learnable per-marker channel identities |
-| `patch_embed.py` | channel-tied patch embedding + front-end |
-| `fusion.py` | `ChannelFusion` (PMA), `MultiheadAttentionPooling`, `HypernetworkWeightedSum`, dense reference |
-| `encoder.py` | memory-augmented spatial transformer |
-| `decoder.py` | channel-aware shared decoder |
-| `masking.py` | DCP masking (spatial-per-channel + dynamic channel) |
-| `losses.py` | patch-normalized pixel loss |
-| `mae.py` | `ChannelFusionMAE` end-to-end |
+| `src/fuse_channels/ops.py` | padding-free grouped attention primitives |
+| `src/fuse_channels/container.py` | `ChannelSet`: flattened variable-channel token batch |
+| `src/fuse_channels/identity.py` | `ChannelEmbedding`: learned per-channel-id additive table |
+| `src/fuse_channels/patch_embed.py` | `ChannelTiedPatchEmbed`, `ChannelTokenizer` |
+| `src/fuse_channels/fusion.py` | `ChannelFusion`, `IdentityGatedSum`, `MultiheadAttentionPooling`; `_dense_fusion_reference` (private, test-only) |
+| `src/fuse_channels/encoder.py` | `TransformerEncoder` / `TransformerBlock` with memory tokens |
+| `src/fuse_channels/decoder.py` | `ChannelAwareDecoder` / `DecoderBlock` |
+| `src/fuse_channels/masking.py` | `DCPVisibilitySampler` (Eq. 1) and `HierarchicalChannelSampler` (HCS) |
+| `src/fuse_channels/losses.py` | `normalized_patch_mse`, `cha_maevit_recon_loss` |
+| `src/fuse_channels/mae.py` | `ChannelFusionMAE` end-to-end |
+| `src/fuse_channels/data.py` | `SyntheticChannelDataset` and `collate_fn` for examples/tests |
+| `examples/linear_probe.py` | frozen-encoder linear probe on a synthetic channel-presence label |
+| `examples/train_mae.py` | synthetic variable-channel MAE training loop |
+| `examples/benchmark_fusion.py` | fusion throughput comparison at `C = 60` |
+| `docs/design.md` | design rationale, reference corrections, deviations |
+
+`_dense_fusion_reference` is a test-only dense-padded reference used to prove
+the padding-free math; it is not part of the model path or the public API.
 
 ## Acceptance criteria
 
 Covered by `tests/`:
 
-- cardinality invariance for `C ∈ {1,3,6,20,60}` (`test_fusion.py`)
+- cardinality invariance for `C ∈ {1,3,6,20,60}` (`test_cardinality_invariance`)
 - exact padding-free vs masked-padded equivalence (`test_padding_free_equivalence`)
-- omission correctness, permutation invariance, identity ablation
-- no pad artifacts in the fusion path
-- DCP masking never masks all channels; spatial masks are per channel
-- MAE encoder sees only visible tokens; loss decreases on a fixed batch
-- cost comparison: `examples/benchmark_fusion.py`
+- omission vs the dense reference (`test_omission_equivalence`)
+- permutation invariance (`test_permutation_invariance`)
+- identity routing: changing the channel embedding changes the fused output
+  (`test_identity_changes_routing`, `test_identity_gated_sum`); no downstream
+  task metric is claimed
+- no pad artifacts and an exact presence mask (`test_no_pad_artifacts`)
+- post-fusion PE, one query shared across locations, and attention dropout
+  behaviour (`test_post_fusion_spatial_pos`,
+  `test_pooling_query_is_shared_across_locations`, dropout tests)
+- encoder input length = number of present locations, with front-end token count
+  = visible channel-patches (`test_encoder_input_length_is_present_locations`)
+- DCP Eq. 1 regions and HCS counts (`test_masking.py`); channels dropped by DCP
+  are reconstruction targets (`test_dcp_dropped_channel_is_a_reconstruction_target`)
+- descriptor is trained through the MAE loss, appended to the decoder KV, and
+  `encode(pool="attention")` matches the forward descriptor
+  (`test_descriptor_is_trained_by_the_mae_loss`,
+  `test_decoder_consumes_the_descriptor`,
+  `test_forward_and_encode_share_the_descriptor`)
+- loss variants (`test_losses.py`) and the frozen linear-probe smoke test
+  (`test_linear_probe.py`)
+- single-batch MAE loss decreases (`test_overfit_single_batch`)
+
+The cost comparison is an example, not a test:
+`examples/benchmark_fusion.py` reports wall-clock for attention vs.
+identity-gated fusion at `C = 60`.
 
 ## Notes
 
-* `flash-attn` is optional (`uv sync --extra flash`); the grouped-kernel
-  fallbacks in `ops.py` are pure PyTorch and produce numerically identical
-  results.
-* `examples/train_mae.py` overfits a synthetic variable-channel dataset.
-* `examples/benchmark_fusion.py` reports throughput for attention vs.
-  hypernetwork-weighted-sum fusion at `C = 60`.
+* `examples/train_mae.py` trains on a synthetic variable-channel dataset; it
+  does not assert an overfit threshold.
+* Attention uses `F.scaled_dot_product_attention` over real, grouped tokens. No
+  custom fused kernel is required or implemented.
+* The model's data path is torch-only; the visualization extras are separate.
 
 ## Visualizations
 
-There are three, because they answer different questions — see
-[`viz/README.md`](viz/README.md) for details.
+Several artefacts exist because they answer different questions. See
+[`viz/README.md`](viz/README.md) for the current list and commands.
 
-**Interactive behaviour (recommended).** The marimo dashboard runs the real
-modules and recomputes every invariant as you move the controls:
+**Interactive behaviour.** The marimo dashboard runs the real modules and
+recomputes the invariants as you move the controls:
 
 ```bash
 uv sync --extra viz
@@ -208,10 +248,9 @@ uv run marimo edit viz/dashboard.py          # or: marimo run viz/dashboard.py
 uv run marimo export html viz/dashboard.py -o viz/out/dashboard.html
 ```
 
-It shows the live measurements table (padding-free ≡ masked-padded, permutation
-invariance, omission correctness, identity ablation), a per-location attention
-heatmap over channels, a fixed-size-descriptor-vs-`C` curve, and a
-masked-channel reconstruction (virtual-staining) demo.
+It includes the live measurements table, a per-location channel-attention
+heatmap, and a masked-channel reconstruction demo. See `viz/README.md` for the
+exact panels.
 
 **Structure.** Generate the traced graph and the padding-free flow schematic:
 
@@ -226,3 +265,15 @@ PDF/SVG + PNG, colour-blind-safe, tensor shapes on every block):
 uv run python viz/paper_figure.py            # -> viz/out/architecture.{pdf,svg,png}
 uv run python viz/cardinality_figure.py      # -> viz/out/cardinality.{pdf,svg,png}
 ```
+
+## Deviations from the handoff/reference
+
+The implementation keeps the handoff's core decisions but differs in several
+specifics: HCS and DCP's channel region are unified into one channel-subset
+sampler; the decoder consumes the encoder representation + memory + a trained
+descriptor and conditions on the target channel embedding, not "unmasked
+channel tokens"; the descriptor is trained rather than inference-only; the
+default loss is patch-normalized MSE with ChA-MAEViT as an ablation;
+`IdentityGatedSum` replaces the misleading `HypernetworkWeightedSum` name; and
+the acceptance claims are limited to what the tests cover. Rationale, trade-offs,
+and the corrected reference claims are in [`docs/design.md`](docs/design.md).

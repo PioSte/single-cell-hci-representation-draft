@@ -1,0 +1,1 @@
+==     In training mode, dropout must actually make the output stochastic.
