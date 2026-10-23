@@ -1,8 +1,13 @@
+import inspect
+from dataclasses import replace
+
 import torch
 
 from fuse_channels import (
+    ChannelEmbedding,
     ChannelFusion,
     ChannelSet,
+    ChannelTokenizer,
     IdentityGatedSum,
     MultiheadAttentionPooling,
 )
@@ -46,33 +51,45 @@ def test_padding_free_equivalence():
 
 
 def test_omission_equivalence():
-    """Omitting a channel equals excluding it from attention (no leakage)."""
+    """Omitting a channel is exactly excluding it from per-location attention."""
     fusion = _fusion(seed=2)
     fusion.eval()
     cs = make_channel_set([4], N, D, seed=5)
     full, _ = fusion(cs)
 
     # remove channel 2 (all its patches)
-    keep = ~((cs.sample_idx == 0) & (cs.channel_idx == 2))
-    red = ChannelSet(
-        tokens=cs.tokens[keep],
-        sample_idx=cs.sample_idx[keep],
-        channel_idx=cs.channel_idx[keep],
-        patch_idx=cs.patch_idx[keep],
-        channel_id=cs.channel_id[keep],
-        n_samples=1,
-        n_patches=N,
-        channel_embed=cs.channel_embed[keep] if cs.channel_embed is not None else None,
-        channel_group_id=(
-            cs.channel_group_id[keep] if cs.channel_group_id is not None else None
-        ),
-    )
-    out_rem, _ = fusion(red)
-    # removing one channel should change the result but not blow it up
-    assert torch.isfinite(out_rem).all()
-    # remaining tokens themselves are untouched by omission
-    assert torch.equal(cs.tokens[keep], red.tokens)
+    omitted = (cs.sample_idx == 0) & (cs.channel_idx == 2)
+    keep = ~omitted
+
+    def reduced(source):
+        return ChannelSet(
+            tokens=source.tokens[keep],
+            sample_idx=source.sample_idx[keep],
+            channel_idx=source.channel_idx[keep],
+            patch_idx=source.patch_idx[keep],
+            channel_id=source.channel_id[keep],
+            n_samples=1,
+            n_patches=N,
+            channel_embed=(
+                source.channel_embed[keep]
+                if source.channel_embed is not None
+                else None
+            ),
+            channel_group_id=(
+                source.channel_group_id[keep]
+                if source.channel_group_id is not None
+                else None
+            ),
+        )
+
+    red = reduced(cs)
+    out_rem, present_rem = fusion(red)
+    assert present_rem.all()
     assert not torch.allclose(full, out_rem)
+
+    # Omitting a channel must equal running attention over the reduced set.
+    ref = _dense_fusion_reference(fusion, red)
+    assert torch.allclose(out_rem, ref, atol=1e-6, rtol=1e-5)
 
 
 def test_permutation_invariance():
@@ -86,8 +103,8 @@ def test_permutation_invariance():
     assert torch.allclose(a, b, atol=1e-5, rtol=1e-4)
 
 
-def test_identity_ablation():
-    """Output depends on the additive channel-embedding vector."""
+def test_identity_changes_routing():
+    """Channel identity changes the fused output through the additive embedding."""
     fusion = _fusion(seed=4)
     fusion.eval()
     cs = make_channel_set([3], N, D)
@@ -96,6 +113,34 @@ def test_identity_ablation():
     a, _ = fusion(cs)
     b, _ = fusion(stripped)
     assert not torch.allclose(a, b)
+
+    # Changing only the learned channel-embedding table (raw image content
+    # fixed) changes what ChannelFusion produces.
+    embed = ChannelEmbedding(D, 8)
+    tokenizer = ChannelTokenizer(
+        image_size=4, patch_size=2, dim=D, channel_embedding=embed
+    )
+    g = torch.Generator().manual_seed(5)
+    images = [torch.randn(3, 1, 4, 4, generator=g)]
+    ids = [torch.tensor([1, 4, 6])]
+    with torch.no_grad():
+        embed.embed.weight.zero_()
+        cs_zero = tokenizer(images, ids)
+        fused_zero, _ = fusion(cs_zero)
+        # non-constant so the shift cannot cancel in LayerNorm
+        embed.embed.weight.copy_(
+            torch.linspace(-1.0, 1.0, D).expand_as(embed.embed.weight)
+        )
+        cs_shifted = tokenizer(images, ids)
+        fused_shifted, _ = fusion(cs_shifted)
+    # patch content is identical before the additive identity is added
+    assert torch.allclose(
+        cs_zero.tokens - cs_zero.channel_embed,
+        cs_shifted.tokens - cs_shifted.channel_embed,
+        atol=1e-6,
+        rtol=0,
+    )
+    assert not torch.allclose(fused_zero, fused_shifted)
 
 
 def test_pooling_query_is_shared_across_locations():
@@ -156,7 +201,6 @@ def test_multihead_attention_pooling_multi_query_shapes():
     out_flat = flat(x, group_id, 4)
     assert out_flat.shape == (4, 3 * D)
     assert torch.isfinite(out_flat).all()
-    assert flat.post_sab is not None
 
     mean = MultiheadAttentionPooling(
         D, n_heads=HEADS, n_queries=3, post_sab=True, readout="mean"
@@ -173,13 +217,40 @@ def test_multihead_attention_pooling_multi_query_shapes():
         raise AssertionError("invalid readout must raise")
 
 
+def test_channel_fusion_is_single_query():
+    """ChannelFusion is one token per location; multi-query lives in the pooler."""
+    assert "n_queries" not in inspect.signature(ChannelFusion.__init__).parameters
+    fusion = _fusion(seed=12)
+    assert not hasattr(fusion, "n_queries")
+    cs = make_channel_set([1, 4], N, D)
+    fused, present = fusion(cs)
+    assert fused.shape == (2, N, D)
+    assert present.all()
+
+    # The descriptor pooler still supports the k>1 research ablation.
+    torch.manual_seed(0)
+    pool = MultiheadAttentionPooling(
+        D, n_heads=HEADS, n_queries=3, post_sab=True, readout="flat"
+    )
+    x = torch.randn(6, D)
+    group_id = torch.tensor([0, 0, 0, 1, 1, 1])
+    assert pool(x, group_id, 2).shape == (2, 3 * D)
+
+
 def test_identity_gated_sum():
     net = IdentityGatedSum(D, n_patches=N)
+    net.eval()
     cs = make_channel_set([2, 5, 9], N, D)
     out, present = net(cs)
     assert out.shape == (3, N, D)
     assert torch.isfinite(out).all()
     assert present.all()
+
+    # Routing follows channel_embed: identical tokens with a different
+    # embedding produce a different weighted sum.
+    shifted = replace(cs, channel_embed=cs.channel_embed + 0.5)
+    out_shifted, _ = net(shifted)
+    assert not torch.allclose(out, out_shifted)
 
 
 def test_identity_gated_sum_unsorted_locations():
@@ -252,13 +323,35 @@ def test_identity_gated_sum_requires_channel_embed():
 
 
 def test_no_pad_artifacts():
-    """The public fusion API never exposes a [B, C_max, D] tensor."""
+    """Fusion is a real-token [B, N, D] tensor with an exact presence mask."""
     fusion = _fusion(seed=6)
+    fusion.eval()
     cs = make_channel_set([3, 10], N, D)
-    fused, present = fusion(cs)
-    assert fused.dim() == 3 and fused.shape[1] == N  # spatial axis, not channel
-    # no NaNs / -inf leaking from masking
+
+    # Drop every channel at one location so the mask is not trivially all-True.
+    keep = ~((cs.sample_idx == 0) & (cs.patch_idx == 2))
+    sparse = ChannelSet(
+        tokens=cs.tokens[keep],
+        sample_idx=cs.sample_idx[keep],
+        channel_idx=cs.channel_idx[keep],
+        patch_idx=cs.patch_idx[keep],
+        channel_id=cs.channel_id[keep],
+        n_samples=cs.n_samples,
+        n_patches=N,
+        channel_embed=cs.channel_embed[keep],
+        channel_group_id=cs.channel_group_id[keep],
+    )
+    fused, present = fusion(sparse)
+
+    assert fused.shape == (2, N, D)  # spatial axis, never a padded channel axis
     assert torch.isfinite(fused).all()
+    assert not torch.isneginf(fused).any()
+    assert not torch.isnan(fused).any()
+
+    expected = torch.ones(2, N, dtype=torch.bool)
+    expected[0, 2] = False
+    assert present.dtype == torch.bool
+    assert torch.equal(present, expected)
 
 
 def test_post_fusion_spatial_pos():

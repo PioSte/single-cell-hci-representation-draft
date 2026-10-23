@@ -80,21 +80,39 @@ def test_decoder_target_self_attention_mixes_queries():
     assert not torch.allclose(a[0], b[0])
 
 
-def test_padding_free_encoder_input():
-    """Encoder consumes exactly the visible channel-patches (no pad tokens)."""
+def test_encoder_input_length_is_present_locations():
+    """The encoder gets one token per present location, not per visible patch."""
     model = _model()
     images, ids = _batch(C_list=(1, 5, 3))
-    visible = _fixed_visible(images, model.masker, seed=2)
+    # Construct the mask explicitly so n_present < n_visible by construction:
+    # sample 0 and 2 are fully visible; in sample 1 each of the 5 channels is
+    # visible at one patch, so 5 tokens occupy only 4 locations.
+    visible = [
+        torch.ones(1, model.n_patches, dtype=torch.bool),
+        torch.zeros(5, model.n_patches, dtype=torch.bool),
+        torch.ones(3, model.n_patches, dtype=torch.bool),
+    ]
+    for c in range(5):
+        visible[1][c, c % model.n_patches] = True
     cs = model.frontend(images, ids, visible)
     n_visible = sum(int(v.sum()) for v in visible)
     assert cs.tokens.shape[0] == n_visible
 
-    out = model(images, ids, visible=visible)
-    present = out["present"]
-    # each present location contributes exactly one fused token
-    assert int(present.sum()) == sum(
-        int(present[b].sum()) for b in range(len(images))
-    )
+    encoder_lengths = []
+
+    def capture_length(_module, args):
+        encoder_lengths.append(args[0].shape[0])
+
+    handle = model.encoder.register_forward_pre_hook(capture_length)
+    try:
+        out = model(images, ids, visible=visible)
+    finally:
+        handle.remove()
+
+    n_present = int(out["present"].sum())
+    assert encoder_lengths == [n_present]
+    # A location may lose every channel, so present locations < visible tokens.
+    assert n_present < n_visible
     assert torch.isfinite(out["loss"])
 
 
@@ -117,7 +135,7 @@ def test_overfit_single_batch():
     assert last < first * 0.7, f"loss did not drop: {first:.4f} -> {last:.4f}"
 
 
-def test_memory_ablation_runs():
+def test_memory_tokens_optional():
     model = _model(n_memory=0)
     images, ids = _batch()
     out = model(images, ids, generator=torch.Generator().manual_seed(1))
@@ -168,6 +186,47 @@ def test_descriptor_is_trained_by_the_mae_loss():
     assert not missing, f"pooler parameters without gradients: {missing}"
 
 
+def test_decoder_consumes_the_descriptor():
+    """The trained descriptor is a decoder KV token and affects predictions."""
+    model = _model()
+    model.eval()
+    images, ids = _batch()
+    visible = _fixed_visible(images, model.masker, seed=2)
+    B = len(images)
+    captured = {}
+
+    handles = [
+        model.pooler.register_forward_hook(
+            lambda _m, _i, out: captured.__setitem__("desc", out.detach())
+        ),
+        model.decoder.register_forward_pre_hook(
+            lambda _m, args: captured.__setitem__("kv", args[0].detach())
+        ),
+    ]
+    try:
+        with torch.no_grad():
+            out = model(images, ids, visible=visible)
+    finally:
+        for handle in handles:
+            handle.remove()
+
+    assert out["pred"] is not None
+    # The decoder KV ends with the per-sample descriptor token.
+    assert torch.allclose(captured["kv"][-B:], captured["desc"])
+    assert torch.allclose(out["descriptor"], captured["desc"], atol=1e-6)
+
+    # Perturbing only the pooler output must change the reconstruction.  The
+    # delta is non-constant because a constant shift cancels in LayerNorm.
+    delta = torch.linspace(-1.0, 1.0, captured["desc"].shape[-1])
+    handle = model.pooler.register_forward_hook(lambda _m, _i, out: out + delta)
+    try:
+        with torch.no_grad():
+            out_perturbed = model(images, ids, visible=visible)
+    finally:
+        handle.remove()
+    assert not torch.allclose(out["pred"], out_perturbed["pred"])
+
+
 def test_forward_and_encode_share_the_descriptor():
     """encode(pool='attention') returns the descriptor trained in forward."""
     model = _model()
@@ -209,3 +268,77 @@ def test_identity_gated_fusion_mae():
     assert torch.isfinite(out["loss"])
     out["loss"].backward()
     assert model.fusion.weight_net[0].weight.grad is not None
+
+
+def test_dcp_dropped_channel_is_a_reconstruction_target():
+    """Fully dropped channels are reconstructed; absent ids never are."""
+    model = _model(p_patch=0.0, p_channel=1.0)
+    g = torch.Generator().manual_seed(7)
+    images = [torch.randn(3, 1, 8, 8, generator=g)]
+    ids = [torch.tensor([3, 5, 7])]
+    absent_id = 0  # valid embedding id, but not in this sample's panel
+
+    for seed in range(50):
+        visible = model.masker(
+            images, generator=torch.Generator().manual_seed(seed)
+        )
+        dropped = ~visible[0].any(dim=1)
+        if bool(dropped.any()):
+            break
+    assert bool(dropped.any())
+    assert not bool(visible[0][dropped].any())
+
+    out = model(images, ids, visible=visible)
+    target_ids = out["target_channel_id"]
+    assert out["pred"] is not None
+    assert out["pred"].shape[0] == target_ids.numel()
+
+    # Every patch of a dropped channel is a target, and nothing else is.
+    for c in dropped.nonzero(as_tuple=True)[0].tolist():
+        assert int((target_ids == ids[0][c]).sum()) == model.n_patches
+    for c in (~dropped).nonzero(as_tuple=True)[0].tolist():
+        assert not bool((target_ids == ids[0][c]).any())
+    assert set(target_ids.tolist()) <= set(ids[0].tolist())
+    assert absent_id not in set(target_ids.tolist())
+
+
+def test_attention_primitives_route_self_and_cross_attention(monkeypatch):
+    """Encoder/decoder self-attention use the bucketed projected primitive;
+    decoder cross-attention uses the general grouped primitive."""
+    import fuse_channels.decoder as decoder_module
+    import fuse_channels.encoder as encoder_module
+
+    calls = {"encoder_self": 0, "decoder_self": 0, "decoder_cross": 0}
+    encoder_self = encoder_module.grouped_projected_self_attention
+    decoder_self = decoder_module.grouped_projected_self_attention
+    decoder_cross = decoder_module.grouped_attention
+
+    def count_encoder_self(*args, **kwargs):
+        calls["encoder_self"] += 1
+        return encoder_self(*args, **kwargs)
+
+    def count_decoder_self(*args, **kwargs):
+        calls["decoder_self"] += 1
+        return decoder_self(*args, **kwargs)
+
+    def count_decoder_cross(*args, **kwargs):
+        calls["decoder_cross"] += 1
+        return decoder_cross(*args, **kwargs)
+
+    monkeypatch.setattr(
+        encoder_module, "grouped_projected_self_attention", count_encoder_self
+    )
+    monkeypatch.setattr(
+        decoder_module, "grouped_projected_self_attention", count_decoder_self
+    )
+    monkeypatch.setattr(decoder_module, "grouped_attention", count_decoder_cross)
+
+    model = _model()
+    images, ids = _batch()
+    visible = _fixed_visible(images, model.masker, seed=2)
+    out = model(images, ids, visible=visible)
+
+    assert out["pred"] is not None
+    assert calls["encoder_self"] == len(model.encoder.blocks)
+    assert calls["decoder_self"] == len(model.decoder.blocks)
+    assert calls["decoder_cross"] == len(model.decoder.blocks)
