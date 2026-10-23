@@ -1,13 +1,14 @@
 """L8 -- padding-free grouped-attention primitive (methods-box figure).
 
-Shows how the grouped-attention primitives work: the flattened token list
-``[T, D]`` + ``group_id: [T]`` layout, the sort-by-group bucketing, batched SDPA
-over groups of equal length, and scatter-back.
+Shows how the shipped grouped-attention primitive works: the flattened token
+list ``[T, D]`` + ``group_id: [T]`` layout, the sort-by-group bucketing, batched
+SDPA over groups of equal length, and scatter-back.
 
 * ``grouped_projected_self_attention`` — the bucketed projected primitive used
   by the encoder blocks and the decoder's target self-attention.
 * ``grouped_attention`` — the general grouped cross-attention primitive used
-  by the decoder (queries and key/value tokens have different lengths).
+  by the decoder; it loops per group, so query and key/value tokens may have
+  different lengths per group.
 * ``grouped_pool_attention`` — one learned query set per group, used by channel
   fusion and the descriptor pooler.
 * ``grouped_softmax`` — the per-group softmax used by ``IdentityGatedSum``.
@@ -16,9 +17,8 @@ Groups are samples for the encoder, decoder, and pooler, and ``(sample, patch)``
 locations for channel fusion. This is padding-free batching, **not** grouped-query
 attention: there are no head groups and no shared K/V across query heads.
 
-The figure also draws the equivalence to a dense ``[B, T_max, D]`` tensor +
-``-inf`` attention mask reference, and why the grouped form is exactly that
-without materialising padding (cf. FlashAttention varlen / cu_seqlens).
+Tokens from different groups never interact, so the primitive needs no padding
+tokens and no ``-inf`` attention mask.
 
 Usage::
 
@@ -38,9 +38,9 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 from figure_style import (  # noqa: E402
-    BLUE, GREEN, ORANGE, RED, FUSED, GHOST, LOSS, INK, MUTED,
+    BLUE, GREEN, ORANGE, FUSED, LOSS, INK, MUTED,
     tint, rrect, box, arrow, sq_bracket, panel_header, legend,
-    padded_ghost, install_rcparams, save_figure,
+    install_rcparams, save_figure,
 )
 
 OUT = Path(__file__).resolve().parent / "out"
@@ -174,29 +174,13 @@ def draw_output_tokens(ax, x):
 
 
 # --------------------------------------------------------------------------- #
-# Ghost padded reference (never materialised)
-# --------------------------------------------------------------------------- #
-def draw_padded_reference(ax, x, y0):
-    """Dashed ghost of the dense [B, T_max, D] + -inf mask reference.
-
-    Uses the shared :func:`padded_ghost` primitive so the never-materialised
-    padded tensor reads the same way as in every other level.
-    """
-    w, h = 16.0, 12.0
-    padded_ghost(ax, x, y0, w, h,
-                 shape=r"$[B, T_{\max}, D]$",
-                 note="never materialized", color=GHOST, strike=False, z=1)
-    return y0 + h, w
-
-
-# --------------------------------------------------------------------------- #
 # The figure
 # --------------------------------------------------------------------------- #
 def build() -> plt.Figure:
-    fig = plt.figure(figsize=(14, 8.2))
+    fig = plt.figure(figsize=(14, 5.2))
     ax = fig.add_axes([0.0, 0.0, 1.0, 1.0])
     ax.set_xlim(0, 140)
-    ax.set_ylim(0, 82)
+    ax.set_ylim(30, 82)
     ax.set_aspect("equal", adjustable="box")
     ax.axis("off")
 
@@ -242,7 +226,7 @@ def build() -> plt.Figure:
     box(ax, 104.0, Y0 + 17.0, 33.0, 9.5,
         "Grouped SDPA primitives",
         "projected self-attn (bucketed)\n"
-        "general cross-attn · pooling K $=$ V",
+        "general cross-attn (per-group loop) · pooling K $=$ V",
         edge=FUSED, title_size=8.8, sub_size=6.1)
 
     rrect(ax, 104.0, Y0 + 4.0, 33.0, 11.0, edge=LOSS, face=tint(LOSS, 0.92),
@@ -265,58 +249,13 @@ def build() -> plt.Figure:
            title="group IDs (not channels)", pitch=2.3, fontsize=6.6)
     legend(ax, 52.0, 43.0,
            [("SDPA primitive", FUSED, "fill"),
-            ("hard constraint", LOSS, "fill"),
-            ("never materialized", GHOST, "ghost")],
+            ("hard constraint", LOSS, "fill")],
            title="roles", pitch=2.3, fontsize=6.6)
 
-    # ---- equivalence to the padded reference (aligned bottom row) --------- #
-    bot_c = 17.0
-    eq_y = 32.0
-    ax.text(63.0, eq_y,
-            "Equivalence (cf. FlashAttention $\\mathtt{cu\\_seqlens}$)",
-            ha="center", va="center", fontsize=8.5, fontweight="bold",
-            color=INK)
-
-    # grouped form (left) -- what we actually compute
-    grp_x, grp_w = 14.0, 8.0
-    grp_h, grp_pitch = 1.8, 2.4
-    grp_bottom = bot_c - (7 * grp_pitch + grp_h) / 2
-    ax.text(grp_x + grp_w / 2, eq_y - 3.5, "grouped form", ha="center",
-            va="center", fontsize=7.0, fontweight="bold", color=GREEN)
-    ax.text(grp_x + grp_w / 2, eq_y - 5.0, "(what we compute)", ha="center",
-            va="center", fontsize=6.2, color=MUTED, style="italic")
-    for i, c in enumerate([BLUE, BLUE, BLUE, GREEN, GREEN,
-                           ORANGE, ORANGE, ORANGE]):
-        rrect(ax, grp_x, grp_bottom + i * grp_pitch, grp_w, grp_h, edge=c,
-              face=tint(c, 0.8), lw=1.0)
-    ax.text(grp_x + grp_w + 0.7, grp_bottom + 3.5 * grp_pitch, "$[T, D]$",
-            ha="left", va="center", fontsize=7.0, color=INK)
-    ax.text(grp_x + grp_w / 2, grp_bottom - 2.2, "✓", ha="center",
-            va="center", fontsize=18, color=GREEN, fontweight="bold")
-
-    # padded + mask ghost (right) -- never materialised
-    pad_x = 96.0
-    pad_y0 = bot_c - 12.0 / 2
-    _pad_top, pad_w = draw_padded_reference(ax, pad_x, pad_y0)
-    ax.text(pad_x + pad_w / 2, eq_y - 3.5, "padded $+$ $-\\infty$ mask",
-            ha="center", va="center", fontsize=7.0, fontweight="bold",
-            color=MUTED)
-    ax.text(pad_x + pad_w / 2, eq_y - 5.0, "(dense reference)",
-            ha="center", va="center", fontsize=6.2, color=MUTED,
-            style="italic")
-    ax.text(pad_x + pad_w / 2, pad_y0 - 2.4, "✗", ha="center", va="center",
-            fontsize=18, color=RED, fontweight="bold")
-
-    # equivalence arrow between the two forms
-    arrow(ax, (27.0, bot_c), (pad_x - 2.0, bot_c), color=MUTED, lw=1.8,
-          dashed=True, ms=13)
-    ax.text(60.0, bot_c + 2.0, "same semantics", ha="center", va="center",
-            fontsize=6.8, color=MUTED)
-
     # ---- footer note ------------------------------------------------------ #
-    ax.text(2.0, 1.5,
-            "FlashAttention varlen / cu_seqlens idiom: no padding tokens, "
-            "no $-\\infty$ mask, $O(T)$ memory.",
+    ax.text(2.0, 31.3,
+            "Grouped attention over ragged tokens: one group at a time, "
+            "$O(T)$ memory.",
             ha="left", va="center", fontsize=7.0, color=MUTED, style="italic")
 
     return fig

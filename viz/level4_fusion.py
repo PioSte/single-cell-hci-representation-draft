@@ -2,14 +2,12 @@
 
 Panel A shows :class:`ChannelFusion`, the default single-query PMA-style
 pooling over the channel axis at each spatial location. It is deliberately
-projection-free for K/V (``k = v = norm_kv(x)``) and has no ``n_queries``
-axis. Panel B shows :class:`IdentityGatedSum`, the channel-routed ``O(C)``
-ablation for high-channel-count panels; its channel MLP runs once per channel
-and is broadcast to that channel's patches. Both are ``O(C)`` per location and
-both add the learned post-fusion spatial positional embedding before returning
-``[B, N, D]``. A bottom inset shows a hypothetical rejected ``O(C^2)`` dense
-``C x C`` per-location block; the actual ChannelViT/ChAda-ViT baselines attend
-over the full ``C·N`` sequence (``O((C·N)^2)``), and only ChAda-ViT pads/masks.
+projection-free for K/V (``k = v = norm_kv(x)``), LayerNorms the shared query,
+and has no ``n_queries`` axis. Panel B shows :class:`IdentityGatedSum`, the
+channel-routed ``O(C)`` variant for high-channel-count panels; its channel MLP
+runs once per channel and is broadcast to that channel's patches. Both are
+``O(C)`` per location, consume the visible tokens only, and add the learned
+post-fusion spatial positional embedding before returning ``[B, N, D]``."
 
 Usage::
 
@@ -29,10 +27,9 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 from figure_style import (  # noqa: E402
-    BLUE, GREEN, ORANGE, RED, PURPLE, VIOLET, INK, MUTED, SKY,
-    CHANNEL_COLORS, TOKENIZER, FUSION, ENCODER, DECODER, MEMORY, LOSS, FUSED,
-    GHOST, tint, rrect, arrow, panel_header, install_rcparams, save_figure,
-    legend, role_legend, channel_legend, padded_ghost, edge_label,
+    INK, MUTED, CHANNEL_COLORS, TOKENIZER, FUSION, FUSED, GHOST,
+    tint, rrect, arrow, panel_header, install_rcparams, save_figure,
+    legend, channel_legend, edge_label,
 )
 
 OUT = Path(__file__).resolve().parent / "out"
@@ -41,7 +38,6 @@ OUT = Path(__file__).resolve().parent / "out"
 FUS = FUSION          # orange: every ChannelFusion / IdentityGatedSum box
 OUT_C = FUSED         # blue: the fused output vector [B, N, D]
 TOK = TOKENIZER         # green: patch-embed tokens, additive identity z_c
-REJ = LOSS            # red: the rejected O(C^2) baseline / omitted accent
 
 
 # --------------------------------------------------------------------------- #
@@ -125,11 +121,10 @@ def draw_panel_a(ax):
                 fontweight="bold")
     note(ax, 48.0, 64.4,
          "keys = values = $\\mathrm{norm}_{kv}(x_c)$\n"
-         "no $W_Q/W_K/W_V$")
+         "only $\\mathrm{proj\\_out}$ is learned")
     note(ax, 50.0, 56.0,
          "attention over the $C$ present channels:\n"
-         "real rows only \u2014 no padding,\n"
-         "no $-\\infty$ attention mask")
+         "visible channel tokens at $(b,n)$")
 
     # ---- stage 3: scores q_h . k_c,h / sqrt(D_h) -------------------------- #
     y_s, h_s = 49.0, 6.0
@@ -157,11 +152,15 @@ def draw_panel_a(ax):
     qy = y_s + (h_s - qh) / 2
     rrect(ax, qx, qy, qw, qh, edge=FUS, face=tint(FUS, 0.74), lw=1.7,
           rounding=0.6)
-    ax.text(qx + qw / 2, qy + qh / 2, "$q$", ha="center", va="center",
-            fontsize=9.6, color=FUS, fontweight="bold")
-    ax.text(2.5, 47.6, "one learned query", ha="left",
+    ax.text(qx + qw / 2, qy + qh / 2 + 0.7, "$q$", ha="center",
+            va="center", fontsize=9.6, color=FUS, fontweight="bold")
+    ax.text(qx + qw / 2, qy + qh / 2 - 1.6, "$\\mathrm{norm}_q$", ha="center",
+            va="center", fontsize=5.4, color=MUTED, style="italic")
+    ax.text(2.5, 47.6, "one learned query $q$", ha="left",
             va="center", fontsize=6.0, color=FUS)
-    ax.text(2.5, 45.8, "shared by all $(b,n)$", ha="left",
+    ax.text(2.5, 45.8, "$q \\leftarrow \\mathrm{norm}_q(q)$", ha="left",
+            va="center", fontsize=5.8, color=MUTED, style="italic")
+    ax.text(2.5, 44.0, "shared by all $(b,n)$", ha="left",
             va="center", fontsize=5.8, color=MUTED, style="italic")
     arrow(ax, (qx + qw, qy + qh / 2), (GX0, y_s + h_s / 2), lw=1.5,
           color=FUS, ms=9)
@@ -199,10 +198,10 @@ def draw_panel_a(ax):
     # ---- values v_c tap into the weighted sum ----------------------------- #
     vx, vw, vh = 36.0, 10.0, 5.5
     vy = y_kv + (h_kv - vh) / 2
-    rrect(ax, vx, vy, vw, vh, edge=GHOST, face=tint(GHOST, 0.92), lw=1.3,
+    rrect(ax, vx, vy, vw, vh, edge=TOK, face=tint(TOK, 0.86), lw=1.4,
           rounding=0.6)
     ax.text(vx + vw / 2, vy + vh / 2 + 1.1, "$v_c$", ha="center",
-            va="center", fontsize=8.2, color=INK, fontweight="bold")
+            va="center", fontsize=8.2, color=TOK, fontweight="bold")
     ax.text(vx + vw / 2, vy + vh / 2 - 1.2, "values", ha="center",
             va="center", fontsize=5.9, color=MUTED)
     arrow(ax, (GX1, y_kv + h_kv / 2), (vx, vy + vh / 2), lw=1.3, ms=8)
@@ -211,7 +210,7 @@ def draw_panel_a(ax):
 
 
 # --------------------------------------------------------------------------- #
-# Panel B: IdentityGatedSum (O(C) alternative)
+# Panel B: IdentityGatedSum (O(C) variant)
 # --------------------------------------------------------------------------- #
 def draw_panel_b(ax):
     """IdentityGatedSum: channel embedding -> weights, tokens -> values."""
@@ -235,8 +234,9 @@ def draw_panel_b(ax):
 
     rrect(ax, RX[0], 78.0, RX[2] + W - RX[0], 3.0, edge=TOK,
           face=tint(TOK, 0.86), lw=1.4, rounding=0.5)
-    ax.text(RC, 79.5, "ragged tokens $[\\Sigma C\\cdot N, D]$", ha="center",
-            va="center", fontsize=6.2, color=INK, fontweight="bold")
+    ax.text(RC, 79.5, "ragged $[\\Sigma C\\cdot N, D]$  $V$ visible rows",
+            ha="center", va="center", fontsize=5.7, color=INK,
+            fontweight="bold")
 
     y_in, h_in = 71.5, 5.2
     for i in range(3):
@@ -247,7 +247,7 @@ def draw_panel_b(ax):
                 va="center", fontsize=8.2, color=col, fontweight="bold")
 
     stage(ax, RX[0], y_in, RX[2] + W - RX[0], h_in, "tokens $t_c$",
-          edge=GHOST, tcolor=INK, tsize=7.4, face=tint(GHOST, 0.92), lw=1.3)
+          edge=TOK, tcolor=INK, tsize=7.4, face=tint(TOK, 0.86), lw=1.4)
 
     # ---- weights branch: MLP -> softmax -> w_c ---------------------------- #
     y_mlp, h_mlp = 62.0, 6.0
@@ -277,7 +277,7 @@ def draw_panel_b(ax):
 
     # ---- values branch: value_proj + out_norm -> V_c --------------------- #
     y_vp, h_vp = 62.0, 6.0
-    stage(ax, RX[0] - 4.0, y_vp, (RX[2] + W) - (RX[0] - 4.0), h_vp,
+    stage(ax, RC - 10.5, y_vp, 21.0, h_vp,
           "value_proj", "then $\\mathrm{out\\_norm}$", edge=FUS, tcolor=FUS,
           tsize=7.4)
 
@@ -313,108 +313,49 @@ def draw_panel_b(ax):
 
 
 # --------------------------------------------------------------------------- #
-# Bottom inset: the rejected dense C x C baseline (O(C^2))
-# --------------------------------------------------------------------------- #
-def draw_inset(ax):
-    """Hypothetical dense C x C per-location block -- the rejected O(C^2) baseline."""
-    x0, x1 = 82.0, 145.0
-    y0, y1 = 3.0, 27.0
-    cxm = (x0 + x1) / 2
-
-    rrect(ax, x0, y0, x1 - x0, y1 - y0, edge=REJ, face=tint(REJ, 0.965),
-          lw=1.4, dashed=True, rounding=0.8, z=1)
-
-    ax.text(cxm, y1 - 2.4,
-            "Rejected baseline \u2014 hypothetical dense $C\\times C$ "
-            "per-location block",
-            ha="center", va="center", fontsize=7.0, color=REJ,
-            fontweight="bold", zorder=4)
-    ax.text(cxm, y1 - 4.6,
-            "not the exact ChannelViT/ChAda-ViT $C\\cdot N$ baseline",
-            ha="center", va="center", fontsize=6.0, color=MUTED,
-            style="italic", zorder=4)
-
-    # row 1: tokens -> W_Q / W_K / W_V -> C x C attention
-    rrect(ax, 85.0, 15.0, 18.0, 5.0, edge=GHOST, face="white", lw=1.1,
-          rounding=0.4)
-    ax.text(94.0, 18.2, "tokens $X$", ha="center", va="center",
-            fontsize=6.8, color=INK, fontweight="bold")
-    ax.text(94.0, 16.3, "$[\\Sigma C\\cdot N, D]$", ha="center", va="center",
-            fontsize=5.9, color=MUTED)
-
-    WX = [106.5, 111.0, 115.5]
-    labels = ["$W_Q$", "$W_K$", "$W_V$"]
-    for i, wx in enumerate(WX):
-        rrect(ax, wx, 15.5, 4.2, 4.0, edge=REJ, face=tint(REJ, 0.9),
-              lw=1.2, dashed=True, rounding=0.3)
-        ax.text(wx + 2.1, 17.5, labels[i], ha="center", va="center",
-                fontsize=6.4, color=REJ, fontweight="bold")
-    arrow(ax, (103.0, 17.5), (106.5, 17.5), lw=1.0, ms=7, color=REJ,
-          dashed=True)
-    arrow(ax, (WX[-1] + 4.2, 17.5), (122.0, 17.5), lw=1.0, ms=7, color=REJ,
-          dashed=True)
-
-    rrect(ax, 122.0, 14.0, 20.0, 7.0, edge=REJ, face=tint(REJ, 0.93),
-          lw=1.3, dashed=True, rounding=0.5)
-    ax.text(132.0, 18.7, "$\\mathrm{softmax}(QK^{\\top}/\\sqrt{d_h})\\,V$",
-            ha="center", va="center", fontsize=6.0, color=REJ,
-            fontweight="bold")
-    ax.text(132.0, 16.1, "$C\\times C$ scores \u00b7 needs mask",
-            ha="center", va="center", fontsize=5.6, color=MUTED)
-
-    # row 2: the padded ghost this baseline would need
-    padded_ghost(ax, 85.0, 5.0, 30.0, 8.0, z=2)
-    ax.text(117.0, 10.6, "$O(C^2)$ per location",
-            ha="left", va="center", fontsize=7.0, color=REJ,
-            fontweight="bold")
-    ax.text(117.0, 8.2, "padding + attention mask required,",
-            ha="left", va="center", fontsize=6.0, color=MUTED)
-    ax.text(117.0, 6.2, "so it is rejected \u2014 only the "
-            "$O(C)$ paths above ship.", ha="left", va="center",
-            fontsize=6.0, color=MUTED, style="italic")
-
-
-# --------------------------------------------------------------------------- #
 # Bottom legends + dimension key
 # --------------------------------------------------------------------------- #
 def draw_legends(ax):
-    # ---- legend box ------------------------------------------------------- #
-    rrect(ax, 2.0, 3.0, 38.0, 24.0, edge=INK, face=tint(INK, 0.975),
+    # ---- legend box: roles, channels and the geometry convention ---------- #
+    rrect(ax, 2.0, 3.0, 66.0, 24.0, edge=INK, face=tint(INK, 0.975),
           lw=1.2, rounding=0.6, z=1)
 
-    role_legend(ax, 4.0, 25.0,
-                [("tokenizer / $z_c$", TOKENIZER),
-                 ("channel fusion", FUSION),
-                 ("encoder", ENCODER),
-                 ("decoder", DECODER),
-                 ("fused output", FUSED),
-                 ("loss / rejected", LOSS)],
-                title="module roles", pitch=2.5, sw=1.4, fontsize=6.1,
-                title_size=6.8)
-    channel_legend(ax, 24.0, 25.0, n=3, title="channel identity",
+    legend(ax, 4.0, 25.0,
+           [("tokenizer / $z_c$", TOKENIZER, "fill"),
+            ("channel fusion", FUSION, "fill"),
+            ("fused output", FUSED, "fill")],
+           title="module roles", pitch=2.5, sw=1.4, fontsize=6.1,
+           title_size=6.8)
+    channel_legend(ax, 34.0, 25.0, n=3, title="channel identity",
                    pitch=2.5, sw=1.4, fontsize=6.1, title_size=6.8)
 
+    note(ax, 34.0, 13.2,
+         "Both shipped variants consume visible tokens only\n"
+         "and emit $[B, N, D]$ \u2014 $C$ lives only in the ragged "
+         "length $\\Sigma C\\cdot N$.")
+
     # ---- dimension key ---------------------------------------------------- #
-    rrect(ax, 42.0, 3.0, 38.0, 24.0, edge=INK, face=tint(INK, 0.985),
+    rrect(ax, 70.0, 3.0, 78.0, 24.0, edge=INK, face=tint(INK, 0.985),
           lw=1.2, rounding=0.6, z=1)
-    ax.text(44.0, 25.0, "dimension key", ha="left", va="center",
+    ax.text(72.0, 25.0, "dimension key", ha="left", va="center",
             fontsize=6.8, fontweight="bold", color=INK)
 
     entries = [
         "$D$ \u2014 token / embedding dim",
         "$D_h = D/H$ \u2014 per-head dim",
         "$H$ \u2014 attention heads",
-        "$1$ \u2014 learned query per location",
+        "$q$ \u2014 learned query, shared across all locations",
         "$V$ \u2014 visible channel-patch tokens",
         "$C$ \u2014 present channels (order-free)",
     ]
     yy = 22.2
     for e in entries:
-        ax.text(44.0, yy, e, ha="left", va="center", fontsize=6.1, color=INK)
+        ax.text(72.0, yy, e, ha="left", va="center", fontsize=6.1, color=INK)
         yy -= 2.7
 
-    note(ax, 44.0, 7.2,
-         "ChannelFusion: $k=v=\\mathrm{norm}_{kv}(\\mathrm{tokens})$, no $W_Q/W_K/W_V$.\n"
+    note(ax, 72.0, 6.4,
+         "ChannelFusion: $k=v=\\mathrm{norm}_{kv}(\\mathrm{tokens})$, "
+         "$q=\\mathrm{norm}_q(q)$; only $\\mathrm{proj\\_out}$ is learned.\n"
          "IdentityGatedSum: one MLP per channel, broadcast to its patches.")
 
 
@@ -445,16 +386,14 @@ def build() -> plt.Figure:
 
     draw_panel_b(ax)
 
-    # bottom strip: legends + dimension key, and the rejected-baseline inset
+    # bottom strip: legends, channel key and dimension key spanning the width
     draw_legends(ax)
-    draw_inset(ax)
 
     # footnote
     ax.text(2.0, 0.7,
-            "Both shipped variants are padding-free and produce "
+            "Both shipped variants consume visible tokens and produce "
             "$[B, N, D]$ fused embeddings; $C$ lives only in the ragged input "
-            "length $\\Sigma C\\cdot N$. The dashed $[B, C_{\\max}, N, D]$ "
-            "tensor is never materialised.",
+            "length $\\Sigma C\\cdot N$.",
             ha="left", va="bottom", fontsize=6.8, color=MUTED, style="italic")
 
     return fig

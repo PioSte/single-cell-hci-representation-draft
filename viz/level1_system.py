@@ -141,26 +141,40 @@ def draw_joint_grid(ax, x0=79.0):
 
 
 def draw_encoded(ax, x=124.0):
-    """``[B . M + K_f, D]`` -- fixed memory rows + visible fused tokens."""
-    w, h, pitch = 10.5, 2.4, 3.0
-    rows = [("tok", FUSED)] * 5 + [("mem", MEMORY)] * 2
-    total = (len(rows) - 1) * pitch + h
+    """``[B . M + K_f + B, D]`` -- the decoder KV: fixed memory rows, visible
+    fused tokens, and the trained per-sample descriptor ``desc``.
+
+    ``mae.py`` builds ``enc_all = cat([mem_out, tok_out, desc])``, so the
+    descriptor row sits here as well as in the inference branch.
+    """
+    w, h, pitch, gap = 10.5, 2.4, 3.0, 1.1
+    n_tok, n_mem = 5, 2
+    total = 2 * h + gap + (n_tok + n_mem - 1) * pitch
     y0 = YMID - total / 2
-    for i, (_kind, c) in enumerate(rows):
-        yy = y0 + i * pitch
-        rrect(ax, x, yy, w, h, edge=c, face=tint(c, 0.8), lw=1.2)
-    top = y0 + total
-    sq_bracket(ax, x + w + 1.0, y0, top)
-    ax.text(x + w / 2, top + 2.0, "$[\\,B\\cdot M + K_f,\\; D\\,]$",
+    # desc: one extra per-sample token appended to the decoder KV
+    rrect(ax, x, y0, w, h, edge=POOL, face=tint(POOL, 0.8), lw=1.2)
+    ax.text(x + w / 2, y0 + h / 2, "desc  $[B, D]$", ha="center", va="center",
+            fontsize=5.8, color=INK, zorder=4)
+    y_tok0 = y0 + h + gap
+    for i in range(n_tok):
+        rrect(ax, x, y_tok0 + i * pitch, w, h, edge=FUSED,
+              face=tint(FUSED, 0.8), lw=1.2)
+    y_mem0 = y_tok0 + n_tok * pitch
+    for j in range(n_mem):
+        rrect(ax, x, y_mem0 + j * pitch, w, h, edge=MEMORY,
+              face=tint(MEMORY, 0.8), lw=1.2)
+    top = y_mem0 + (n_mem - 1) * pitch + h
+    ax.text(x + w / 2, top + 2.1, "$[\\,B\\cdot M + K_f + B,\\; D\\,]$",
             ha="center", va="center", fontsize=7.4, color=INK)
-    ax.text(x + w / 2, top + 4.6, "encoder tokens", ha="center", va="center",
-            fontsize=8.4, fontweight="bold", color=INK)
-    ax.text(x - 0.8, y0 + 5.5 * pitch + h / 2, "$M$", ha="right", va="center",
-            fontsize=6.2, color=MEMORY)
-    ax.text(x - 0.8, y0 + 2 * pitch + h / 2, "$K_f$", ha="right", va="center",
-            fontsize=6.2, color=FUSED)
+    ax.text(x + w / 2, top + 4.7, "encoder tokens = decoder KV", ha="center",
+            va="center", fontsize=8.4, fontweight="bold", color=INK)
+    ax.text(x - 0.8, y_mem0 + (n_mem - 1) * pitch / 2 + h / 2, "$M$",
+            ha="right", va="center", fontsize=6.2, color=MEMORY)
+    ax.text(x - 0.8, y_tok0 + (n_tok - 1) * pitch / 2 + h / 2, "$K_f$",
+            ha="right", va="center", fontsize=6.2, color=FUSED)
     dim_extent(ax, x, y0 - 1.8, w)
-    return x, y0, top
+    # tap point for encode(): the bottom token row (clear of the $K_f$ label)
+    return x, y0, top, y0 + h / 2, y_tok0 + h / 2
 
 
 def draw_output(ax, x, w=21.0):
@@ -193,21 +207,22 @@ def build() -> plt.Figure:
             ha="left", va="center", fontsize=12.2, fontweight="bold", color=INK)
     ax.text(2.0, 68.2,
             "The encoder only ever sees visible tokens; the decoder is conditioned on "
-            "the target channel's identity — one shared decoder, no padding, no mask tokens.",
+            "the target channel's identity — one shared decoder; tokens stay "
+            "ragged, with no inserted mask tokens.",
             ha="left", va="center", fontsize=7.2, color=MUTED, style="italic")
 
     # ---- arrays ----------------------------------------------------------- #
     draw_input_set(ax)
     draw_ragged_tokens(ax)
     grid_right = draw_joint_grid(ax)
-    enc_x, enc_y0, enc_top = draw_encoded(ax)
+    enc_x, enc_y0, enc_top, desc_y, tok_y = draw_encoded(ax)
 
     # ---- module boxes (all centred on YMID) ------------------------------- #
     box(ax, 15, YMID - 7.5, 22, 15, "Channel-tied patch embed",
-        "shared Conv $1{\\to}D$, stride $P$\nno PE here; $+\\,z_c$; PE post-fusion",
+        "shared Conv $1{\\to}D$, stride $P$\n$+\\,z_c$; spatial PE post-fusion",
         edge=TOKENIZER, sub_size=6.2)
     box(ax, 56, YMID - 7.5, 19, 15, "Channel fusion",
-        "pool over channel axis\nper $(b,n)$ location\nsingle-query PMA $O(C)$ · gated $O(C)$",
+        "pool over channel axis\nper $(b,n)$ location\nsingle-query PMA $O(C)$",
         edge=FUSION, sub_size=5.7)
     box(ax, 95, YMID - 7.5, 24, 15, "Spatial transformer",
         "grouped self-attention\nover real tokens\n$+M$ fixed memory tokens",
@@ -218,7 +233,8 @@ def build() -> plt.Figure:
 
     # ---- arrows along the main track ------------------------------------- #
     arrow(ax, (9.8, YMID), (15.0, YMID))
-    edge_label(ax, 12.6, YMID + 1.7, "$[\\Sigma C,1,H,W]$")
+    # stacked two-line shape label, kept clear of the tiles and the box edge
+    edge_label(ax, 12.4, YMID + 3.6, "$[\\Sigma C,$\n$1,H,W]$", size=6.3)
     arrow(ax, (37.0, YMID), (41.0, YMID))
     arrow(ax, (52.5, YMID), (56.0, YMID))
     arrow(ax, (75.0, YMID), (79.0, YMID))
@@ -234,7 +250,7 @@ def build() -> plt.Figure:
     # ---- shared-weight bracket over the transformer ----------------------- #
     rrect(ax, 93.0, YMID - 10.2, 28.0, 19.4, edge=ENCODER, face="none", lw=1.3,
           dashed=True, rounding=0.9, z=1)
-    ax.text(107.0, YMID + 10.4, "$\\times L$ blocks, weights shared",
+    ax.text(107.0, YMID + 10.4, "$\\times L$ blocks",
             ha="center", va="center", fontsize=6.9, color=ENCODER)
 
     # ---- ghost padded tensor (never materialised) ------------------------- #
@@ -255,12 +271,17 @@ def build() -> plt.Figure:
     # ---- inference branch: encode() taps the encoder output --------------- #
     rrect(ax, 62.0, 6.0, 42.0, 24.0, edge=POOL, face=tint(POOL, 0.94), lw=1.3,
           dashed=True, rounding=0.9, z=1)
-    ax.text(83.0, 28.4, "encode(): no masking, then pool", ha="center",
+    ax.text(83.0, 29.2, "encode(): full token set, then pool", ha="center",
             va="center", fontsize=6.9, color=POOL)
-    # dashed elbow from the encoder-token stack into the branch
-    ax.plot([enc_x, enc_x - 2.0, enc_x - 2.0, 96.0], [enc_y0, enc_y0, 24.0, 24.0],
+    # dashed elbow: content tokens -> pooler (encode() branch)
+    ax.plot([enc_x, 117.0, 117.0, 97.0], [tok_y, tok_y, 24.0, 24.0],
             color=FUSED, lw=1.3, linestyle="--", zorder=2)
     arrow(ax, (97.0, 24.0), (94.0, 24.0), color=FUSED, lw=1.4, dashed=True)
+    # dashed sky elbow: pooler desc -> the desc row of the decoder KV
+    ax.plot([94.0, 122.2, 122.2], [21.0, 21.0, desc_y], color=POOL, lw=1.3,
+            linestyle="--", zorder=2)
+    arrow(ax, (122.2, desc_y), (enc_x, desc_y), color=POOL, lw=1.4,
+          dashed=True)
     box(ax, 72.0, 20.0, 22.0, 8.0, "PMA pooler", "content tokens · trained with MAE",
         edge=POOL, title_size=7.4, sub_size=5.8)
     arrow(ax, (83.0, 20.0), (83.0, 16.0), color=POOL, lw=1.4)
@@ -277,9 +298,9 @@ def build() -> plt.Figure:
             ha="right", va="center", fontsize=8.4, fontweight="bold", color=INK)
     ax.text(137.0, (otop + obot) / 2 - 1.7, "predicted pixels", ha="right",
             va="center", fontsize=6.2, color=MUTED)
-    box(ax, 138.0, 3.0, 21.0, 9.0, "patch-normalised MSE",
-        "default · ChA-MAEViT L2+FFT L1 ablation",
-        edge=LOSS, title_size=7.2, sub_size=5.6)
+    box(ax, 138.0, 3.0, 21.0, 9.0, "reconstruction loss",
+        "default: per-patch-standardised MSE",
+        edge=LOSS, title_size=7.2, sub_size=6.0)
     arrow(ax, (148.5, obot), (148.5, 12.0), color=LOSS, lw=1.5)
 
     # ---- target pixels, routed along the bottom --------------------------- #

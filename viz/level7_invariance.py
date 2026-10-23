@@ -1,17 +1,15 @@
 """Level 7 -- Invariance & cost (measured values from a real model).
 
 Unlike the other levels this runs the **actual** model and plots measured evidence
-for the four claimed properties:
+for three properties of the shipped path:
 
 1. Cardinality invariance — output size is independent of ``C``.
 2. Permutation invariance — shuffling channel order does not change the result.
-3. Padding-free ≡ masked-padded — exact numeric equivalence (modulo float32 eps).
-4. Cost — per-location analytic FLOPs: a hypothetical dense ``C×C``
-   per-location channel-attention block is ``O(C²)``; the shipped single-query
-   PMA and ``IdentityGatedSum`` are both ``O(C)``. (ChannelViT/ChAda-ViT
-   instead attend over the full ``C·N`` sequence, which is ``O((C·N)²)``.)
+3. Cost — per-location analytic FLOPs of the two shipped fusions:
+   single-query PMA (``ChannelFusion``) and ``IdentityGatedSum`` are both
+   ``O(C)``.
 
-This keeps the total runtime modest (< 60s) by using a tiny model (16×16, 4 spatial
+This keeps the total runtime modest (< 60s) by using a tiny model (16x16, 4 spatial
 patches, 1-layer encoder/decoder) and only a handful of cardinality samples.
 
 Usage::
@@ -41,14 +39,12 @@ from figure_style import (
     FUSED,
     FUSION,
     INK,
-    LOSS,
     MUTED,
     install_rcparams,
     save_figure,
 )
 
 # Import the model components
-from fuse_channels.fusion import _dense_fusion_reference
 from fuse_channels.mae import ChannelFusionMAE
 
 OUT = Path(__file__).resolve().parent / "out"
@@ -87,7 +83,7 @@ def measure_cardinality_invariance(model, device, Cs=(1, 3, 6, 20, 60)):
             {"C": C, "shape": shape, "n_in": n_in, "D": descriptor.shape[-1]}
         )
         print(
-            f"C={C:2d} → shape={shape}, input elements={n_in}, "
+            f"C={C:2d} → shape={shape}, input token elements={n_in}, "
             f"descriptor elements={descriptor.numel()}"
         )
     return results
@@ -117,45 +113,21 @@ def measure_permutation_invariance(
     return results
 
 
-def measure_padding_free_equiv(model, device, seed=0):
-    """Compare padding-free fusion with the dense masked-padded reference."""
-    print("\n=== Padding-free \u2261 Masked-padded ===")
-    # A spread of mixed-C batch compositions.
-    comps = [[1], [3, 5], [2, 4, 6], [1, 3, 6, 20], [5, 5], [2, 2, 2, 2],
-             [6, 1], [4, 7, 2]]
-    results = []
-    for i, comp in enumerate(comps):
-        torch.manual_seed(seed + 100 + i)
-        images = [torch.randn(C, 1, 16, 16, device=device) for C in comp]
-        channel_ids = [torch.arange(C, device=device) % 16 for C in comp]
-        visible = [
-            torch.ones(C, model.n_patches, dtype=torch.bool, device=device)
-            for C in comp
-        ]
-        cs = model.tokenizer(images, channel_ids, visible)
-        fused_padless, _ = model.fusion(cs)
-        fused_dense = _dense_fusion_reference(model.fusion, cs)
-        diff = (fused_padless - fused_dense).abs().max().item()
-        results.append({"batch": i, "Cs": comp, "diff": diff})
-        print(f"batch {i} Cs={comp} → max|Δ|={diff:.2e}")
-    return results
-
-
 def analytic_cost(Cs, D):
-    """Per-location analytic multiply-adds (dominant terms).
+    """Per-location analytic multiply-adds of the two shipped fusions.
 
     * single-query PMA (``ChannelFusion``): scores + weighted sum ``2·C·D``,
-      plus the per-location output projection ``D²``;
-    * dense ``C×C`` channel attention: ``2·C²·D``;
+      plus the per-location output projection ``D²`` → ``2·C·D + D²``;
     * ``IdentityGatedSum``: one per-channel ``D→D`` MLP + ``D→1`` head
       (``D² + D``) and a ``D→D`` value projection (``D²``) → ``C·(2·D² + D)``.
+
+    Both scale as ``O(C)`` in the channel count.
     """
-    attn, dense, gated = [], [], []
+    attn, gated = [], []
     for C in Cs:
         attn.append(2 * C * D + D * D)
-        dense.append(2 * C * C * D)
         gated.append(C * (2 * D * D + D))
-    return np.array(attn), np.array(dense), np.array(gated)
+    return np.array(attn), np.array(gated)
 
 
 # --------------------------------------------------------------------------- #
@@ -175,17 +147,16 @@ def tidy(ax):
 # --------------------------------------------------------------------------- #
 # Figure
 # --------------------------------------------------------------------------- #
-def build_figure(card_results, perm_results, pad_results,
-                 Cs_cost, cost_attn, cost_dense, cost_gated):
-    """Build the 4-panel figure."""
-    fig = plt.figure(figsize=(14, 8.8))
-    gs = fig.add_gridspec(2, 2, hspace=0.50, wspace=0.26,
-                          left=0.07, right=0.98, top=0.90, bottom=0.10)
+def build_figure(card_results, perm_results, Cs_cost, cost_attn, cost_gated):
+    """Build the 3-panel figure (A/B on top, cost spanning the bottom)."""
+    fig = plt.figure(figsize=(13.5, 9.2))
+    gs = fig.add_gridspec(2, 2, hspace=0.42, wspace=0.24,
+                          left=0.07, right=0.98, top=0.92, bottom=0.10)
 
     # ---- Panel A: cardinality invariance --------------------------------- #
     ax_a = fig.add_subplot(gs[0, 0])
-    header(ax_a, "A", "Cardinality invariance \u2014 encode() descriptor "
-                     "shape [1, D] for every C")
+    header(ax_a, "A", "Cardinality invariance \u2014 descriptor shape "
+                     "constant in $C$")
 
     Cs = [r["C"] for r in card_results]
     n_in = [r["n_in"] for r in card_results]
@@ -195,22 +166,24 @@ def build_figure(card_results, perm_results, pad_results,
     ax_a.plot(x, n_in, "o-", color=MUTED, linewidth=2.0, markersize=7,
               label="input ragged list  $[\\Sigma C{\\cdot}N,\\ D]$  (elements)")
     ax_a.axhline(D, color=FUSED, ls="-", lw=2.6,
-                 label=f"descriptor  $[1,\\ D]$  = {D} elements (constant)")
+                 label=f"descriptor  $[B,\\ D]$  = {D} elements  (constant)")
 
     ax_a.set_yscale("log")
     ax_a.set_ylim(10, max(n_in) * 4)
     ax_a.set_xticks(x)
     ax_a.set_xticklabels([f"{C}\n[1, {D}]" for C in Cs], fontsize=9)
     ax_a.set_xlabel("Channel count $C$", fontsize=10, fontweight="bold")
-    ax_a.set_ylabel("length of flattened vector  (elements, log)",
-                    fontsize=10, fontweight="bold")
+    ax_a.set_ylabel("input token elements  $\\Sigma C{\\cdot}N{\\cdot}D$  "
+                    "(log)", fontsize=10, fontweight="bold")
     ax_a.grid(axis="y", alpha=0.3, linestyle="--", which="both")
     tidy(ax_a)
     ax_a.legend(loc="upper left", frameon=True, fontsize=8.3)
 
-    ax_a.text(0.98, 0.10, "shape is constant for all $C$",
+    ax_a.text(0.98, 0.015,
+              "descriptor $[B, D]$; here $[1, D]$ because $B=1$\n"
+              "shape is constant for all $C$",
               transform=ax_a.transAxes, ha="right", va="bottom",
-              fontsize=9.2, color=INK, fontweight="bold",
+              fontsize=8.6, color=INK, fontweight="bold",
               bbox=dict(boxstyle="round,pad=0.4", facecolor="white",
                         edgecolor=FUSED, linewidth=1.5))
 
@@ -227,8 +200,8 @@ def build_figure(card_results, perm_results, pad_results,
                      edgecolor="white", linewidth=0.6, zorder=4)
     ax_b.axhline(EPS, color=MUTED, ls="--", lw=1.3,
                  label=f"float32 eps = {EPS:.1e} (round-off floor)")
-    ax_b.axhline(1e-6, color=LOSS, ls=":", lw=1.7,
-                 label="equivalence tol.  $10^{-6}$")
+    ax_b.axhline(1e-6, color=INK, ls=":", lw=1.7,
+                 label="chosen tolerance  $10^{-6}$")
 
     perm_max = max(r["diff"] for r in perm_results)
     ax_b.set_yscale("log")
@@ -244,82 +217,39 @@ def build_figure(card_results, perm_results, pad_results,
     ax_b.legend(loc="lower right", frameon=True, fontsize=8.3)
     ax_b.text(0.98, 0.97,
               f"max|$\\Delta$| = {perm_max:.1e}\n"
-              f"$\\leq$ 1e-6 (float32 round-off)",
+              f"$\\leq$ chosen $10^{{-6}}$ tolerance",
               transform=ax_b.transAxes, ha="right", va="top", fontsize=9,
               color=INK,
               bbox=dict(boxstyle="round,pad=0.4", facecolor="white",
                         edgecolor=FUSION, linewidth=1.5))
 
-    # ---- Panel C: padding-free == masked-padded ------------------------- #
-    ax_c = fig.add_subplot(gs[1, 0])
-    header(ax_c, "C", "Padding-free $\\equiv$ masked-padded (mixed-$C$ batches)")
+    # ---- Panel C: cost (spans the bottom row) --------------------------- #
+    ax_c = fig.add_subplot(gs[1, :])
+    header(ax_c, "C", "Cost per location \u2014 both shipped fusions are "
+                      "$O(C)$")
 
-    pad_diffs = np.array([r["diff"] for r in pad_results])
-    xs = np.arange(len(pad_diffs))
-    floor = 1.6e-9  # log-axis floor for bit-exact (0.0) comparisons
-    nonzero = pad_diffs > 0
-    ax_c.scatter(xs[nonzero], pad_diffs[nonzero], s=52, color=FUSED,
-                 alpha=0.9, edgecolor="white", linewidth=0.6, zorder=5,
-                 label="padding-free vs dense ref.")
-    ax_c.scatter(xs[~nonzero], np.full((~nonzero).sum(), floor), s=52,
-                 facecolor="none", edgecolor=FUSED, linewidth=1.6, zorder=5,
-                 label=f"bit-exact (0.0, at {floor:.0e})")
-    ax_c.axhline(EPS, color=MUTED, ls="--", lw=1.3,
-                 label=f"float32 eps = {EPS:.1e}")
-    ax_c.axhline(1e-6, color=LOSS, ls=":", lw=1.7,
-                 label="equivalence tol.  $10^{-6}$")
+    ax_c.loglog(Cs_cost, cost_attn, "-", color=FUSED, linewidth=2.8,
+                label="ChannelFusion single-query PMA  ($2CD + D^2$, $O(C)$)")
+    ax_c.loglog(Cs_cost, cost_gated, "-", color=FUSION, linewidth=2.8,
+                label="IdentityGatedSum  ($C(2D^2 + D)$, $O(C)$)")
 
-    pad_max = float(pad_diffs.max())
-    n_exact = int((~nonzero).sum())
-    ax_c.set_yscale("log")
-    ax_c.set_ylim(1e-9, 1e-5)
-    ax_c.set_xticks(xs)
-    comp_labels = ["+".join(str(c) for c in r["Cs"]) for r in pad_results]
-    ax_c.set_xticklabels(comp_labels, fontsize=7.6, rotation=45, ha="right")
-    ax_c.set_xlabel("mixed-$C$ batch composition", fontsize=10,
-                    fontweight="bold")
-    ax_c.set_ylabel("max|padding-free - dense|", fontsize=10,
-                    fontweight="bold")
-    ax_c.grid(axis="y", alpha=0.3, linestyle="--", which="both")
-    tidy(ax_c)
-    ax_c.legend(loc="upper left", frameon=True, fontsize=7.8)
-    ax_c.text(0.98, 0.97,
-              f"max|$\\Delta$| = {pad_max:.2e} ($\\approx$ float32 eps)\n"
-              f"{n_exact}/{len(pad_diffs)} batches bit-exact",
-              transform=ax_c.transAxes, ha="right", va="top", fontsize=9,
-              color=INK,
-              bbox=dict(boxstyle="round,pad=0.4", facecolor="white",
-                        edgecolor=FUSED, linewidth=1.5))
-
-    # ---- Panel D: cost -------------------------------------------------- #
-    ax_d = fig.add_subplot(gs[1, 1])
-    header(ax_d, "D", "Cost per location \u2014 $O(C^2)$ vs $O(C)$")
-
-    ax_d.loglog(Cs_cost, cost_attn, "-", color=FUSED, linewidth=2.6,
-                label="ChannelFusion single-query PMA  ($O(C)$)")
-    ax_d.loglog(Cs_cost, cost_gated, "-", color=FUSION, linewidth=2.6,
-                label="IdentityGatedSum  ($O(C)$)")
-    ax_d.loglog(Cs_cost, cost_dense, "--", color=LOSS, linewidth=2.6,
-                label="dense $C{\\times}C$ channel attention  ($O(C^2)$)")
-
-    ax_d.set_xlabel("Channel count $C$", fontsize=10, fontweight="bold")
-    ax_d.set_ylabel("analytic multiply-adds per location",
+    ax_c.set_xlabel("Channel count $C$", fontsize=10, fontweight="bold")
+    ax_c.set_ylabel("analytic multiply-adds per location",
                     fontsize=10, fontweight="bold")
-    ax_d.grid(alpha=0.3, linestyle="--", which="both")
-    tidy(ax_d)
-    ax_d.legend(loc="upper left", frameon=True, fontsize=8.0)
+    ax_c.set_ylim(5e2, 2e6)
+    ax_c.grid(alpha=0.3, linestyle="--", which="both")
+    tidy(ax_c)
+    ax_c.legend(loc="upper left", frameon=True, fontsize=9.0)
 
-    C_end = Cs_cost[-1]
-    ratio = cost_dense[-1] / cost_gated[-1]
-    ax_d.text(0.97, 0.16,
-              f"at $C$={C_end}: dense $C{{\\times}}C$ is\n"
-              f"{ratio:.1f}$\\times$ the identity-gated sum\n"
-              "both trade-offs are $O(C)$;\n"
-              "the shipped PMA is the cheapest",
-              transform=ax_d.transAxes, ha="right", va="center", fontsize=8.4,
+    ax_c.text(0.97, 0.97,
+              f"analytic cost at $D$={D}:\n"
+              f"PMA  $2CD + D^2$\n"
+              f"IdentityGatedSum  $C(2D^2 + D)$\n"
+              "both scale as $O(C)$",
+              transform=ax_c.transAxes, ha="right", va="top", fontsize=9.0,
               color=INK,
-              bbox=dict(boxstyle="round,pad=0.4", facecolor="white",
-                        edgecolor=LOSS, linewidth=1.4))
+              bbox=dict(boxstyle="round,pad=0.45", facecolor="white",
+                        edgecolor=FUSED, linewidth=1.4))
 
     return fig
 
@@ -357,15 +287,13 @@ def main() -> None:
     with torch.no_grad():
         card_results = measure_cardinality_invariance(model, device)
         perm_results = measure_permutation_invariance(model, device)
-        pad_results = measure_padding_free_equiv(model, device)
 
     D = card_results[0]["D"]
     Cs_cost = np.arange(1, 61)
-    cost_attn, cost_dense, cost_gated = analytic_cost(Cs_cost, D)
+    cost_attn, cost_gated = analytic_cost(Cs_cost, D)
 
     # Build and save figure
-    fig = build_figure(card_results, perm_results, pad_results,
-                       Cs_cost, cost_attn, cost_dense, cost_gated)
+    fig = build_figure(card_results, perm_results, Cs_cost, cost_attn, cost_gated)
     save_figure(fig, OUT, args.stem, args.formats)
     plt.close(fig)
 

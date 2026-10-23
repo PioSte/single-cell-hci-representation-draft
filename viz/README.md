@@ -21,13 +21,13 @@ They share one design system so they read as one authored set:
 
 | level | file | what it shows | reference idiom |
 | --- | --- | --- | --- |
-| **L0** | `level0_positioning.py` | padded dense ViT · dense cross-channel attention · ours | ChAda-ViT Fig 13 |
+| **L0** | `level0_positioning.py` | single padding-free path: ragged tokens → per-(b,n) fusion → `[B,N,D]` | ChAda-ViT Fig 13 idiom |
 | **L1** | `level1_system.py` | end-to-end system: training path + `encode()` branch | Panopticon Fig 1 / Perceiver-IO Fig 2 |
 | **L2** | `level2_layout.py` | axis-labelled tensor layout (the hero figure) | Perceiver-IO Fig 2 |
 | **L3** | `level3_tokenizer.py` | tied patch embed + additive channel embedding + post-fusion PE | ChannelViT Fig 1 / ChAda-ViT Fig 2 |
-| **L4** | `level4_fusion.py` | fusion internals (single query, projection-free K/V) + `IdentityGatedSum` channel-routed `O(C)` ablation | Perceiver-IO Fig 5 inset |
+| **L4** | `level4_fusion.py` | fusion internals (single query, projection-free K/V) + `IdentityGatedSum` channel-routed `O(C)` variant | Perceiver-IO Fig 5 inset |
 | **L5** | `level5_masking.py` | DCP Eq. 1 (patch / channel / combined) + unified HCS channel sampler; token omission | ChAda-ViT Fig 2 MASK row |
-| **L6** | `level6_objective.py` | MAE objective: trained content-only descriptor, target self-attention, default/ablation losses | Panopticon teacher–student |
+| **L6** | `level6_objective.py` | MAE objective: trained content-only descriptor, target self-attention, default reconstruction loss | Panopticon teacher–student |
 | **L7** | `level7_invariance.py` | measured invariance & cost (runs the real model) | ChAda-ViT scaling panels |
 | **L8** | `level8_segment_ops.py` | the padding-free grouped-attention primitive | Perceiver-IO Fig 5 |
 
@@ -42,7 +42,9 @@ uv run --extra viz python viz/level4_fusion.py --formats pdf svg
 Two visual rules carry the paper's thesis across every level: the ragged token
 list `[ΣC·N, D]` is always the solid primary object, and the padded tensor
 `[B, C_max, N, D]` only ever appears as a dashed **ghost** marked
-*never materialised*.
+*never materialised*. Each level draws only modules and paths that exist in
+`src/fuse_channels/`; rejected baselines, hypothetical dense blocks, untied
+per-channel alternatives, and test-only reference implementations are not drawn.
 
 ## 1. Interactive behaviour — `dashboard.py` (marimo)
 

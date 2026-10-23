@@ -114,7 +114,7 @@ visible channel token).
 
 ### Padding-free reference
 
-`_dense_fusion_reference` is a private, test/viz-only implementation of the same
+`_dense_fusion_reference` is a private, test-only implementation of the same
 `ChannelFusion` math on a materialised `[B, C_max, N, D]` tensor plus an
 attention mask. It is **not** in the model path.
 

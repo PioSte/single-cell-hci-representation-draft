@@ -1,19 +1,21 @@
-"""L0 -- positioning / comparison: padding-free vs. padded approaches.
+"""L0 -- positioning: padding-free channel fusion.
 
-Three-column comparison in the ChAda-ViT Fig 13 idiom:
-(a) Padded dense ViT -- stack channels into [B, C_max, N, D], explicit pad rows + -inf mask
-(b) Dense joint self-attention over C·N tokens (ChannelViT; ChAda-ViT pads/masks) -- additive channel embedding
-(c) Ours - padding-free channel fusion -- ragged [Sigma C*N, D] -> per-(b,n) fusion -> [B,N,D]; NO pad/mask
+A single hero panel for the *shipped* padding-free path:
 
-All three columns share the same scale and width; the stages are aligned at
-identical y so the panels read across.  Panel (c) is emphasised only through
-the green accent frame/tint, never through size.
+    multi-channel input -> tied patch embed + additive channel identity z_c
+      -> ragged token list [Sum C . N, D]   (solid primary object; rows are
+         real tokens only, never padded or zeroed)
+      -> grouped_pool_attention at each (b, n): one shared learned query,
+         keys = values = norm_kv(tokens), proj_out, + learned post-fusion PE
+      -> fused [B, N, D] joint tokens -> spatial transformer with no pad/mask.
 
-Colour is semantic (see ``figure_style`` role palette): tokenizer green,
-fusion orange, spatial transformer pink, fused/joint tokens blue, loss/waste
-red, never-materialised padded tensor a dashed ghost.
+Only this shipped solution is drawn.  The padded tensor [B, C_max, N, D]
+appears merely as a small dashed ghost tagged "never materialised"; no dense /
+padded baseline and no alternative fusion is shown.
 
-Each column has an operation equation and a one-line takeaway at the bottom.
+Colour is semantic (see ``figure_style`` role palette): additive channel
+identity green, channel fusion orange, spatial transformer pink, fused tokens
+blue, never-materialised padded tensor a dashed ghost.
 
 Usage::
 
@@ -33,8 +35,8 @@ import matplotlib.pyplot as plt
 
 from figure_style import (  # noqa: E402
     GREEN, INK, MUTED, CHANNEL_COLORS,
-    TOKENIZER, FUSION, ENCODER, DECODER, MEMORY, LOSS, FUSED,
-    tint, rrect, box, arrow, edge_label, sq_bracket, panel_header,
+    TOKENIZER, FUSION, ENCODER, FUSED,
+    tint, rrect, box, arrow, edge_label, sq_bracket,
     legend, role_legend, channel_legend, padded_ghost,
     install_rcparams, save_figure,
 )
@@ -43,297 +45,222 @@ OUT = Path(__file__).resolve().parent / "out"
 
 
 # --------------------------------------------------------------------------- #
-# Shared column geometry -- every panel uses the same y for every stage
+# Single-panel geometry -- canvas is 128 wide, panel centred on x = 64
 # --------------------------------------------------------------------------- #
-COL_W = 30.0                 # width of a column / of every module box
-HEADER_Y = 72.0
-INPUT_LABEL_Y = 67.6
-INPUT_TILE_Y = 61.0          # bottom edge of the input tiles
-TENSOR_TOP = 57.6            # top of the padded grid / ragged list
-TENSOR_BOT = 46.2            # bottom of the padded grid / ragged list
-CELL = 2.2                   # padded-grid cell size
-PITCH = 2.3                  # padded-grid row pitch
-C_MAX = 5
-N_COLS = 3
-FUSE_BOX_Y = 39.5            # mask / channel-fusion box
-FUSE_BOX_H = 4.8
-TRANS_BOX_Y = 23.5           # transformer box
+CX = 64.0
+COL_W = 34.0
+X0 = CX - COL_W / 2
+
+N_PATCH = 3                  # same N for the ragged list and the fused grid
+
+# input tiles
+INPUT_TILE_Y = 65.8          # bottom edge
+INPUT_LABEL_Y = 72.2
+TILE_SIDE = 5.0
+
+# ragged token list [Sum C . N, D]
+RAG_BOT = 43.6
+RAG_H_ROW = 1.35
+RAG_PITCH = 1.6
+RAG_GAP = 0.35
+RAG_W = 10.0
+RAG_BAR_W = 0.8
+_RAG_TAB_H = (N_PATCH - 1) * RAG_PITCH + RAG_H_ROW
+RAG_TOP = RAG_BOT + 3 * _RAG_TAB_H + 2 * RAG_GAP
+
+# channel fusion
+FUSE_BOX_Y = 36.5
+FUSE_BOX_H = 5.0
+
+# fused joint tokens [B, N, D]
+FUSED_BOT = 28.6
+FUSED_CELL = 1.9
+FUSED_PITCH = 2.1
+FUSED_B_COLS = 3
+
+# spatial transformer
+TRANS_BOX_Y = 21.0
 TRANS_BOX_H = 5.0
-EQ_Y = 19.5                  # operation equation
-TAKEAWAY_Y = 12.0            # takeaway box
-TAKEAWAY_H = 5.0
 
-GRID_W = (N_COLS - 1) * PITCH + CELL          # padded-grid width
-GRID_H = (C_MAX - 1) * PITCH + CELL            # padded-grid height
+# equation + takeaway
+EQ_TOP_Y = 18.8
+EQ_SUB_Y = 16.9
+TAKEAWAY_Y = 11.8
+TAKEAWAY_H = 4.2
+
+# hero frame
+FRAME_X = 44.0
+FRAME_W = 40.0
+FRAME_Y = 9.8
+FRAME_H = 63.7
 
 
 # --------------------------------------------------------------------------- #
-# Shared input at the top
+# Shared input
 # --------------------------------------------------------------------------- #
-def draw_shared_input(ax, cx):
-    """Multi-channel input set (ragged)."""
-    cw, pitch = 4.8, 5.8
-    n_channel_ids = 3
-    x0 = cx - (n_channel_ids * cw + (n_channel_ids - 1) * 1.0) / 2
-    for i in range(n_channel_ids):
+def draw_input(ax):
+    """Ragged multi-channel input set (variable C_b, order-free)."""
+    cw, gap = TILE_SIDE, 1.5
+    n_ids = 3
+    x0 = CX - (n_ids * cw + (n_ids - 1) * gap) / 2
+    for i in range(n_ids):
         c = CHANNEL_COLORS[i]
-        xx = x0 + i * (cw + 1.0)
-        rrect(ax, xx, INPUT_TILE_Y, cw, cw, edge=c, face=tint(c, 0.72), lw=1.4)
-        # faint image squiggle
-        ax.plot([xx + 0.8, xx + cw - 0.8], [INPUT_TILE_Y + 0.8, INPUT_TILE_Y + 4.0],
+        xx = x0 + i * (cw + gap)
+        rrect(ax, xx, INPUT_TILE_Y, cw, cw, edge=c, face=tint(c, 0.72),
+              lw=1.4, rounding=0.4)
+        ax.plot([xx + 0.8, xx + cw - 0.8],
+                [INPUT_TILE_Y + 0.8, INPUT_TILE_Y + cw - 1.0],
                 color=c, lw=0.9, alpha=0.65, zorder=4)
-        ax.plot([xx + 0.8, xx + cw - 0.8], [INPUT_TILE_Y + 4.0, INPUT_TILE_Y + 0.8],
+        ax.plot([xx + 0.8, xx + cw - 0.8],
+                [INPUT_TILE_Y + cw - 1.0, INPUT_TILE_Y + 0.8],
                 color=c, lw=0.9, alpha=0.4, zorder=4)
-    ax.text(cx, INPUT_LABEL_Y, "$C_b{\\in}[1..5]$ channels · order-free",
-            ha="center", va="center", fontsize=7.6, color=MUTED)
-
-
-def draw_padded_grid(ax, cx):
-    """The [B, C_max, N, D] padded tensor: real cells + dashed pad rows."""
-    x_g0 = cx - GRID_W / 2
-    y_g0 = TENSOR_BOT
-    for c in range(C_MAX):
-        col = CHANNEL_COLORS[c] if c < 3 else MUTED
-        omitted = c >= 3  # pad rows -- absent rows, never zeroed
-        for n in range(N_COLS):
-            rrect(ax, x_g0 + n * PITCH, y_g0 + c * PITCH, CELL, CELL, edge=col,
-                  face=("#FFFFFF" if omitted else tint(col, 0.8)),
-                  lw=1.0, dashed=omitted, rounding=0.25, z=3)
-
-    # C_max on the left edge
-    ax.text(x_g0 - 1.6, y_g0 + (C_MAX - 1) * PITCH / 2,
-            "$C_{\\max}$", ha="right", va="center", fontsize=7.2, color=MUTED)
-
-    # N / D / shape / pad rows, all hanging off the right edge of the grid
-    xr = x_g0 + GRID_W + 1.4
-    ax.text(xr, TENSOR_TOP + 0.4, "$N$ patches · $D$ dim", ha="left",
-            va="center", fontsize=6.8, color=MUTED)
-    ax.text(xr, y_g0 + (C_MAX - 1) * PITCH + CELL / 2, "[$B, C_{\\max}, N, D$]",
-            ha="left", va="center", fontsize=6.8, color=INK)
-    return x_g0, xr
-
-
-def dashed_module(ax, x, y, w, h, title, sub="", edge=MUTED,
-                  title_size=7.4, sub_size=6.2):
-    """A muted dashed module box -- the visual verb for "rejected baseline"."""
-    rrect(ax, x, y, w, h, edge=edge, face=tint(edge, 0.9), lw=1.4,
-          dashed=True, rounding=0.7, z=3)
-    cx = x + w / 2
-    if sub:
-        ax.text(cx, y + h * 0.66, title, ha="center", va="center",
-                fontsize=title_size, fontweight="bold", color=MUTED, zorder=4)
-        ax.text(cx, y + h * 0.30, sub, ha="center", va="center",
-                fontsize=sub_size, color=MUTED, zorder=4)
-    else:
-        ax.text(cx, y + h / 2, title, ha="center", va="center",
-                fontsize=title_size, fontweight="bold", color=MUTED, zorder=4)
+    ax.text(CX, INPUT_LABEL_Y, "$C_b$ channels · order-free",
+            ha="center", va="center", fontsize=7.8, color=MUTED)
 
 
 # --------------------------------------------------------------------------- #
-# Column (a): Padded dense ViT
+# Ragged token list -- the solid primary object
 # --------------------------------------------------------------------------- #
-def draw_column_a(ax, x0):
-    """Padded dense ViT -- explicit padding + -inf mask."""
-    cx = x0 + COL_W / 2
-    panel_header(ax, x0, HEADER_Y, "(a)", "Padded dense ViT", color=INK)
-
-    draw_shared_input(ax, cx)
-    arrow(ax, (cx, INPUT_TILE_Y), (cx, TENSOR_TOP + 0.3), color=MUTED)
-    edge_label(ax, cx - 2.6, 59.6, "stack & pad", ha="right")
-
-    _, xr = draw_padded_grid(ax, cx)
-    # pad-row tag attached to the dashed rows, on the right (LOSS = waste)
-    ax.text(xr, TENSOR_BOT + 3.5 * PITCH, "pad rows", ha="left", va="center",
-            fontsize=6.2, color=LOSS, style="italic")
-
-    # Attention mask -- waste, stays LOSS red
-    box(ax, x0, FUSE_BOX_Y, COL_W, FUSE_BOX_H, "-inf mask on pad",
-        "$O(C_{\\max}^2 N^2)$ memory", edge=LOSS, title_size=7.0, sub_size=6.0)
-    arrow(ax, (cx, TENSOR_BOT - 0.2), (cx, FUSE_BOX_Y + FUSE_BOX_H),
-          color=LOSS, lw=1.2)
-
-    # Spatial transformer -- ENCODER role
-    box(ax, x0, TRANS_BOX_Y, COL_W, TRANS_BOX_H, "Transformer", "all tokens",
-        edge=ENCODER, title_size=7.6, sub_size=6.4)
-    arrow(ax, (cx, FUSE_BOX_Y), (cx, TRANS_BOX_Y + TRANS_BOX_H), lw=1.3)
-
-    # Operation equation
-    ax.text(cx, EQ_Y, r"$\mathrm{softmax}\left(\frac{QK^T}{\sqrt{d}} + M\right)V$",
-            ha="center", va="center", fontsize=7.4, color=INK)
-
-    # Takeaway -- the waste is the point, keep it LOSS red
-    rrect(ax, x0, TAKEAWAY_Y, COL_W, TAKEAWAY_H, edge=LOSS,
-          face=tint(LOSS, 0.9), lw=1.1, rounding=0.5, z=2)
-    ax.text(cx, TAKEAWAY_Y + TAKEAWAY_H / 2,
-            "Waste: $O(B \\cdot C_{\\max} \\cdot N \\cdot D)$ memory\n"
-            "for pad tokens + explicit mask",
-            ha="center", va="center", fontsize=6.6, color=LOSS, linespacing=1.3)
-
-
-# --------------------------------------------------------------------------- #
-# Column (b): Dense joint self-attention over C·N tokens
-# --------------------------------------------------------------------------- #
-def draw_column_b(ax, x0):
-    """Dense joint self-attention over C·N tokens (ChannelViT; ChAda pads)."""
-    cx = x0 + COL_W / 2
-    panel_header(ax, x0, HEADER_Y, "(b)", "Dense joint self-attn", color=INK)
-
-    draw_shared_input(ax, cx)
-    arrow(ax, (cx, INPUT_TILE_Y), (cx, TENSOR_TOP + 0.3), color=MUTED)
-    edge_label(ax, cx - 2.6, 59.6, "pad + embed $z_c$", ha="right")
-
-    _, xr = draw_padded_grid(ax, cx)
-    # pad + z_c tag attached to the dashed pad rows, exactly as in (a)
-    ax.text(xr, TENSOR_BOT + 3.5 * PITCH, "pad + $z_c$", ha="left", va="center",
-            fontsize=6.2, color=LOSS, style="italic")
-
-    # Additive channel identity -- TOKENIZER role (green)
-    box(ax, x0, FUSE_BOX_Y, COL_W, FUSE_BOX_H, "Additive $z_c$ identity",
-        "channel vector · not omitted", edge=TOKENIZER,
-        title_size=6.8, sub_size=6.0)
-    arrow(ax, (cx, TENSOR_BOT - 0.2), (cx, FUSE_BOX_Y + FUSE_BOX_H),
-          color=TOKENIZER, lw=1.2)
-
-    # Dense joint self-attention -- the rejected baseline (muted + dashed)
-    dashed_module(ax, x0, TRANS_BOX_Y, COL_W, TRANS_BOX_H,
-                  "Dense joint self-attn", "$O((C_{\\max}N)^2)$ · rejected",
-                  edge=MUTED, title_size=7.4, sub_size=6.2)
-    arrow(ax, (cx, FUSE_BOX_Y), (cx, TRANS_BOX_Y + TRANS_BOX_H), lw=1.3,
-          color=MUTED)
-    # a small red cross on the rejected baseline
-    ax.text(x0 + COL_W - 2.6, TRANS_BOX_Y + TRANS_BOX_H - 0.85, "✗",
-            ha="center", va="center", fontsize=11, color=LOSS, zorder=6)
-
-    # Operation equation
-    ax.text(cx, EQ_Y, r"$\mathrm{Attn}(Q, K + z_c, V)$",
-            ha="center", va="center", fontsize=7.4, color=INK)
-
-    # Takeaway
-    rrect(ax, x0, TAKEAWAY_Y, COL_W, TAKEAWAY_H, edge=MUTED,
-          face=tint(MUTED, 0.92), lw=1.0, rounding=0.5, z=2)
-    ax.text(cx, TAKEAWAY_Y + TAKEAWAY_H / 2,
-            "Full $C\\cdot N$ joint attention;\n"
-            "additive identity, explicit mask",
-            ha="center", va="center", fontsize=6.6, color=MUTED, linespacing=1.3)
-
-
-# --------------------------------------------------------------------------- #
-# Column (c): Ours - padding-free channel fusion
-# --------------------------------------------------------------------------- #
-def draw_column_c(ax, x0):
-    """Ours - padding-free channel fusion (highlighted by accent only)."""
-    cx = x0 + COL_W / 2
-    # Green accent frame + tint: the only thing that sets (c) apart
-    rrect(ax, x0 - 1.5, 10.5, COL_W + 3.0, 63.0, edge=GREEN,
-          face=tint(GREEN, 0.97), lw=2.2, rounding=1.0, z=0)
-
-    panel_header(ax, x0, HEADER_Y, "(c)", "Ours: padding-free fusion",
-                 color=GREEN)
-
-    draw_shared_input(ax, cx)
-    arrow(ax, (cx, INPUT_TILE_Y), (cx, TENSOR_TOP + 0.3), color=GREEN, lw=1.4)
-    edge_label(ax, cx - 2.6, 59.6, "ragged list", color=GREEN, ha="right")
-
-    # Ragged token list [Sigma C . N, D]: the solid FUSED primary object, with a
-    # per-channel colour tab so channel identity is still visible.
-    w_rag = 9.5
-    x_rag = cx - w_rag / 2
-    h_row, pitch_rag, block_gap = 1.6, 1.8, 0.4
-    bar_w = 0.8
-    y_block = TENSOR_BOT
+def draw_ragged(ax):
+    """[Sum C . N, D] ragged token list with per-channel colour tabs."""
+    x_rag = CX - RAG_W / 2
+    y_block = RAG_BOT
     for c in range(3):
         col = CHANNEL_COLORS[c]
-        rrect(ax, x_rag, y_block, bar_w, pitch_rag + h_row, edge=col, face=col,
+        rrect(ax, x_rag, y_block, RAG_BAR_W, _RAG_TAB_H, edge=col, face=col,
               lw=0.8, rounding=0.15, z=4)
-        for _ in range(2):
-            rrect(ax, x_rag + bar_w, y_block, w_rag - bar_w, h_row, edge=FUSED,
+        for r in range(N_PATCH):
+            rrect(ax, x_rag + RAG_BAR_W, y_block + r * RAG_PITCH,
+                  RAG_W - RAG_BAR_W, RAG_H_ROW, edge=FUSED,
                   face=tint(FUSED, 0.8), lw=1.0, rounding=0.2, z=3)
-            y_block += pitch_rag
-        y_block += block_gap
-    top_rag = y_block - pitch_rag - block_gap + h_row
-    sq_bracket(ax, x_rag + w_rag + 0.6, TENSOR_BOT, top_rag)
-    ax.text(x_rag + w_rag + 1.2, (TENSOR_BOT + top_rag) / 2,
+        y_block += _RAG_TAB_H + RAG_GAP
+
+    sq_bracket(ax, x_rag + RAG_W + 0.6, RAG_BOT, RAG_TOP)
+    ax.text(x_rag + RAG_W + 1.2, (RAG_BOT + RAG_TOP) / 2,
             "$[\\Sigma C{\\cdot}N, D]$", ha="left", va="center",
-            fontsize=7.0, color=FUSED, fontweight="bold")
+            fontsize=7.2, color=FUSED, fontweight="bold")
 
-    # Channel fusion -- FUSION role
-    box(ax, x0, FUSE_BOX_Y, COL_W, FUSE_BOX_H, "Channel fusion",
-        "single-query PMA · $O(C)$ per location", edge=FUSION,
-        title_size=7.6, sub_size=6.2)
-    arrow(ax, (cx, TENSOR_BOT - 0.2), (cx, FUSE_BOX_Y + FUSE_BOX_H),
-          color=FUSION, lw=1.4)
 
-    # Joint embeddings [B, N, D] -- FUSED blue, filling fusion -> transformer
-    cell_j, pitch_j = 1.8, 2.0
-    B_cols, N_rows = 3, 3
-    jw = (B_cols - 1) * pitch_j + cell_j
-    y_j0 = 31.1
-    x_j0 = cx - jw / 2
-    for b in range(B_cols):
-        for n in range(N_rows):
-            rrect(ax, x_j0 + b * pitch_j, y_j0 + n * pitch_j, cell_j, cell_j,
-                  edge=FUSED, face=tint(FUSED, 0.75), lw=1.0, rounding=0.25, z=3)
-    ax.text(x_j0 + jw + 0.7, y_j0 + (N_rows - 1) * pitch_j + cell_j,
-            "$B$", ha="left", va="center", fontsize=6.8, color=MUTED)
-    ax.text(x_j0 - 0.7, y_j0 + ((N_rows - 1) * pitch_j + cell_j) / 2, "$N$",
-            ha="right", va="center", fontsize=6.8, color=MUTED)
-    ax.text(x_j0 - 0.7, y_j0 - 1.5, "$[B, N, D]$", ha="right",
+# --------------------------------------------------------------------------- #
+# Fused joint tokens [B, N, D] + never-materialised ghost
+# --------------------------------------------------------------------------- #
+def draw_fused(ax):
+    """Fused [B, N, D] grid and the dashed padded-tensor ghost."""
+    jw = (FUSED_B_COLS - 1) * FUSED_PITCH + FUSED_CELL
+    jh = (N_PATCH - 1) * FUSED_PITCH + FUSED_CELL
+    x_j0 = CX - jw / 2
+    for b in range(FUSED_B_COLS):
+        for n in range(N_PATCH):
+            rrect(ax, x_j0 + b * FUSED_PITCH, FUSED_BOT + n * FUSED_PITCH,
+                  FUSED_CELL, FUSED_CELL, edge=FUSED, face=tint(FUSED, 0.75),
+                  lw=1.0, rounding=0.25, z=3)
+
+    ax.text(x_j0 - 0.9, FUSED_BOT + jh / 2, "$[B, N, D]$", ha="right",
             va="center", fontsize=7.4, fontweight="bold", color=FUSED)
-    arrow(ax, (cx, FUSE_BOX_Y), (cx, y_j0 + (N_rows - 1) * pitch_j + cell_j + 0.3),
-          color=FUSION, lw=1.3)
-    arrow(ax, (cx, y_j0 - 0.2), (cx, TRANS_BOX_Y + TRANS_BOX_H), lw=1.3)
-
-    # Ghost padded tensor beside the fused grid -- never materialised
-    gx, gy, gw, gh = x_j0 + jw + 2.4, 30.6, 9.5, 5.6
+    ax.text(x_j0 + jw + 0.8, FUSED_BOT + (N_PATCH - 1) * FUSED_PITCH
+            + FUSED_CELL / 2, "$B$", ha="left", va="center", fontsize=6.8,
+            color=MUTED)
+    # dashed padded tensor, nudged clear of the frame edge
+    gx, gy, gw, gh = x_j0 + jw + 2.2, FUSED_BOT + 0.6, 10.0, 5.2
     padded_ghost(ax, gx, gy, gw, gh)
 
-    # Spatial transformer -- ENCODER role
-    box(ax, x0, TRANS_BOX_Y, COL_W, TRANS_BOX_H, "Spatial transformer",
-        "no padding, no mask", edge=ENCODER, title_size=7.6, sub_size=6.4)
 
-    # Operation equation
-    ax.text(cx, EQ_Y, r"$\mathrm{GroupedPool}(q, \{x_c\}_{c \in C_b})$",
-            ha="center", va="center", fontsize=7.4, color=INK)
+# --------------------------------------------------------------------------- #
+# Hero panel
+# --------------------------------------------------------------------------- #
+def draw_panel(ax):
+    """The single padding-free hero panel."""
+    rrect(ax, FRAME_X, FRAME_Y, FRAME_W, FRAME_H, edge=GREEN,
+          face=tint(GREEN, 0.965), lw=2.2, rounding=1.0, z=0)
 
-    # Takeaway
-    rrect(ax, x0, TAKEAWAY_Y, COL_W, TAKEAWAY_H, edge=GREEN,
+    draw_input(ax)
+
+    # tokenizer path: tied embed + additive channel identity
+    arrow(ax, (CX, INPUT_TILE_Y), (CX, RAG_TOP + 0.3), color=TOKENIZER, lw=1.5)
+    edge_label(ax, CX + 2.0, (INPUT_TILE_Y + RAG_TOP) / 2,
+               "tied conv + $z_c$", color=TOKENIZER, ha="left", size=6.6)
+
+    draw_ragged(ax)
+
+    # channel fusion
+    box(ax, X0, FUSE_BOX_Y, COL_W, FUSE_BOX_H, "Channel fusion",
+        "one shared query · $O(C)$ per location", edge=FUSION,
+        title_size=7.8, sub_size=6.2)
+    arrow(ax, (CX, RAG_BOT - 0.2), (CX, FUSE_BOX_Y + FUSE_BOX_H),
+          color=FUSION, lw=1.5)
+
+    draw_fused(ax)
+    arrow(ax, (CX, FUSE_BOX_Y), (CX, FUSED_BOT + (N_PATCH - 1) * FUSED_PITCH
+                                 + FUSED_CELL + 0.3), color=FUSION, lw=1.4)
+
+    # spatial transformer
+    box(ax, X0, TRANS_BOX_Y, COL_W, TRANS_BOX_H, "Spatial transformer",
+        "grouped self-attention + $M$ memory", edge=ENCODER, title_size=7.8, sub_size=6.4)
+    arrow(ax, (CX, FUSED_BOT - 0.2), (CX, TRANS_BOX_Y + TRANS_BOX_H), lw=1.4)
+
+    # real primitive (shipped), not an invented op
+    ax.text(CX, EQ_TOP_Y, "grouped_pool_attention", ha="center", va="center",
+            fontsize=7.4, color=INK, family="monospace", fontweight="bold")
+    ax.text(CX, EQ_SUB_Y,
+            "one shared query · K=V=norm_kv(tokens) · "
+            "proj_out · + post-fusion PE",
+            ha="center", va="center", fontsize=6.2, color=MUTED)
+
+    # takeaway
+    rrect(ax, X0, TAKEAWAY_Y, COL_W, TAKEAWAY_H, edge=GREEN,
           face=tint(GREEN, 0.88), lw=1.5, rounding=0.5, z=2)
-    ax.text(cx, TAKEAWAY_Y + TAKEAWAY_H / 2,
-            "No pad/mask overhead;\n"
-            "$O(B{\\cdot}N{\\cdot}D)$ — independent of $C$",
+    ax.text(CX, TAKEAWAY_Y + TAKEAWAY_H / 2,
+            "One fused token per $(b,n)$ location;\n"
+            "$O(B{\\cdot}N{\\cdot}D)$ memory — independent of $C$",
             ha="center", va="center", fontsize=6.6, color=INK,
             fontweight="bold", linespacing=1.3)
 
 
 # --------------------------------------------------------------------------- #
-# Compact legends in the whitespace under the columns
+# Legends beside the hero panel
 # --------------------------------------------------------------------------- #
 def draw_legends(ax):
     role_legend(
-        ax, 4.0, 8.5,
+        ax, 4.0, 68.0,
         [
-            ("tokenizer: tied conv / $z_c$", TOKENIZER),
-            ("channel fusion (PMA / gated sum)", FUSION),
+            ("tokenizer: tied conv / additive $z_c$", TOKENIZER),
+            ("channel fusion (grouped_pool_attention)", FUSION),
             ("spatial transformer", ENCODER),
-            ("channel-aware decoder", DECODER),
-            ("memory / register rows", MEMORY),
             ("fused / joint tokens $[B,N,D]$", FUSED),
-            ("loss / waste / $-\\infty$ mask", LOSS),
         ],
-        title="module roles", pitch=2.3, fontsize=6.2, sw=1.3,
+        title="module roles", pitch=2.4, fontsize=6.3, sw=1.3,
     )
+    channel_legend(ax, 4.0, 48.0, n=3, title="channel identity",
+                   pitch=2.4, fontsize=6.3, sw=1.3)
     legend(
-        ax, 52.0, 8.5,
+        ax, 88.0, 68.0,
         [
             ("solid cell = kept token (primary object)", FUSED, "fill"),
-            ("dashed white = omitted / absent row", MUTED, "omit"),
             ("dashed pale = never materialised tensor", MUTED, "ghost"),
-            ("muted / dashed = rejected dense baseline", MUTED, "dash"),
         ],
-        title="visual key", pitch=2.3, fontsize=6.2, sw=1.3,
+        title="visual key", pitch=2.4, fontsize=6.3, sw=1.3,
     )
-    channel_legend(ax, 96.0, 8.5, n=3, title="channel identity",
-                   pitch=2.3, fontsize=6.2, sw=1.3)
+
+    # short notes fill the lower side bands with shipped-code facts only
+    rrect(ax, 4.0, 17.5, 36.0, 13.5, edge=MUTED, face="#FFFFFF", lw=1.0,
+          rounding=0.6, z=1)
+    ax.text(22.0, 28.7, "masking convention", ha="center", va="center",
+            fontsize=6.8, fontweight="bold", color=INK)
+    ax.text(22.0, 22.3,
+            "missing / masked channel-patches\nare absent from the ragged list;\n"
+            "only visible rows are used",
+            ha="center", va="center", fontsize=6.2, color=MUTED,
+            linespacing=1.4)
+
+    rrect(ax, 88.0, 31.5, 36.0, 13.5, edge=GREEN, face=tint(GREEN, 0.95),
+          lw=1.0, rounding=0.6, z=1)
+    ax.text(106.0, 42.6, "padding-free by construction", ha="center",
+            va="center", fontsize=6.8, fontweight="bold", color=INK)
+    ax.text(106.0, 36.3,
+            "fusion consumes the ragged token list\ndirectly: $O(C)$ per $(b,n)$ and the\n"
+            "output is independent of $C$",
+            ha="center", va="center", fontsize=6.2, color=MUTED,
+            linespacing=1.4)
 
 
 # --------------------------------------------------------------------------- #
@@ -343,23 +270,18 @@ def build() -> plt.Figure:
     fig = plt.figure(figsize=(13, 8))
     ax = fig.add_axes([0.0, 0.0, 1.0, 1.0])
     ax.set_xlim(0, 128)
-    ax.set_ylim(-9.5, 76)
+    ax.set_ylim(7.0, 77.5)
     ax.set_aspect("equal", adjustable="box")
     ax.axis("off")
 
     # Title
-    ax.text(2.0, 74.2, "L0", ha="left", va="center", fontsize=15,
+    ax.text(2.0, 75.3, "L0", ha="left", va="center", fontsize=15,
             fontweight="bold", color=INK)
-    ax.text(6.5, 74.2,
-            "Positioning: padding-free channel fusion vs. padded approaches",
-            ha="left", va="center", fontsize=11.5, fontweight="bold", color=INK)
+    ax.text(6.5, 75.3, "Padding-free channel fusion",
+            ha="left", va="center", fontsize=12.5, fontweight="bold",
+            color=INK)
 
-    # Three columns -- same width, same stage y
-    draw_column_a(ax, x0=5.0)
-    draw_column_b(ax, x0=47.0)
-    draw_column_c(ax, x0=89.0)
-
-    # Legends underneath, in the empty band
+    draw_panel(ax)
     draw_legends(ax)
 
     return fig

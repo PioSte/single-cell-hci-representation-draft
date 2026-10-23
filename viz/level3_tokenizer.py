@@ -2,11 +2,10 @@
 
 Shows the channel-tied patch embedding (one shared Conv2d projection for all
 channels) plus the additive channel embedding `z_c`. Emphasizes:
-- The tokenizer has **no spatial positional embedding**; position is added
-  post-fusion by `ChannelFusion` / `IdentityGatedSum`.
-- `z_c` is per channel id, not a position.
-- DCP-omitted tokens are drawn as absent dashed rows, never zero cards.
-- Tied vs untied projection comparison (ChannelViT shows tied is more robust).
+- Spatial position is added post-fusion by `ChannelFusion` / `IdentityGatedSum`.
+- `z_c` is indexed by the dataset-level `channel_id`, not the panel position.
+- DCP-omitted tokens are absent dashed rows.
+- The output is one concatenated ragged token list `[V, D]` (`V <= sum C * N`).
 
 Usage::
 
@@ -25,10 +24,10 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 from figure_style import (  # noqa: E402
-    BLUE, GREEN, ORANGE, RED, PURPLE, VIOLET, INK, MUTED, CHANNEL_COLORS,
-    TOKENIZER, FUSION, ENCODER, DECODER, LOSS, GHOST,
+    GREEN, RED, INK, MUTED, CHANNEL_COLORS,
+    TOKENIZER, LOSS,
     tint, rrect, box, arrow, token_rows, install_rcparams,
-    legend, role_legend, channel_legend, padded_ghost, save_figure,
+    legend, channel_legend, padded_ghost, sq_bracket, save_figure,
 )
 
 OUT = Path(__file__).resolve().parent / "out"
@@ -74,47 +73,6 @@ def dashed_route(ax, pts, color=INK, lw=1.4):
     arrow(ax, pts[-2], pts[-1], color=color, lw=lw, dashed=True, ms=10)
 
 
-def draw_tied_inset(ax, ix, iy, iw, ih):
-    """Small inset comparing tied vs untied projections."""
-    rrect(ax, ix, iy, iw, ih, edge=MUTED, face=tint(MUTED, 0.96), lw=1.3,
-          dashed=True, rounding=0.6, z=2)
-
-    cx = ix + iw / 2
-    ax.text(cx, iy + ih - 2.8, "Tied vs untied projection",
-            ha="center", va="center", fontsize=8.4, fontweight="bold", color=INK)
-
-    # ---- tied (one W for all channels) ----
-    tx, ty, tw, th = ix + 3.0, iy + 10.0, 16.0, 6.0
-    rrect(ax, tx, ty, tw, th, edge=GREEN, face=tint(GREEN, 0.8), lw=1.3,
-          rounding=0.4)
-    ax.text(tx + tw / 2, ty + th / 2, "Tied: W", ha="center", va="center",
-            fontsize=8.0, fontweight="bold", color=INK)
-    ax.text(tx + tw / 2, ty - 2.4, "one W for all channels", ha="center",
-            va="center", fontsize=6.3, color=MUTED)
-    ax.text(tx + tw / 2, ty + th + 2.4, "tied \u2713", ha="center", va="center",
-            fontsize=6.8, style="italic", color=GREEN, fontweight="bold")
-
-    # ---- untied (per-channel W_c) ----
-    ux, uw, uh = ix + 23.0, 9.0, 3.0
-    rrect(ax, ux, ty + 3.2, uw, uh, edge=CHANNEL_COLORS[0],
-          face=tint(CHANNEL_COLORS[0], 0.8), lw=1.0, rounding=0.3)
-    ax.text(ux + uw / 2, ty + 3.2 + uh / 2, "$W_0$", ha="center", va="center",
-            fontsize=6.6, fontweight="bold", color=INK)
-    rrect(ax, ux, ty + 0.2, uw, uh, edge=CHANNEL_COLORS[1],
-          face=tint(CHANNEL_COLORS[1], 0.8), lw=1.0, rounding=0.3)
-    ax.text(ux + uw / 2, ty + 0.2 + uh / 2, "$W_1$", ha="center", va="center",
-            fontsize=6.6, fontweight="bold", color=INK)
-    ax.text(ux + uw / 2, ty - 2.4, "per channel", ha="center", va="center",
-            fontsize=6.3, color=MUTED)
-    ax.text(ux + uw / 2, ty + th + 2.4, "untied", ha="center", va="center",
-            fontsize=6.8, style="italic", color=MUTED)
-
-    ax.text(cx, iy + 3.2,
-            "ChannelViT: tied filters are more robust\nto varying channel sets",
-            ha="center", va="center", fontsize=6.4, color=MUTED, style="italic",
-            linespacing=1.5)
-
-
 # --------------------------------------------------------------------------- #
 # Main figure
 # --------------------------------------------------------------------------- #
@@ -136,13 +94,13 @@ def build() -> plt.Figure:
             "embedding z_c; the spatial PE is added after fusion.",
             ha="left", va="center", fontsize=7.4, color=MUTED, style="italic")
     ax.text(2, 70.9,
-            "No positional embedding here  |  DCP-omitted = absent row (never a zero card)",
+            "Spatial PE is added after fusion  |  DCP-omitted rows are absent from the list",
             ha="left", va="center", fontsize=7.2, color=RED, style="italic",
             fontweight="bold")
     ax.text(2, 67.9,
             "Shapes:  $[1,H,W]$  \u2192  Conv2d  \u2192  $[N,D]$  "
             "$+[D]$ ($z_c$)  \u2192  ragged "
-            "$[\\Sigma C \\cdot N, D]$     (D = token embedding dim)",
+            "$[V,D]$,  $V \\leq \\Sigma C \\cdot N$     (D = token embedding dim)",
             ha="left", va="center", fontsize=6.8, color=INK)
 
     # ---- Shared geometry: both lanes on one grid -------------------------- #
@@ -187,28 +145,48 @@ def build() -> plt.Figure:
         ax.text((stack_x + stack_w + z_x) / 2, yc + 2.4, "$+$", ha="center",
                 va="center", fontsize=9.5, fontweight="bold", color=INK)
         draw_identity_card(ax, z_x, yc - z_h / 2, z_w, z_h, color,
-                           f"$z_{lane}$")
+                           f"$z_{{c_{lane}}}$")
         ax.text(z_x - 0.5, yc - 3.9,
                 f"channel id  \u00b7  $[D]$", ha="center", va="center",
                 fontsize=6.0, color=MUTED)
 
-        # -> output tokens (ragged list, omission preserved)
+        # -> per-channel tokens: still N rows, still [N, D]
         arrow(ax, (z_x + z_w, yc), (out_x, yc), color=color)
         o_y0 = yc - stack_htot / 2
         top = draw_patch_stack(ax, out_x, o_y0, stack_w, stack_h,
                                stack_pitch, n_patches, color,
                                omitted_idx=(omit_idx if lane == 1 else None))
-        ax.text(out_x + stack_w / 2, top + 1.9, "$[\\Sigma C \\cdot N, D]$",
-                ha="center", va="center", fontsize=6.6, color=MUTED)
-        ax.text(out_x + stack_w / 2, o_y0 - 1.9, "ragged tokens",
-                ha="center", va="center", fontsize=6.6, fontweight="bold",
-                color=color)
+        ax.text(out_x + stack_w / 2, top + 1.9, "$[N, D]$",
+                ha="center", va="center", fontsize=6.8, color=MUTED)
+
+    # ---- Merged ragged output object -------------------------------------- #
+    # The two per-channel [N, D] blocks concatenate into ONE ragged list
+    # ChannelSet.tokens [V, D] (V <= sum C * N) after masking.
+    br_x = out_x + stack_w + 2.0
+    y_lo = lane_yc[1] - stack_htot / 2
+    y_hi = lane_yc[0] + stack_htot / 2
+    sq_bracket(ax, br_x, y_lo, y_hi, color=INK, lw=1.3, tick=0.9)
+    ax.text(br_x + 1.4, (y_lo + y_hi) / 2 + 1.6, "$[V, D]$", ha="left",
+            va="center", fontsize=8.6, fontweight="bold", color=INK)
+    ax.text(br_x + 1.4, (y_lo + y_hi) / 2 - 1.2, "ragged tokens", ha="left",
+            va="center", fontsize=6.4, color=MUTED)
+    ax.text(br_x + 1.4, (y_lo + y_hi) / 2 - 3.6,
+            "$V \\leq \\Sigma C \\cdot N$", ha="left", va="center",
+            fontsize=6.2, color=MUTED)
 
     # annotate the omitted row on the (upper) projected stack of channel 1
     row_y = lane_yc[1] - stack_htot / 2 + omit_idx * stack_pitch + stack_h / 2
     ax.plot([stack_x + stack_w, stack_x + stack_w + 1.1],
             [row_y, row_y - 0.6], color=RED, lw=1.0, zorder=7)
     ax.text(stack_x + stack_w + 1.3, row_y - 1.7, "omitted", ha="left",
+            va="center", fontsize=6.1, color=RED, style="italic",
+            fontweight="bold")
+
+    # annotate the omitted row on the merged output stack too (to the left of
+    # the stack so it stays clear of the [V, D] bracket)
+    ax.plot([out_x, out_x - 0.9], [row_y, row_y - 1.5], color=RED, lw=1.0,
+            zorder=7)
+    ax.text(out_x - 1.1, row_y - 1.8, "omitted row", ha="right",
             va="center", fontsize=6.1, color=RED, style="italic",
             fontweight="bold")
 
@@ -230,24 +208,28 @@ def build() -> plt.Figure:
             fontweight="bold", color=TOKENIZER, zorder=4)
     ax.text(cx, 40.0, "one kernel for\nevery channel", ha="center", va="center",
             fontsize=6.3, color=MUTED, zorder=4, linespacing=1.5)
-    ax.text(cx, 33.6, "(tied, not\nper-channel)", ha="center", va="center",
+    ax.text(cx, 33.6, "(tied across\nchannels)", ha="center", va="center",
             fontsize=6.1, color=MUTED, zorder=4, linespacing=1.5)
 
     # ---- Identity embedding source ---------------------------------------- #
     emb_x, emb_y, emb_w, emb_h = 90.0, 37.0, 16.0, 10.0
     box(ax, emb_x, emb_y, emb_w, emb_h, "nn.Embedding", "num_channel_ids \u00d7 D",
         edge=TOKENIZER, title_size=7.8, sub_size=6.3)
-    ax.text(emb_x + emb_w / 2, emb_y - 2.0, "$z_c$ lookup table",
+    ax.text(emb_x + emb_w / 2, emb_y - 2.2, "$z_c$ lookup table",
             ha="center", va="center", fontsize=6.4, color=TOKENIZER,
             style="italic")
 
-    # dashed lookup routes: table -> each z_c card (enter card from behind)
-    route_x = z_x + z_w - 1.0
-    dashed_route(ax, [(emb_x, emb_y + emb_h * 0.75), (route_x, emb_y + emb_h * 0.75),
-                      (route_x, lane_yc[0] - z_h / 2)],
+    # dashed lookup routes: table -> each z_c card.  Routed above / below the
+    # lane output so the merged-output bracket stays unobstructed.
+    dashed_route(ax, [(emb_x + emb_w * 0.5, emb_y + emb_h),
+                      (emb_x + emb_w * 0.5, 64.0),
+                      (z_x + 3.0, 64.0),
+                      (z_x + 3.0, lane_yc[0] + z_h / 2)],
                  color=lane_color[0])
-    dashed_route(ax, [(emb_x, emb_y + emb_h * 0.25), (route_x, emb_y + emb_h * 0.25),
-                      (route_x, lane_yc[1] + z_h / 2)],
+    dashed_route(ax, [(emb_x + emb_w * 0.12, emb_y),
+                      (emb_x + emb_w * 0.12, 20.0),
+                      (z_x + 3.0, 20.0),
+                      (z_x + 3.0, lane_yc[1] - z_h / 2)],
                  color=lane_color[1])
 
     # ---- Additive-token formula (centre band, clear of everything) -------- #
@@ -261,15 +243,15 @@ def build() -> plt.Figure:
             ha="center", va="center", fontsize=5.9, color=MUTED, zorder=4,
             linespacing=1.5)
 
-    # ---- DCP omission strip ----------------------------------------------- #
-    strip_x, strip_y, strip_w, strip_h = 4.0, 2.0, 102.0, 16.0
+    # ---- DCP omission strip (full width) ---------------------------------- #
+    strip_x, strip_y, strip_w, strip_h = 4.0, 2.0, 144.0, 16.0
     rrect(ax, strip_x, strip_y, strip_w, strip_h, edge=INK,
           face=tint(INK, 0.97), lw=1.2, rounding=0.6, z=2)
     ax.text(strip_x + 2.0, strip_y + strip_h - 2.6,
             "DCP omission = absent row", ha="left", va="center", fontsize=7.8,
             fontweight="bold", color=INK, zorder=4)
 
-    # mini ragged stack: omitted row dashed red, never a zero card
+    # mini ragged stack: omitted row dashed red, absent from the list
     mini_specs = [(GREEN, False), (RED, True), (GREEN, False), (GREEN, False)]
     token_rows(ax, strip_x + 2.0, strip_y + 4.4, 6.0, 1.3, 1.8, mini_specs,
                rounding=0.3, z=4)
@@ -278,21 +260,21 @@ def build() -> plt.Figure:
 
     ax.text(strip_x + 12.5, strip_y + 11.2,
             "Masked channel-patch tokens are removed from the ragged list "
-            "$[\\Sigma C \\cdot N, D]$.", ha="left", va="center", fontsize=6.4,
-            color=INK, zorder=4)
+            "$[V, D]$,  $V \\leq \\Sigma C \\cdot N$.", ha="left", va="center",
+            fontsize=6.4, color=INK, zorder=4)
     ax.text(strip_x + 12.5, strip_y + 8.4,
-            "Never zero cards \u00b7 never padded \u00b7 no $-\\infty$ attention mask.",
+            "Rows absent from $[V, D]$ \u00b7 only visible tokens are passed on.",
             ha="left", va="center", fontsize=6.4, color=MUTED, zorder=4)
     ax.text(strip_x + 12.5, strip_y + 5.6,
             "$N = (H/P)^2$ patches per channel  \u00b7  $D$ = token dim.",
             ha="left", va="center", fontsize=6.4, color=MUTED, zorder=4)
 
     # dashed ghost of the padded tensor that is never materialised
-    padded_ghost(ax, strip_x + 80.0, strip_y + 3.0, 18.0, 10.0, z=3)
+    padded_ghost(ax, strip_x + strip_w - 24.0, strip_y + 3.0, 20.0, 11.0, z=3)
 
     # ---- Right column ----------------------------------------------------- #
     # Key design points
-    leg_x, leg_y, leg_w, leg_h = 110.0, 54.0, 38.0, 24.0
+    leg_x, leg_y, leg_w, leg_h = 110.0, 52.0, 38.0, 26.0
     rrect(ax, leg_x, leg_y, leg_w, leg_h, edge=INK, face=tint(INK, 0.97),
           lw=1.3, rounding=0.6, z=2)
     ax.text(leg_x + leg_w / 2, leg_y + leg_h - 2.8, "Key design points",
@@ -301,30 +283,35 @@ def build() -> plt.Figure:
     bullets = [
         "\u2022 One shared Conv2d W for every channel (tied)",
         "\u2022 spatial pos is added after channel fusion",
-        "\u2022 $z_c$ = Embedding(channel_id), added per token",
-        "\u2022 DCP omission \u2192 absent row, never a zero card",
-        "\u2022 No padding tokens, no zero embeddings",
-        "\u2022 $C$ lives only in the ragged length $\\Sigma C \\cdot N$",
+        "\u2022 $z_c$ = Embedding(channel_id), not panel position",
+        "\u2022 DCP omission \u2192 row absent from the list",
+        "\u2022 $C$ lives only in the ragged length $V \\leq \\Sigma C \\cdot N$",
     ]
-    bullet_y = leg_y + leg_h - 6.0
+    bullet_y = leg_y + leg_h - 6.5
     for bullet in bullets:
         ax.text(leg_x + 1.8, bullet_y, bullet, ha="left", va="center",
                 fontsize=6.5, color=INK)
-        bullet_y -= 2.7
+        bullet_y -= 3.2
 
-    # Legends: roles + channel identity
-    role_legend(ax, 112.0, 50.0,
-                [("tokenizer / $z_c$", TOKENIZER),
-                 ("channel fusion", FUSION),
-                 ("encoder", ENCODER),
-                 ("decoder", DECODER),
-                 ("loss / omitted", LOSS)],
-                title="module roles", pitch=2.4, sw=1.4, fontsize=6.2)
-    channel_legend(ax, 131.0, 50.0, n=2, title="channel identity",
+    # Legends: roles actually drawn (tokenizer/z_c + omitted row) + channels
+    legend(ax, 112.0, 49.0,
+           [("tokenizer / $z_c$", TOKENIZER, "fill"),
+            ("omitted row", LOSS, "omit")],
+           title="module roles", pitch=2.4, sw=1.4, fontsize=6.2)
+    channel_legend(ax, 131.0, 49.0, n=2, title="channel identity",
                    pitch=2.4, sw=1.4, fontsize=6.2)
 
-    # ---- Tied vs untied inset --------------------------------------------- #
-    draw_tied_inset(ax, 110.0, 6.0, 38.0, 26.0)
+    # Ragged-output note (fills the lower-right quadrant, reinforces [V, D])
+    rrect(ax, 110.0, 26.0, 38.0, 14.0, edge=INK, face=tint(INK, 0.97),
+          lw=1.3, rounding=0.6, z=2)
+    ax.text(129.0, 37.4, "Ragged output object", ha="center", va="center",
+            fontsize=8.0, fontweight="bold", color=INK)
+    ax.text(112.0, 34.4, "one concatenated ChannelSet.tokens list",
+            ha="left", va="center", fontsize=6.3, color=INK)
+    ax.text(112.0, 31.9, "$[V, D]$,  $V \\leq \\Sigma C \\cdot N$ after masking",
+            ha="left", va="center", fontsize=6.3, color=INK)
+    ax.text(112.0, 29.4, "masked rows are absent",
+            ha="left", va="center", fontsize=6.3, color=MUTED)
 
     return fig
 
