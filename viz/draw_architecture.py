@@ -119,16 +119,16 @@ def draw_schematic() -> None:
     y, h = 2.2, 0.9
     box(0.1, y, 2.1, h, "images\nlist of [C_b,1,H,W]\n(variable C)", "#e3f2fd", 8.5)
     box(2.9, y, 2.2, h, "channel-tied\npatch embed\n(shared conv)", "#e8f5e9", 8.5)
-    box(5.8, y, 2.0, h, "tokens\n[ΣC·N, D]\n+ identity", "#fff8e1", 8.5)
-    box(8.5, y, 2.4, h, "group by\n(sample, location)\nPMA over channels", "#fce4ec", 8.5)
-    box(11.6, y, 3.2, h, "fused [B, N, D]\n+ spatial pos\n(size independent of C)", "#ede7f6", 8.5)
+    box(5.8, y, 2.0, h, "tokens\n[ΣC·N, D]\n+ z_c", "#fff8e1", 8.5)
+    box(8.5, y, 2.4, h, "group by\n(sample, location)\nsingle-query PMA", "#fce4ec", 8.5)
+    box(11.6, y, 3.2, h, "fused [B, N, D]\n+ post-fusion pos\n(size independent of C)", "#ede7f6", 8.5)
     for a, b in ((2.2, 2.9), (5.1, 5.8), (7.8, 8.5), (10.9, 11.6)):
         arrow(a, y + h / 2, b, y + h / 2)
 
     # second stage
     y2 = 0.5
     box(8.5, y2, 2.4, h, "memory tokens +\nspatial transformer", "#e0f7fa", 8.5)
-    box(11.6, y2, 3.2, h, "channel-aware decoder\n→ masked-channel pixels", "#f3e5f5", 8.5)
+    box(11.6, y2, 3.2, h, "channel-aware decoder\n(target self-attn; KV =\nmem+tokens+descriptor)", "#f3e5f5", 7.6)
     arrow(13.2, y, 9.7, y2 + h)
     arrow(10.9, y2 + h / 2, 11.6, y2 + h / 2)
 
@@ -142,7 +142,7 @@ def draw_schematic() -> None:
     ax.text(
         7.6,
         3.35,
-        "masking = token omission",
+        "DCP masking = token omission",
         fontsize=8.5,
         color="#b71c1c",
         ha="center",
@@ -212,7 +212,13 @@ def main() -> None:
     if dot is None:
         print("WARNING: graphviz 'dot' not found; skipping torchview diagram.")
     else:
-        draw_torchview()
+        try:
+            draw_torchview()
+        except KeyError as exc:  # known torchview/torch tracing incompatibility
+            print(
+                "WARNING: torchview graph tracing failed "
+                f"({type(exc).__name__}: {exc}); skipping traced diagram."
+            )
     draw_schematic()
 
 

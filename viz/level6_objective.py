@@ -1,10 +1,17 @@
 """L6 -- MAE objective: encoder-decoder asymmetry and channel-aware reconstruction.
 
 Shows the two-branch objective with:
-* Encoder branch: sees only visible tokens [Kf, D] + memory [M, D] -> enc_all
-* Decoder branch: target queries conditioned on channel identity -> predictions
+* Encoder branch: sees only visible tokens [Kf, D] + memory [B·M, D]; a PMA
+  pooler over `tok_out` (content tokens only) produces the trained descriptor
+  [B, D].
+* Decoder KV: `enc_all = [mem_out; tok_out; desc]` -> [B·M + Kf + B, D].
+* Decoder branch: target queries conditioned on the target channel embedding;
+  each block runs target self-attention over a sample's queries, then
+  cross-attention to `enc_all`.
 * One shared decoder for all channels (virtual staining capability)
 * Asymmetry: Kf (visible) vs Kt (masked), Kf + Kt = ΣC·N
+* Default loss: per-patch-standardized MSE; ablation: ChA-MAEViT raw-pixel L2
+  + Fourier L1 (`loss="cha_maevit"`, lambda_f=0.01).
 
 Usage::
 
@@ -24,7 +31,7 @@ import matplotlib.pyplot as plt
 
 from figure_style import (  # noqa: E402
     BLUE, GREEN, ORANGE, RED, PURPLE, VIOLET, INK, MUTED, CHANNEL_COLORS,
-    FRONTEND, FUSION, ENCODER, DECODER, MEMORY, LOSS, FUSED, GHOST,
+    FRONTEND, FUSION, ENCODER, DECODER, MEMORY, LOSS, FUSED, POOL, GHOST,
     tint, rrect, box, arrow, edge_label, sq_bracket, token_rows, channel_color,
     install_rcparams, save_figure, role_legend, channel_legend,
 )
@@ -77,22 +84,29 @@ def draw_memory(ax, x=9.0, y0=38.0, w=11.0):
     return top
 
 
-def draw_enc_all(ax, x=54.0, y0=42.0, w=11.0):
-    """Encoder output [B·M + Kf, D] = memory-out then visible token-out."""
+def draw_enc_all(ax, x=54.0, y0=40.0, w=11.0):
+    """Decoder KV: [B·M + Kf + B, D] = memory-out, visible token-out, descriptor."""
     specs = [
         (MEMORY, False), (MEMORY, False),
         (BLUE, False), (GREEN, False), (PURPLE, False), (BLUE, False),
         (ORANGE, False),
+        (POOL, False),
     ]
     top = token_rows(ax, x, y0, w, H, PITCH, specs)
     sq_bracket(ax, x + w + 1.0, y0, top)
-    ax.text(x + w / 2, top + 2.4, "$[B{\\cdot}M + K_f, D]$", ha="center",
-            va="center", fontsize=7.8, color=INK, fontweight="bold")
+    ax.text(x + w / 2, top + 2.4, "$[B{\\cdot}M + K_f + B, D]$", ha="center",
+            va="center", fontsize=7.4, color=INK, fontweight="bold")
     # Row-group labels to the left of the stack (clear of the feeder bus).
-    ax.text(x - 1.0, 45.2, "mem (M)", ha="right", va="center", fontsize=5.8,
-            color=MEMORY)
-    ax.text(x - 1.0, 57.5, "vis ($K_f$)", ha="right", va="center", fontsize=5.8,
-            color=BLUE)
+    ax.text(x - 1.0, y0 + 1.5 * PITCH + H / 2, "mem (M)", ha="right",
+            va="center", fontsize=5.8, color=MEMORY)
+    ax.text(x - 1.0, y0 + 4.5 * PITCH + H / 2, "vis ($K_f$)", ha="right",
+            va="center", fontsize=5.8, color=BLUE)
+    ax.text(x - 1.0, y0 + 7 * PITCH + H / 2, "desc (B)", ha="right",
+            va="center", fontsize=5.8, color=POOL)
+    # Descriptor provenance: the pooler reads content tokens only.
+    ax.text(x + w / 2, y0 - 3.2,
+            "desc $=$ PMA pooler($\\mathrm{tok}_{out}$), content tokens only",
+            ha="center", va="center", fontsize=5.9, color=POOL, style="italic")
     return top
 
 
@@ -177,7 +191,7 @@ def build() -> plt.Figure:
     # ---- encoder pathway -------------------------------------------------- #
     draw_encoder_input(ax, x=9.0, y0=47.5)
     draw_memory(ax, x=9.0, y0=38.0)
-    draw_enc_all(ax, x=54.0, y0=42.0)
+    draw_enc_all(ax, x=54.0, y0=40.0)
 
     # DCP omission annotation, fully inside the frame and clear of the dashed row.
     ax.text(8.4, 56.55, "DCP\nomission\n(not zeroed)", ha="right",
@@ -197,7 +211,8 @@ def build() -> plt.Figure:
     draw_target_queries(ax, x=86.0, y0=53.0)
 
     box(ax, 104.0, 46.0, 17.0, 21.0, "Decoder",
-        "grouped cross-attn\n$\\times L_d$ blocks", edge=DECODER, sub_size=6.6)
+        "target self-attn\n$\\rightarrow$ grouped cross-attn\n$\\times L_d$ blocks",
+        edge=DECODER, sub_size=6.1)
 
     # queries -> decoder
     arrow(ax, (98.0, 58.5), (104.0, 58.5), color=DECODER, lw=1.5)
@@ -208,8 +223,8 @@ def build() -> plt.Figure:
     ax.plot([101.0, 101.0], [44.0, 54.0], color=ENCODER, lw=1.2,
             linestyle="--", zorder=4)
     arrow(ax, (101.0, 54.0), (104.0, 54.0), color=ENCODER, lw=1.2, dashed=True)
-    edge_label(ax, 87.5, 46.2, "keys / values (enc_all)", color=ENCODER,
-               size=6.4)
+    edge_label(ax, 87.5, 46.2, "keys / values: mem + tokens + desc", color=ENCODER,
+               size=6.2)
 
     # decoder -> head -> predictions
     box(ax, 126.0, 69.0, 17.0, 9.0, "Head",
@@ -231,9 +246,10 @@ def build() -> plt.Figure:
             ha="center", va="center", fontsize=6.8, color=MUTED, style="italic")
 
     # ---- loss ------------------------------------------------------------- #
-    box(ax, 124.0, 12.0, 18.0, 11.0, "Loss",
-        "per-patch standardize target,\nthen MSE (no per-channel norm)",
-        edge=LOSS, title_size=7.6, sub_size=5.4)
+    box(ax, 124.0, 12.0, 18.0, 11.0, "Loss (selector)",
+        "default: per-patch-standardized MSE\n"
+        "ablation: raw L2 + FFT L1 ($\\lambda_f{=}0.01$)",
+        edge=LOSS, title_size=7.4, sub_size=5.1)
 
     # predictions -> loss (right), targets -> loss (top), merged at the box.
     ax.plot([140.0, 148.0, 148.0], [58.0, 58.0, 17.5], color=DECODER, lw=1.3,
@@ -249,7 +265,7 @@ def build() -> plt.Figure:
 
     # ---- role + channel legends (empty lower-left) ------------------------ #
     role_legend(
-        ax, 3.0, 25.5,
+        ax, 3.0, 27.0,
         [
             ("front-end / patch embed", FRONTEND),
             ("channel fusion", FUSION),
@@ -258,8 +274,9 @@ def build() -> plt.Figure:
             ("memory tokens", MEMORY),
             ("objective / omitted rows", LOSS),
             ("fused joint tokens", FUSED),
+            ("content descriptor", POOL),
         ],
-        title="module roles", pitch=2.2, sw=1.4, fontsize=6.2,
+        title="module roles", pitch=1.9, sw=1.4, fontsize=6.0,
     )
     channel_legend(
         ax, 39.0, 25.5, n=len(CHANNEL_COLORS), title="channel identity",
@@ -277,7 +294,7 @@ def build() -> plt.Figure:
     rrect(ax, DFRAME_X0, 2.0, DFRAME_X1 - DFRAME_X0, 5.0, edge=DECODER,
           face=tint(DECODER, 0.88), lw=1.3, rounding=0.5, z=2)
     ax.text((DFRAME_X0 + DFRAME_X1) / 2, 4.5,
-            r"One shared decoder for ALL channels — conditioned on target identity $z_c$ (virtual staining)",
+            r"One shared decoder: target self-attn, then cross-attn to mem/tokens/descriptor",
             ha="center", va="center", fontsize=7.6, color=INK,
             fontweight="bold")
 

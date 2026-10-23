@@ -1,7 +1,7 @@
 """Shared design system for the fuse-channels architecture figures (L0-L8).
 
 One place for the palette, module-box / arrow / array-stack primitives and the
-marker colour table, so every figure reads as one authored set -- the same
+channel colour table, so every figure reads as one authored set -- the same
 grammar the reference architecture figures in ``references/`` use:
 
 * literal array stacks with axis labels,
@@ -35,7 +35,7 @@ so the L0-L8 set reads as one authored system:
     POOL      sky     pooling / descriptor reduction
     GHOST     muted   geometry, brackets, never-materialised padded tensor
 
-Per-channel marker colours live in ``CHANNEL_COLORS`` and are used ONLY for
+Per-channel colours live in ``CHANNEL_COLORS`` and are used ONLY for
 the channel axis (image tiles and channel-patch token rows).
 """
 
@@ -56,7 +56,7 @@ VIOLET = "#6A4C93"
 INK = "#1A1A1A"
 MUTED = "#5C5C5C"
 
-# One colour per marker/channel; reused for image borders, token rows and cards.
+# One colour per channel; reused for image borders, token rows and cards.
 CHANNEL_COLORS = [BLUE, GREEN, ORANGE, PURPLE, VIOLET]
 
 # --- semantic role palette (see module docstring) ------------------------- #
@@ -75,7 +75,7 @@ GHOST = MUTED
 # Primitives
 # --------------------------------------------------------------------------- #
 def channel_color(i: int) -> str:
-    """Colour of marker/channel ``i`` (cycles through the marker table)."""
+    """Colour of channel ``i`` (cycles through the channel table)."""
     return CHANNEL_COLORS[i % len(CHANNEL_COLORS)]
 
 
@@ -196,10 +196,10 @@ def role_legend(ax, x, y_top, roles, title="module roles", **kw):
 
 def channel_legend(ax, x, y_top, n=None, title="channel identity",
                    labels=None, **kw):
-    """Legend for the marker/channel colour table (image tiles, token rows)."""
+    """Legend for the channel colour table (image tiles, token rows)."""
     n = n or len(CHANNEL_COLORS)
     entries = [
-        (labels[i] if labels else f"marker {i}", channel_color(i), "fill")
+        (labels[i] if labels else f"channel {i}", channel_color(i), "fill")
         for i in range(n)
     ]
     return legend(ax, x, y_top, entries, title=title, **kw)

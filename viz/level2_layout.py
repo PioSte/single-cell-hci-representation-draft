@@ -7,13 +7,13 @@ summed away by fusion to produce a fixed-size ``[B, N, D]`` joint embedding.
 
 Shows:
 
-1. input set ``[ΣC, 1, H, W]`` (ragged: height = C_b, colour per marker)
+1. input set ``[ΣC, 1, H, W]`` (ragged: height = C_b, colour per channel)
 2. ragged token list ``[ΣC·N, D]`` with the ``(b, c, n)`` index triple annotated
 3. the per-``(b,n)`` attention grouping highlighted (box round C tokens)
 4. fused ``[B, N, D]`` grid after channel fusion
 5. encoder module ``[B·M, D]`` memory (gold) + ``[K_f, D]`` visible tokens
 6. decoder target queries ``[K_t, D]`` -> predicted pixels ``[K_t, P²]``
-7. inference branch: pooled descriptor ``[B, D]``
+7. inference branch: trained content-only descriptor ``[B, D]``
 8. the ghost ``[B, C_max, N, D]`` tensor (dashed, struck) that is never
    materialised, plus role / channel legends and a faithful note.
 
@@ -77,7 +77,7 @@ def axis_text(ax, x, y, text, color=INK, size=7.5, rotation=0, ha="center",
 def draw_input_images(ax):
     """Ragged set of single-channel images [ΣC, 1, H, W].
 
-    Tiles use ``channel_color(i)`` with the level-1 vertical order (marker 0 at
+    Tiles use ``channel_color(i)`` with the level-1 vertical order (channel 0 at
     the top); the variable axis is the stack height.
     """
     x, cw, pitch = 2.2, 4.2, 4.4
@@ -85,7 +85,7 @@ def draw_input_images(ax):
     y0 = YMID - ((n - 1) * pitch + cw) / 2.0
     for i in range(n):
         c = CHANNEL_COLORS[i]
-        yy = y0 + (n - 1 - i) * pitch  # marker 0 at the top, like L1
+        yy = y0 + (n - 1 - i) * pitch  # channel 0 at the top, like L1
         rrect(ax, x, yy, cw, cw, edge=c, face=tint(c, 0.72), lw=1.5, z=3)
         ax.plot([x + 0.8, x + cw - 0.8], [yy + 0.9, yy + cw - 0.9],
                 color=c, lw=0.9, alpha=0.6, zorder=4)
@@ -182,8 +182,8 @@ def draw_fused_grid(ax):
     sq_bracket(ax, x0 - 0.7, y0, top, color=MUTED, lw=1.1, tick=0.55)
     axis_text(ax, x0 - 1.7, (y0 + top) / 2, "$B$", rotation=90)
     axis_text(ax, right + 0.9, top - 0.5, "$D$", ha="left", size=7.5)
-    ax.text(right + 0.9, top - 2.0, "$Q{\\cdot}D\\to D$", ha="left",
-            fontsize=6.0, color=MUTED)
+    ax.text(right + 0.9, top - 2.0, "1 query\n$+$ post PE", ha="left",
+            fontsize=5.6, color=MUTED, linespacing=1.3)
     ax.text((x0 + right) / 2, y0 - 1.1, "fused $[B,N,D]$", ha="center",
             va="center", fontsize=7.8, fontweight="bold", color=INK)
 
@@ -266,7 +266,7 @@ def draw_decoder_targets(ax):
 
 
 def draw_inference_pooled(ax):
-    """Inference branch: pooled descriptor [B, D] below the encoder."""
+    """Inference branch: trained content-only descriptor [B, D] below the encoder."""
     x, w, h, pitch = 63.0, 8.0, 2.0, 2.5
     B = 4
     y0 = 5.6
@@ -279,7 +279,7 @@ def draw_inference_pooled(ax):
     axis_text(ax, x - 1.7, (y0 + top) / 2, "$B$", rotation=90)
     h_bracket(ax, x, x + w, top + 0.6, color=MUTED, down=True)
     axis_text(ax, x + w / 2, top + 1.6, "$D$", size=7.5)
-    ax.text(x + w / 2, y0 - 1.1, "pooled descriptor", ha="center", va="center",
+    ax.text(x + w / 2, y0 - 1.1, "trained descriptor", ha="center", va="center",
             fontsize=7.8, fontweight="bold", color=INK)
 
     # dashed inference branch: encoder bottom -> pooled top-left (clear of the
@@ -287,7 +287,7 @@ def draw_inference_pooled(ax):
     cx = x + w / 2
     arrow(ax, (cx, 22.3), (x + 1.0, top + 0.55), color=FUSED, lw=1.3,
           dashed=True, rad=-0.15)
-    ax.text(cx + 0.8, (22.3 + top) / 2, "inference\npool", ha="left",
+    ax.text(cx + 0.8, (22.3 + top) / 2, "encode()\npool", ha="left",
             va="center", fontsize=6.3, color=FUSED, style="italic",
             linespacing=1.2)
 
@@ -315,14 +315,14 @@ def draw_legends(ax):
     )
     channel_legend(
         ax, 47.0, 16.1, n=len(CHANNEL_COLORS), title="channel identity",
-        labels=[f"marker {i}" for i in range(len(CHANNEL_COLORS))],
+        labels=[f"channel {i}" for i in range(len(CHANNEL_COLORS))],
         pitch=1.78, sw=1.15, fontsize=6.2, title_size=6.8,
     )
 
     ax.text(48.5, 20.7,
             "Channel count $C$ lives only in the input length $\\Sigma C{\\cdot}N$.\n"
-            "Fusion pools the $C$ channel tokens at each $(b,n)$ with $Q$ shared\n"
-            "queries: $O(Q{\\cdot}C{\\cdot}D)$ per location, i.e. $O(C)$ for $Q{=}1$.\n"
+            "Fusion pools the $C$ channel tokens at each $(b,n)$ with one learned\n"
+            "query: $O(C{\\cdot}D)$ per location, then adds the post-fusion PE.\n"
             "The output is fixed-size $[B,N,D]$; omitted rows are masked, never zeroed.",
             ha="center", va="center", fontsize=6.5, color=MUTED, style="italic",
             linespacing=1.45,

@@ -76,7 +76,7 @@ def draw_input_set(ax):
     top = y0 + (n - 1) * pitch + cw
     ax.text(x + cw / 2, top + 2.6, "input set", ha="center", va="center",
             fontsize=8.4, fontweight="bold", color=INK)
-    ax.text(x + cw / 2, y0 - 2.6, "$C_b$ markers\norder-free", ha="center",
+    ax.text(x + cw / 2, y0 - 2.6, "$C_b$ channels\norder-free", ha="center",
             va="center", fontsize=6.6, color=MUTED, linespacing=1.35)
     ax.text(x - 1.0, YMID, "$1\\times H\\times W$", ha="right", va="center",
             fontsize=6.8, color=MUTED, rotation=90)
@@ -89,7 +89,7 @@ def draw_input_set(ax):
 def draw_ragged_tokens(ax):
     """Flattened ``[sum C . N, D]`` token set -- one row per channel-patch.
 
-    Row colours follow the input marker colours; the DCP-omitted row is drawn
+    Row colours follow the input channel colours; the DCP-omitted row is drawn
     as a dashed white row with the LOSS red edge (absent, never zeroed).
     """
     x, w, h, pitch, rows = 41.0, 10.5, 2.4, 3.0, 10
@@ -204,17 +204,17 @@ def build() -> plt.Figure:
 
     # ---- module boxes (all centred on YMID) ------------------------------- #
     box(ax, 15, YMID - 7.5, 22, 15, "Channel-tied patch embed",
-        "shared Conv $1{\\to}D$, stride $P$\n$+$ shared spatial pos $+\\, z_c$",
-        edge=FRONTEND, sub_size=6.4)
+        "shared Conv $1{\\to}D$, stride $P$\nno PE here; $+\\,z_c$; PE post-fusion",
+        edge=FRONTEND, sub_size=6.2)
     box(ax, 56, YMID - 7.5, 19, 15, "Channel fusion",
-        "pool over channel axis\nper $(b,n)$ location\nfixed-query PMA $O(C)$ · hypernet $O(C)$",
-        edge=FUSION, sub_size=5.9)
+        "pool over channel axis\nper $(b,n)$ location\nsingle-query PMA $O(C)$ · gated $O(C)$",
+        edge=FUSION, sub_size=5.7)
     box(ax, 95, YMID - 7.5, 24, 15, "Spatial transformer",
         "grouped self-attention\nover real tokens\n$+M$ fixed memory tokens",
         edge=ENCODER, sub_size=6.1)
     box(ax, 138, YMID - 7.5, 21, 15, "Channel-aware decoder",
-        "one shared decoder\n$q=\\mathrm{mask} + \\mathrm{pos}_n + Wz_c$\n"
-        "cross-attn $\\to$ pixels", edge=DECODER, sub_size=5.7)
+        "target self-attn\n$q=\\mathrm{mask} + \\mathrm{pos}_n + Wz_c$\n"
+        "cross-attn to mem+tokens+desc", edge=DECODER, sub_size=5.5)
 
     # ---- arrows along the main track ------------------------------------- #
     arrow(ax, (9.8, YMID), (15.0, YMID))
@@ -227,8 +227,8 @@ def build() -> plt.Figure:
     arrow(ax, (134.5, YMID), (138.0, YMID))
 
     # ---- DCP masker chip feeds the patch embed ---------------------------- #
-    box(ax, 15, 57.0, 22, 6.2, "DCP masker", "token omission (never zero)",
-        edge=FRONTEND, title_size=7.6, sub_size=6.2)
+    box(ax, 15, 57.0, 22, 6.2, "DCP visibility sampler", "Eq. 1 · token omission (never zero)",
+        edge=FRONTEND, title_size=7.2, sub_size=6.0)
     arrow(ax, (26.0, 57.0), (26.0, 53.5), color=FRONTEND, lw=1.3)
 
     # ---- shared-weight bracket over the transformer ----------------------- #
@@ -261,14 +261,14 @@ def build() -> plt.Figure:
     ax.plot([enc_x, enc_x - 2.0, enc_x - 2.0, 96.0], [enc_y0, enc_y0, 24.0, 24.0],
             color=FUSED, lw=1.3, linestyle="--", zorder=2)
     arrow(ax, (97.0, 24.0), (94.0, 24.0), color=FUSED, lw=1.4, dashed=True)
-    box(ax, 72.0, 20.0, 22.0, 8.0, "PMA pooler", "learned query",
-        edge=POOL, title_size=7.6, sub_size=6.2)
+    box(ax, 72.0, 20.0, 22.0, 8.0, "PMA pooler", "content tokens · trained with MAE",
+        edge=POOL, title_size=7.4, sub_size=5.8)
     arrow(ax, (83.0, 20.0), (83.0, 16.0), color=POOL, lw=1.4)
     rrect(ax, 74.0, 7.0, 18.0, 9.0, edge=FUSED, face=tint(FUSED, 0.72), lw=1.5)
     ax.text(83.0, 12.1, "$[\\,B,\\; D\\,]$", ha="center", va="center",
             fontsize=9.0, fontweight="bold", color=INK)
-    ax.text(83.0, 8.6, "fixed-size descriptor", ha="center", va="center",
-            fontsize=6.2, color=MUTED)
+    ax.text(83.0, 8.6, "trained content-only descriptor", ha="center", va="center",
+            fontsize=5.8, color=MUTED)
 
     # ---- decoder output -> loss ------------------------------------------ #
     otop, obot = draw_output(ax, 138.0)
@@ -278,7 +278,8 @@ def build() -> plt.Figure:
     ax.text(137.0, (otop + obot) / 2 - 1.7, "predicted pixels", ha="right",
             va="center", fontsize=6.2, color=MUTED)
     box(ax, 138.0, 3.0, 21.0, 9.0, "patch-normalised MSE",
-        "channel-masked reconstruction", edge=LOSS, title_size=7.4, sub_size=6.1)
+        "default · ChA-MAEViT L2+FFT L1 ablation",
+        edge=LOSS, title_size=7.2, sub_size=5.6)
     arrow(ax, (148.5, obot), (148.5, 12.0), color=LOSS, lw=1.5)
 
     # ---- target pixels, routed along the bottom --------------------------- #

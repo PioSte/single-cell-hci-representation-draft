@@ -71,7 +71,7 @@ GRID_H = (C_MAX - 1) * PITCH + CELL            # padded-grid height
 # Shared input at the top
 # --------------------------------------------------------------------------- #
 def draw_shared_input(ax, cx):
-    """Multi-marker input set (ragged)."""
+    """Multi-channel input set (ragged)."""
     cw, pitch = 4.8, 5.8
     n_channel_ids = 3
     x0 = cx - (n_channel_ids * cw + (n_channel_ids - 1) * 1.0) / 2
@@ -84,7 +84,7 @@ def draw_shared_input(ax, cx):
                 color=c, lw=0.9, alpha=0.65, zorder=4)
         ax.plot([xx + 0.8, xx + cw - 0.8], [INPUT_TILE_Y + 4.0, INPUT_TILE_Y + 0.8],
                 color=c, lw=0.9, alpha=0.4, zorder=4)
-    ax.text(cx, INPUT_LABEL_Y, "$C_b{\\in}[1..5]$ markers · order-free",
+    ax.text(cx, INPUT_LABEL_Y, "$C_b{\\in}[1..5]$ channels · order-free",
             ha="center", va="center", fontsize=7.6, color=MUTED)
 
 
@@ -189,7 +189,7 @@ def draw_column_b(ax, x0):
 
     # Additive channel identity -- FRONTEND role (green)
     box(ax, x0, FUSE_BOX_Y, COL_W, FUSE_BOX_H, "Additive $z_c$ identity",
-        "marker vector · not omitted", edge=FRONTEND,
+        "channel vector · not omitted", edge=FRONTEND,
         title_size=6.8, sub_size=6.0)
     arrow(ax, (cx, TENSOR_BOT - 0.2), (cx, FUSE_BOX_Y + FUSE_BOX_H),
           color=FRONTEND, lw=1.2)
@@ -258,7 +258,7 @@ def draw_column_c(ax, x0):
 
     # Channel fusion -- FUSION role
     box(ax, x0, FUSE_BOX_Y, COL_W, FUSE_BOX_H, "Channel fusion",
-        "per-$(b,n)$ pool · $O(1)$ output size", edge=FUSION,
+        "single-query PMA · $O(C)$ per location", edge=FUSION,
         title_size=7.6, sub_size=6.2)
     arrow(ax, (cx, TENSOR_BOT - 0.2), (cx, FUSE_BOX_Y + FUSE_BOX_H),
           color=FUSION, lw=1.4)
@@ -312,8 +312,8 @@ def draw_legends(ax):
     role_legend(
         ax, 4.0, 8.5,
         [
-            ("front-end: patch embed / tied conv / spatial + $z_c$", FRONTEND),
-            ("channel fusion (ChannelFusion / weighted sum)", FUSION),
+            ("front-end: tied conv / $z_c$", FRONTEND),
+            ("channel fusion (PMA / gated sum)", FUSION),
             ("spatial transformer", ENCODER),
             ("channel-aware decoder", DECODER),
             ("memory / register rows", MEMORY),

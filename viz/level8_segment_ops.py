@@ -1,9 +1,22 @@
 """L8 -- padding-free grouped-attention primitive (methods-box figure).
 
-Shows how ``grouped_self_attention`` / ``grouped_pool_attention`` /
-``grouped_softmax`` work: the flattened token list ``[T, D]`` + ``group_id: [T]``
-layout, the sort-by-group bucketing, batched SDPA over groups of equal length,
-and scatter-back.  Draws the equivalence to a dense ``[B, T_max, D]`` tensor +
+Shows how the grouped-attention primitives work: the flattened token list
+``[T, D]`` + ``group_id: [T]`` layout, the sort-by-group bucketing, batched SDPA
+over groups of equal length, and scatter-back.
+
+* ``grouped_projected_self_attention`` — the bucketed projected primitive used
+  by the encoder blocks and the decoder's target self-attention.
+* ``grouped_attention`` — the general grouped cross-attention primitive used
+  by the decoder (queries and key/value tokens have different lengths).
+* ``grouped_pool_attention`` — one learned query set per group, used by channel
+  fusion and the descriptor pooler.
+* ``grouped_softmax`` — the per-group softmax used by ``IdentityGatedSum``.
+
+Groups are samples for the encoder, decoder, and pooler, and ``(sample, patch)``
+locations for channel fusion. This is padding-free batching, **not** grouped-query
+attention: there are no head groups and no shared K/V across query heads.
+
+The figure also draws the equivalence to a dense ``[B, T_max, D]`` tensor +
 ``-inf`` attention mask reference, and why the grouped form is exactly that
 without materialising padding (cf. FlashAttention varlen / cu_seqlens).
 
@@ -227,10 +240,10 @@ def build() -> plt.Figure:
 
     # ---- right-hand side notes -------------------------------------------- #
     box(ax, 104.0, Y0 + 17.0, 33.0, 9.5,
-        "SDPA primitive",
-        "$\\mathrm{softmax}(QK^T/\\sqrt{d})V$\n"
-        "keys $=$ values for pooling",
-        edge=FUSED, title_size=9.5, sub_size=6.5)
+        "Grouped SDPA primitives",
+        "projected self-attn (bucketed)\n"
+        "general cross-attn · pooling K $=$ V",
+        edge=FUSED, title_size=8.8, sub_size=6.1)
 
     rrect(ax, 104.0, Y0 + 4.0, 33.0, 11.0, edge=LOSS, face=tint(LOSS, 0.92),
           lw=1.5, rounding=0.6)
@@ -240,10 +253,10 @@ def build() -> plt.Figure:
             va="center", fontsize=7.2, fontweight="bold", color=INK)
     ax.text(120.5, Y0 + 8.9, "groups NEVER interact", ha="center",
             va="center", fontsize=7.2, fontweight="bold", color=INK)
-    ax.text(120.5, Y0 + 6.4, "⇒ exactly per-sample /", ha="center",
-            va="center", fontsize=6.5, color=MUTED, style="italic")
-    ax.text(120.5, Y0 + 5.1, "per-location attention", ha="center",
-            va="center", fontsize=6.5, color=MUTED, style="italic")
+    ax.text(120.5, Y0 + 6.4, "encoder/decoder/pooler: groups = samples", ha="center",
+            va="center", fontsize=5.9, color=MUTED, style="italic")
+    ax.text(120.5, Y0 + 5.1, "fusion: groups = (sample, patch)", ha="center",
+            va="center", fontsize=5.9, color=MUTED, style="italic")
 
     # ---- legends (group ids are NOT channel identity) --------------------- #
     legend(ax, 2.0, 43.0,

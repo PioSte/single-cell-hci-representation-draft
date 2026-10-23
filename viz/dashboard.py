@@ -70,9 +70,9 @@ def _(__version__, mo):
     3. **Permutation invariance** — shuffling channel order changes nothing.
     4. **Omission correctness** — dropping a channel is exact.
     5. **Identity-aware, data-dependent routing** — attention over channels
-       changes when marker identities change.
+       changes when channel identities change.
     6. **Channel-masked MAE** — masked channels are reconstructed
-       (virtual staining / marker imputation).
+       (virtual staining / channel imputation).
     """)
     return
 
@@ -211,7 +211,7 @@ def _(C_slider, mo):
         0, max(C - 1, 0), value=min(2, C - 1), step=1, label="channel index to omit"
     )
     permute_check = mo.ui.checkbox(value=True, label="permute channel order")
-    ident_check = mo.ui.checkbox(value=True, label="use channel identity")
+    ident_check = mo.ui.checkbox(value=True, label="use channel embedding (z_c)")
     mo.hstack([drop_slider, permute_check, ident_check], justify="start")
     return C, drop_slider, ident_check, permute_check
 
@@ -333,19 +333,19 @@ def _(C, att, go, mo):
 @app.cell
 def _(fusion, go, make_set, mo, np, select_channels, torch):
     base = make_set(60, seed=7)
-    descriptors = []
+    fused_means = []
     with torch.no_grad():
         for c in range(1, 41):
             sub = select_channels(base, torch.arange(60) < c)
             fused, _ = fusion(sub)
-            descriptors.append(fused.mean(dim=1).squeeze(0))
-    desc = torch.stack(descriptors)  # [40, DIM]
+            fused_means.append(fused.mean(dim=1).squeeze(0))
+    mean_vecs = torch.stack(fused_means)  # [40, DIM]
 
     # 2-D PCA for a readable trajectory
-    x = desc - desc.mean(0, keepdim=True)
+    x = mean_vecs - mean_vecs.mean(0, keepdim=True)
     _, s, vh = torch.linalg.svd(x, full_matrices=False)
     proj = (x @ vh[:2].T).detach().numpy()
-    norm = desc.norm(dim=1).numpy()
+    norm = mean_vecs.norm(dim=1).numpy()
     counts = np.arange(1, 41)
 
     fig_card = go.Figure()
@@ -354,13 +354,13 @@ def _(fusion, go, make_set, mo, np, select_channels, torch):
             x=counts,
             y=norm,
             mode="lines+markers",
-            name="‖descriptor‖",
+            name="‖fused-token mean‖",
         )
     )
     fig_card.update_layout(
-        title="Fixed-size descriptor vs. channel count (adding channels changes the value, never the shape)",
+        title="Fused-token mean vs. channel count (shape proxy; not the trained descriptor)",
         xaxis_title="C",
-        yaxis_title="‖descriptor‖",
+        yaxis_title="‖fused-token mean‖",
         height=320,
     )
 
@@ -372,11 +372,11 @@ def _(fusion, go, make_set, mo, np, select_channels, torch):
             mode="lines+markers+text",
             text=[str(c) for c in counts],
             textposition="top center",
-            name="descriptor trajectory",
+            name="fused-token mean trajectory",
         )
     )
     fig_path.update_layout(
-        title="2-D PCA of the joint descriptor as C grows (a continuous, bounded-size embedding)",
+        title="2-D PCA of the fused-token mean as C grows (shape proxy, not the trained descriptor)",
         xaxis_title="PC1",
         yaxis_title="PC2",
         height=360,
@@ -394,10 +394,13 @@ def _(mo):
     * Slide **C** from 1 to 60: the output row in the table never changes
       shape — that is the "no concatenation blow-up" property.
     * Toggle **permute channel order**: the permutation-invariance row must
-      stay exact.  The model is order-independent but marker-aware.
-    * Toggle **use channel identity**: the identity-ablation row changes and
-      the heatmap routing shifts — the additive identity embedding is doing
+      stay exact.  The model is order-independent but channel-aware.
+    * Toggle **use channel embedding (z_c)**: the identity-ablation row changes
+      and the heatmap routing shifts — the additive channel embedding is doing
       real work (as shown by the ChannelViT channel-embedding ablation).
+    * The **fused-token mean vs. C** panels are a shape proxy. The trained
+      `[B, D]` descriptor is the pooler output over encoder content tokens
+      (`encode(pool="attention")`), which the MAE also appends to the decoder KV.
     * Move **channel index to omit**: omission matches the reference exactly;
       the dropped channel simply is not in the set.
     """)

@@ -6,11 +6,12 @@ for the four claimed properties:
 1. Cardinality invariance — output size is independent of ``C``.
 2. Permutation invariance — shuffling channel order does not change the result.
 3. Padding-free ≡ masked-padded — exact numeric equivalence (modulo float32 eps).
-4. Cost — per-location analytic FLOPs: dense ``C×C`` channel attention is
-   ``O(C²)``; the shipped fixed-query PMA and the identity-gated weighted sum are
-   both ``O(C)``.
+4. Cost — per-location analytic FLOPs: a hypothetical dense ``C×C``
+   per-location channel-attention block is ``O(C²)``; the shipped single-query
+   PMA and ``IdentityGatedSum`` are both ``O(C)``. (ChannelViT/ChAda-ViT
+   instead attend over the full ``C·N`` sequence, which is ``O((C·N)²)``.)
 
-This keeps the total runtime modest (< 60s) by using a tiny model (16×16, 2 spatial
+This keeps the total runtime modest (< 60s) by using a tiny model (16×16, 4 spatial
 patches, 1-layer encoder/decoder) and only a handful of cardinality samples.
 
 Usage::
@@ -66,7 +67,12 @@ def set_seed(seed: int = 42):
 # Measurements
 # --------------------------------------------------------------------------- #
 def measure_cardinality_invariance(model, device, Cs=(1, 3, 6, 20, 60)):
-    """Measure input size growth vs. constant descriptor size."""
+    """Measure input size growth vs. constant ``encode()`` descriptor size.
+
+    ``pool="attention"`` is the PMA readout the MAE trains and appends to the
+    decoder KV, so the plotted vector is the real descriptor path (the weights
+    are random here; this script measures shape invariance, not quality).
+    """
     results = []
     print("\n=== Cardinality Invariance ===")
     n_channel_ids = 16
@@ -74,7 +80,7 @@ def measure_cardinality_invariance(model, device, Cs=(1, 3, 6, 20, 60)):
         images = [torch.randn(C, 1, 16, 16, device=device)]
         # Use modulo to keep channel_ids within valid range
         channel_ids = [torch.arange(C, device=device) % n_channel_ids]
-        _, descriptor = model.encode(images, channel_ids, pool="mean")
+        _, descriptor = model.encode(images, channel_ids, pool="attention")
         shape = list(descriptor.shape)
         n_in = C * model.n_patches * descriptor.shape[-1]  # elements of [ΣC·N, D]
         results.append(
@@ -98,12 +104,12 @@ def measure_permutation_invariance(
         torch.manual_seed(seed + C)
         images = [torch.randn(C, 1, 16, 16, device=device)]
         channel_ids = [torch.arange(C, device=device) % n_channel_ids]
-        _, desc1 = model.encode(images, channel_ids, pool="mean")
+        _, desc1 = model.encode(images, channel_ids, pool="attention")
         for s in range(n_shuffles):
             perm = torch.randperm(C, device=device)
             images_perm = [images[0][perm]]
             channel_ids_perm = [channel_ids[0][perm]]
-            _, desc2 = model.encode(images_perm, channel_ids_perm, pool="mean")
+            _, desc2 = model.encode(images_perm, channel_ids_perm, pool="attention")
             diff = (desc1 - desc2).abs().max().item()
             results.append({"C": C, "shuffle": s, "diff": diff})
         print(f"C={C:2d}, {n_shuffles} shuffles → max diff = "
@@ -138,7 +144,7 @@ def measure_padding_free_equiv(model, device, seed=0):
 def analytic_cost(Cs, D):
     """Per-location analytic multiply-adds (dominant terms).
 
-    * fixed-query PMA (``ChannelFusion``): scores + weighted sum ``2·C·D``,
+    * single-query PMA (``ChannelFusion``): scores + weighted sum ``2·C·D``,
       plus the per-location output projection ``D²``;
     * dense ``C×C`` channel attention: ``2·C²·D``;
     * ``IdentityGatedSum``: one per-channel ``D→D`` MLP + ``D→1`` head
@@ -178,8 +184,8 @@ def build_figure(card_results, perm_results, pad_results,
 
     # ---- Panel A: cardinality invariance --------------------------------- #
     ax_a = fig.add_subplot(gs[0, 0])
-    header(ax_a, "A", "Cardinality invariance \u2014 descriptor shape "
-                     "[1, D] for every C")
+    header(ax_a, "A", "Cardinality invariance \u2014 encode() descriptor "
+                     "shape [1, D] for every C")
 
     Cs = [r["C"] for r in card_results]
     n_in = [r["n_in"] for r in card_results]
@@ -290,7 +296,7 @@ def build_figure(card_results, perm_results, pad_results,
     header(ax_d, "D", "Cost per location \u2014 $O(C^2)$ vs $O(C)$")
 
     ax_d.loglog(Cs_cost, cost_attn, "-", color=FUSED, linewidth=2.6,
-                label="ChannelFusion fixed-query PMA  ($O(C)$)")
+                label="ChannelFusion single-query PMA  ($O(C)$)")
     ax_d.loglog(Cs_cost, cost_gated, "-", color=FUSION, linewidth=2.6,
                 label="IdentityGatedSum  ($O(C)$)")
     ax_d.loglog(Cs_cost, cost_dense, "--", color=LOSS, linewidth=2.6,
@@ -345,7 +351,7 @@ def main() -> None:
     ).to(device).eval()
 
     print(f"Model: {model.n_patches} patches, dim={model.fusion.dim}, "
-          f"n_queries={model.n_queries}")
+          f"descriptor-pooler queries={model.n_queries}")
 
     # Run measurements
     with torch.no_grad():

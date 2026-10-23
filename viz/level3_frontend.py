@@ -1,8 +1,10 @@
 """L3 -- patch embed + additive identity frontend detail.
 
 Shows the channel-tied patch embedding (one shared Conv2d projection for all
-channels) plus the additive channel-identity embeddings. Emphasizes:
-- Position != channel identity (spatial_pos is shared; z_c is per-marker).
+channels) plus the additive channel embedding `z_c`. Emphasizes:
+- The front-end has **no spatial positional embedding**; position is added
+  post-fusion by `ChannelFusion` / `IdentityGatedSum`.
+- `z_c` is per channel id, not a position.
 - DCP-omitted tokens are drawn as absent dashed rows, never zero cards.
 - Tied vs untied projection comparison (ChannelViT shows tied is more robust).
 
@@ -56,7 +58,7 @@ def draw_patch_stack(ax, x, y0, w, h, pitch, n, color, omitted_idx=None):
 
 
 def draw_identity_card(ax, x, y, w, h, color, label):
-    """A small identity embedding card z_c (per-marker colour)."""
+    """A small identity embedding card z_c (per-channel colour)."""
     rrect(ax, x, y, w, h, edge=color, face=tint(color, 0.75), lw=1.5,
           rounding=0.4)
     ax.text(x + w / 2, y + h / 2, label, ha="center", va="center",
@@ -127,19 +129,19 @@ def build() -> plt.Figure:
     # ---- Title ------------------------------------------------------------ #
     ax.text(2, 77.5, "L3", ha="left", va="center", fontsize=15,
             fontweight="bold", color=INK)
-    ax.text(6.5, 77.5, "Frontend: channel-tied patch embed + additive identity",
+    ax.text(6.5, 77.5, "Frontend: channel-tied patch embed + additive channel embedding",
             ha="left", va="center", fontsize=12.2, fontweight="bold", color=INK)
     ax.text(2, 73.8,
-            "Two channels share one projection W, but each adds its own marker "
-            "identity z_c; the spatial position is added after fusion.",
+            "Two channels share one projection W, but each adds its own channel "
+            "embedding z_c; the spatial PE is added after fusion.",
             ha="left", va="center", fontsize=7.4, color=MUTED, style="italic")
     ax.text(2, 70.9,
-            "Position \u2260 channel identity  |  DCP-omitted = absent row (never a zero card)",
+            "No positional embedding here  |  DCP-omitted = absent row (never a zero card)",
             ha="left", va="center", fontsize=7.2, color=RED, style="italic",
             fontweight="bold")
     ax.text(2, 67.9,
             "Shapes:  $[1,H,W]$  \u2192  Conv2d  \u2192  $[N,D]$  "
-            "$+[D]$ (identity)  \u2192  ragged "
+            "$+[D]$ ($z_c$)  \u2192  ragged "
             "$[\\Sigma C \\cdot N, D]$     (D = token embedding dim)",
             ha="left", va="center", fontsize=6.8, color=INK)
 
@@ -186,8 +188,8 @@ def build() -> plt.Figure:
                 va="center", fontsize=9.5, fontweight="bold", color=INK)
         draw_identity_card(ax, z_x, yc - z_h / 2, z_w, z_h, color,
                            f"$z_{lane}$")
-        ax.text(z_x - 0.5, yc - 2.6,
-                f"marker {lane}  \u00b7  $[D]$", ha="center", va="center",
+        ax.text(z_x - 0.5, yc - 3.9,
+                f"channel id  \u00b7  $[D]$", ha="center", va="center",
                 fontsize=6.0, color=MUTED)
 
         # -> output tokens (ragged list, omission preserved)
@@ -299,7 +301,7 @@ def build() -> plt.Figure:
     bullets = [
         "\u2022 One shared Conv2d W for every channel (tied)",
         "\u2022 spatial pos is added after channel fusion",
-        "\u2022 $z_c$ = Embedding(marker_id), added per token",
+        "\u2022 $z_c$ = Embedding(channel_id), added per token",
         "\u2022 DCP omission \u2192 absent row, never a zero card",
         "\u2022 No padding tokens, no zero embeddings",
         "\u2022 $C$ lives only in the ragged length $\\Sigma C \\cdot N$",
@@ -312,7 +314,7 @@ def build() -> plt.Figure:
 
     # Legends: roles + channel identity
     role_legend(ax, 112.0, 50.0,
-                [("frontend / identity", FRONTEND),
+                [("frontend / $z_c$", FRONTEND),
                  ("channel fusion", FUSION),
                  ("encoder", ENCODER),
                  ("decoder", DECODER),

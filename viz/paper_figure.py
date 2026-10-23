@@ -136,17 +136,17 @@ def draw_pipeline(ax) -> None:
         ("Variable channel set", "$\\{I_c\\in\\mathbb{R}^{1\\times H\\times W}\\}$\n"
          "$C_b\\in\\{1,\\dots,60{+}\\}$; order-free", BLUE),
         ("Channel-tied embed", "shared $1{\\to}D$ conv\n"
-         "$+$ shared spatial pos", GREEN),
-        ("Additive identity", "$+\\,z_c$\n"
-         "learnable table", ORANGE),
+         "no spatial PE", GREEN),
+        ("Additive channel emb.", "$+\\,z_c$\n"
+         "per channel id", ORANGE),
         ("Padding-free tokens", "$[\\,\\Sigma C\\cdot N,\\; D\\,]$ $+$ idx\n"
          "$(b,c,n)$; ragged, no pad row", SKY),
-        ("Channel fusion (PMA)", "pool over channels\n"
-         "per $(b,n)$ group $\\to[B,N,D]$", RED),
-        ("Spatial transformer", "$+M$ memory tokens\n"
-         "grouped self-attn $\\to[B,M{+}N,D]$", PURPLE),
-        ("Channel-aware decoder", "$q=\\mathrm{mask}+\\mathrm{pos}_n+Wz_c$\n"
-         "cross-attn $\\to$ pixels", VIOLET),
+        ("Channel fusion (PMA)", "single query per $(b,n)$\n"
+         "$+$ post-fusion pos $\\to[B,N,D]$", RED),
+        ("Transformer encoder", "$+M$ memory tokens\n"
+         "grouped self-attn\n$\\to[B{\\cdot}M{+}K_f,D]$", PURPLE),
+        ("Channel-aware decoder", "target self-attn\n"
+         "cross-attn: mem$+$tok$+$desc\n$\\to$ pixels", VIOLET),
     ]
 
     n = len(stages)
@@ -299,17 +299,17 @@ def draw_components(ax) -> None:
         ha="left", va="center", fontsize=7.4, color=MUTED,
     )
     ax.text(
-        62.0, 30.2, "Hypernetwork weighted sum",
+        62.0, 30.2, "IdentityGatedSum (channel-routed)",
         ha="left", va="center", fontsize=8.6, fontweight="bold", color=RED,
     )
     ax.text(
         62.0, 27.4,
-        "$\\sum_c \\mathrm{softmax}(g(z_c))\\,V_c$",
-        ha="left", va="center", fontsize=9.6, color=INK,
+        "$\\sum_c \\mathrm{softmax}_c(\\mathrm{MLP}(z_c))\\,V_c$",
+        ha="left", va="center", fontsize=9.2, color=INK,
     )
     ax.text(
-        62.0, 25.0, "$O(C)$, marker-aware",
-        ha="left", va="center", fontsize=7.4, color=MUTED,
+        62.0, 25.0, "$O(C)$; MLP once per channel, broadcast to patches",
+        ha="left", va="center", fontsize=7.0, color=MUTED,
     )
 
     # --- DCP masking ---------------------------------------------------------
@@ -325,10 +325,10 @@ def draw_components(ax) -> None:
         ha="center", va="center", fontsize=10.0, fontweight="bold", color=INK,
     )
     bullets = [
-        "spatial mask sampled independently per channel",
-        "HCS channel mask: how many visible, then which",
-        "masked channel-patch = a dropped row",
-        "never zeroed, never padded, no $[-\\infty]$ attention",
+        "Eq. 1: patch, channel, or combined region",
+        "patch: fixed $\\lfloor N \\cdot r_p\\rfloor$ per channel",
+        "channel: unified HCS $m{\\sim}U\\{1..C\\}$, then subset",
+        "masked channel-patch = dropped row; never zeroed/padded",
     ]
     for i, b in enumerate(bullets):
         yy = 16.2 - i * 3.3

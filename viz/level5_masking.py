@@ -29,7 +29,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 from figure_style import (  # noqa: E402
-    BLUE, GREEN, ORANGE, INK, MUTED, CHANNEL_COLORS,
+    BLUE, GREEN, ORANGE, RED, INK, MUTED, CHANNEL_COLORS,
     FRONTEND, LOSS, GHOST,
     tint, rrect, arrow, edge_label, sq_bracket, panel_header,
     install_rcparams, save_figure,
@@ -154,8 +154,8 @@ def build() -> plt.Figure:
 
     # ---- three regions section -------------------------------------------- #
     ax.text(2.0, 73.5,
-            "Three DCP regions (Eq. 1), one mode per batch by default ($s \\sim \\mathcal{U}(0,1)$):",
-            ha="left", va="center", fontsize=8.8, fontweight="bold", color=INK)
+            "DCP Eq. 1: patch, channel, or combined (= union) — one region per batch by default ($s \\sim \\mathcal{U}(0,1)$):",
+            ha="left", va="center", fontsize=8.6, fontweight="bold", color=INK)
 
     # Channel mode: whole channels masked -> constant down the channel rows.
     mask_channel = [[True] * GRID_N for _ in range(GRID_C)]
@@ -189,11 +189,26 @@ def build() -> plt.Figure:
             ha="center", va="center", fontsize=6.8, color=ORANGE,
             style="italic")
 
+    # Combined region: patch mask OR channel mask (Eq. 1's union).
+    mask_combined = [
+        [mask_patch[c][n] and mask_channel[c][n] for n in range(GRID_N)]
+        for c in range(GRID_C)
+    ]
+    x_cb = 54.0
+    bot_cb = draw_mask_grid(ax, x_cb, GRID_Y0, GRID_C, GRID_N, mask_combined,
+                            "Combined (union)",
+                            "patch mask $\\cup$\nchannel mask")
+    ax.text(x_cb + GRID_N * PITCH / 2 - 0.3, bot_cb - 2.8,
+            "residual signal is reconstructed",
+            ha="center", va="center", fontsize=6.8, color=RED,
+            style="italic")
+
     # ---- guards section (LOSS red: safety / never-zero warnings) ---------- #
+    GUARD_X0 = 75.0
     g_top, g_bot = 70.5, 42.0
-    rrect(ax, COLS_RIGHT, g_bot, PANEL_RIGHT - COLS_RIGHT, g_top - g_bot,
+    rrect(ax, GUARD_X0, g_bot, PANEL_RIGHT - GUARD_X0, g_top - g_bot,
           edge=LOSS, face=tint(LOSS, 0.94), lw=1.3, dashed=False, rounding=0.7)
-    gx = (COLS_RIGHT + PANEL_RIGHT) / 2
+    gx = (GUARD_X0 + PANEL_RIGHT) / 2
     ax.text(gx, g_top - 3.2, "Safety guards",
             ha="center", va="center", fontsize=8.4, fontweight="bold", color=INK)
     ax.text(gx, g_top - 9.0, "\u2022 Never mask every token",

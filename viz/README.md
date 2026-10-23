@@ -9,12 +9,12 @@ from *where the model sits in the literature* down to *the attention primitive*.
 They share one design system so they read as one authored set:
 
 * `figure_style.py` — the palette (Okabe-Ito), module-box / arrow / array-stack
-  primitives, the marker colour table, and the `save_figure` helper. It also
+  primitives, the channel colour table, and the `save_figure` helper. It also
   exposes a shared **role palette** so the same architecture role always gets
   the same colour in every level (`FRONTEND` green, `FUSION` orange, `ENCODER`
   pink, `DECODER` violet, `MEMORY` gold, `LOSS` red, `FUSED` blue, `POOL` sky,
   `GHOST` muted), plus `legend` / `role_legend` / `channel_legend` and
-  `padded_ghost` helpers. Per-marker colours stay in `CHANNEL_COLORS` and are
+  `padded_ghost` helpers. Per-channel colours stay in `CHANNEL_COLORS` and are
   used only for the channel axis (image tiles and channel-patch token rows).
 * `figure_facts.md` — the authoritative tensor shapes and semantics each figure
   must draw, read from `src/fuse_channels/`. Every figure is built from this.
@@ -24,12 +24,12 @@ They share one design system so they read as one authored set:
 | **L0** | `level0_positioning.py` | padded dense ViT · dense cross-channel attention · ours | ChAda-ViT Fig 13 |
 | **L1** | `level1_system.py` | end-to-end system: training path + `encode()` branch | Panopticon Fig 1 / Perceiver-IO Fig 2 |
 | **L2** | `level2_layout.py` | axis-labelled tensor layout (the hero figure) | Perceiver-IO Fig 2 |
-| **L3** | `level3_frontend.py` | tied patch embed + shared pos + additive identity | ChannelViT Fig 1 / ChAda-ViT Fig 2 |
-| **L4** | `level4_fusion.py` | fusion internals (k=v, no W_Q/K/V) + hypernetwork variant | Perceiver-IO Fig 5 inset |
-| **L5** | `level5_masking.py` | DCP masking = token omission | ChAda-ViT Fig 2 MASK row |
-| **L6** | `level6_objective.py` | MAE objective: encoder/decoder asymmetry | Panopticon teacher–student |
+| **L3** | `level3_frontend.py` | tied patch embed + additive channel embedding + post-fusion PE | ChannelViT Fig 1 / ChAda-ViT Fig 2 |
+| **L4** | `level4_fusion.py` | fusion internals (single query, projection-free K/V) + `IdentityGatedSum` channel-routed `O(C)` ablation | Perceiver-IO Fig 5 inset |
+| **L5** | `level5_masking.py` | DCP Eq. 1 (patch / channel / combined) + unified HCS channel sampler; token omission | ChAda-ViT Fig 2 MASK row |
+| **L6** | `level6_objective.py` | MAE objective: trained content-only descriptor, target self-attention, default/ablation losses | Panopticon teacher–student |
 | **L7** | `level7_invariance.py` | measured invariance & cost (runs the real model) | ChAda-ViT scaling panels |
-| **L8** | `level8_segment_ops.py` | the padding-free segmented-attention primitive | Perceiver-IO Fig 5 |
+| **L8** | `level8_segment_ops.py` | the padding-free grouped-attention primitive | Perceiver-IO Fig 5 |
 
 Run any level (writes into the git-ignored `viz/out/`):
 
@@ -54,13 +54,15 @@ modules and recomputes every number when you move a control:
 | --- | --- |
 | channel count `C` (1–60) | cardinality invariance — output shape never changes |
 | permute channel order | permutation invariance (exact) |
-| use channel identity | the additive identity embedding changes routing |
+| use channel embedding | the additive `z_c` changes routing |
 | channel index to omit | omission correctness vs. the masked-padded reference |
 | MAE training steps | channel-masked reconstruction (virtual staining) |
 
 Panels: a live measurements table, a per-location **attention heatmap over
-channels**, a **fixed-size descriptor vs. C** curve, and a **masked-channel
-reconstruction** grid.
+channels**, a **fused-token mean vs. C** curve, and a **masked-channel
+reconstruction** grid. The curve is the mean of the fused `[B,N,D]` tokens — a
+shape proxy, **not** the trained `[B,D]` descriptor returned by
+`encode(pool="attention")`.
 
 ```bash
 # interactive (opens a browser)
@@ -82,7 +84,8 @@ Writes into `viz/out/`:
 * `architecture_torchview.png/.svg` — the `ChannelFusionMAE` graph traced from a
   forward pass with [torchview](https://github.com/mert-kurttutan/torchview).
   Needs the Graphviz `dot` binary (the script finds it on `PATH` or in a Nix
-  store).
+  store). Torchview tracing is best-effort: with some torchview/torch pairs it
+  raises a `KeyError`; the script warns and still writes the schematic below.
 * `padding_free_flow.png/.svg` — a hand-drawn schematic of the set-native data
   flow: the flattened `[ΣC·N, D]` token layout, the per-`(sample, patch)`
   attention group, and the "masking = token omission" rule. Generic graph
@@ -115,7 +118,7 @@ A step-by-step, spatial explanation of *why* the output does not depend on the
 number of channels. Written to `viz/out/cardinality.{pdf,svg,png}`.
 
 * **A** — a filmstrip of consecutive steps for one sample: input channel set →
-  tied embed + identity (`C×N` token grid) → per-location channel fusion (the
+  tied embed + additive `z_c` (`C×N` token grid) → per-location channel fusion (the
   `C` tokens at each `(b,n)` collapse to one) → fixed `[B,N,D]` grid, memory and
   descriptor. The variable-height channel axis is the thing you watch vanish.
 * **B** — the invariance itself: `C=1`, `C=3`, `C=5` token stacks (input length
@@ -138,10 +141,11 @@ and the channel axis is the thing you watch collapse:
 `[Kt, P²]`, with the DCP masking `[B, N, D] → [Kf, D]` and the memory
 `[B·M + Kf, D]` in between. The point the animation makes visually: `C` appears
 only in the input length and is **summed away** by the channel fusion, never
-padded to a `C_max`. Two simplifications: the DCP masking is drawn as
+padded to a `C_max`. One simplification: the DCP masking is drawn as
 location-level removal, whereas the real masker selects per channel-patch token
-*before* the fusion; and `[B, D]` is the inference-time `encode()` descriptor,
-which the training forward does not materialise as an intermediate.
+*before* the fusion. `[B, D]` is the **trained** descriptor: the training
+forward pools `tok_out` (content tokens only) and appends it to the decoder KV;
+`encode(pool="attention")` returns the same vector.
 
 ```bash
 # check, preview in the browser, or render (MP4 / GIF / frames)
@@ -163,7 +167,9 @@ its channel tokens through every operation, one at a time:
 
 `x_c` → `LayerNorm` (`k = v`) → per-head `q_h · k_{c,h} / √D_h` → `softmax` over
 the `C` channels → `Σ_c α_c v_c` → `concat` heads → `proj_out` Linear →
-scatter into `[B, N, Q·D]`.
+scatter into `[B, N, D]` → add the post-fusion spatial PE. `ChannelFusion` is
+single-query (one learned `[1,1,D]` query for every location) and projection-free
+for K/V; the only learned linear is `proj_out`.
 
 The two dot-product steps are drawn with `k.matrix_product` (each score/entry is
 shown cell by cell while its query row and key/value column are highlighted), and
@@ -174,8 +180,9 @@ the concat and the fused vector, plus present vs. absent locations. The numbers
 come from a real forward pass at `dim=4, n_heads=2` — small enough to read; the
 model default is `dim=192, n_heads=6`. It makes three structural points explicit:
 keys and values are the *same* tensor (`k = v = norm_kv(x)`), there is no
-`W_Q/W_K/W_V` (the query is a learned per-patch parameter, so it is shared across
-samples), and the softmax axis is the channel axis — never patches or samples.
+`W_Q/W_K/W_V` (the query is one learned parameter vector shared by every sample
+and every patch, so `ChannelFusion` has no `n_queries`), and the softmax axis is
+the channel axis — never patches or samples.
 
 ```bash
 uv run kinemo check --strict viz/fusion_flow.py
@@ -187,7 +194,7 @@ uv run kinemo render viz/fusion_flow.py --format gif --size 720p --out viz/out/f
 
 A tracer (torchview, torch.fx, torch.export) shows ops and tensor shapes.
 The dashboard shows *invariants* — padding-free equivalence, permutation
-invariance, omission correctness, identity-aware routing, masked-channel
+invariance, omission correctness, channel-embedding-aware routing, masked-channel
 imputation. The paper figure shows the *architecture* at module level.
 Together they answer "is it wired the way I sketched?", "does it actually work
 as a set function?" and "what do I put in the manuscript?".

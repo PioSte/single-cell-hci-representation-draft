@@ -8,9 +8,10 @@ model:
   channel fusion -- it is never padded to a ``C_max``;
 * every shape downstream of the fusion is independent of ``C``.
 
-Two simplifications: DCP masking is shown as location-level removal although the
-real masker selects per channel-patch token before the fusion, and ``[B, D]``
-is the trained descriptor that the forward pass also appends to the decoder KV.
+One simplification: DCP masking is shown as location-level removal although the
+real masker selects per channel-patch token before the fusion.  ``[B, D]`` is
+the trained descriptor: the forward pass pools ``tok_out`` (content tokens only)
+and appends it as one token per sample to the decoder KV.
 
 The grid of cells is a literal picture of the tensor axes: rows are channels
 (grouped by sample), columns are spatial patches, and the third axis ``D`` is
@@ -95,7 +96,7 @@ def shape_flow(s: k.Scene):
     s.play(k.fade_in(desc, shape, step))
 
     # ===================================================================== #
-    # 1 -- the input set: one single-channel image per marker.
+    # 1 -- the input set: one single-channel image per channel.
     # ===================================================================== #
     lab_in = []
     img = {}
@@ -123,7 +124,7 @@ def shape_flow(s: k.Scene):
         k.fade_in(*lab_in, shift=(0, 0.3)),
         duration=0.8,
     )
-    cap("one image per marker — the channel count varies per sample", "[C_b, 1, H, W]")
+    cap("one image per channel — the channel count varies per sample", "[C_b, 1, H, W]")
     s.wait(0.5)
 
     # ===================================================================== #
@@ -275,8 +276,8 @@ def shape_flow(s: k.Scene):
         duration=0.6,
     )
     cap(
-        "pooled representation: fixed [B, D], independent of C",
-        "[B, D] = [2, 192]",
+        "trained descriptor: PMA over content tokens only, appended to the decoder KV",
+        "[B, D] = [2, 192]   (one token per sample)",
         k.PINK,
     )
     s.play(*[k.indicate(b) for b in bars], duration=0.6)
@@ -311,7 +312,7 @@ def shape_flow(s: k.Scene):
     )
     s.play(k.draw(arrow_dec))
     cap(
-        "one shared decoder predicts masked channel-patches, conditioned on identity",
+        "shared decoder: target self-attn, then cross-attn to mem + tokens + descriptor",
         "[Kt, D]  →  pixels [Kt, P²] = [Kt, 64]",
         k.GREEN,
     )
@@ -322,7 +323,7 @@ def shape_flow(s: k.Scene):
     # 9 -- the objective.
     # ===================================================================== #
     nxt("9 / 10")
-    loss = k.Text("loss = masked MSE, normalised per patch", size=0.36, color=k.YELLOW, x=-1.6, y=-1.55)
+    loss = k.Text("default: per-patch-standardized MSE   ·   ablation: raw L2 + FFT L1", size=0.30, color=k.YELLOW, x=-1.6, y=-1.55)
     s.play(k.write(loss))
     cap(
         "the only place C appears is the input length — summed, not padded",

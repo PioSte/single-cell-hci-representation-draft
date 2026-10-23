@@ -144,7 +144,7 @@ def step4(ax, x0):
             linewidth=1.4, edgecolor=VIOLET, facecolor=tint(VIOLET, 0.8), zorder=2,
         )
     )
-    label(ax, x0 + 24.5, fy - 1.8, "$[B,D]$", size=7.4, color=VIOLET, weight="bold")
+    label(ax, x0 + 22.6, fy - 1.8, "$[B,D]$ descriptor", size=6.9, color=VIOLET, weight="bold")
     label(ax, x0 + 13.5, 34.2, "shape & size independent of $C$",
           size=8.2, color=GREEN, weight="bold")
 
@@ -156,7 +156,7 @@ def draw_filmstrip(ax):
           size=12.0, color=INK, weight="bold", ha="left")
     xs = [1.0 + i * 29.5 for i in range(4)]
     frames = [
-        ("1 · input set", "one single-channel image per marker", step1),
+        ("1 · input set", "one single-channel image per channel", step1),
         ("2 · tied embed $+$ identity", "shared $1{\\to}D$ conv $+\\,z_c$", step2),
         ("3 · channel fusion", "pool over channels per location", step3),
         ("4 · spatial path", "transformer $+$ descriptor", step4),
@@ -204,7 +204,8 @@ def draw_invariance(ax):
          edge=RED, title_size=9.0, sub_size=7.2)
     arrow(ax, (82.7, 14.0), (86.0, 14.0), color=INK, lw=1.8, ms=11)
     node(ax, 86.5, 8.5, 23.0, 11.0,
-         "descriptor", "$[B,D]$", edge=VIOLET, title_size=9.0, sub_size=7.6)
+         "encoder + descriptor", "$\\mathrm{tok}_{out}\\to[B,D]$",
+         edge=VIOLET, title_size=8.0, sub_size=7.0)
 
     label(ax, 73.0, 4.2,
           "identical for every channel count — no $C_{\\max}$, no padding",

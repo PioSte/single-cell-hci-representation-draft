@@ -7,89 +7,183 @@ All shapes below are read from the code, not invented. Notation:
 |---|---|---|
 | `B` | batch size (samples) | `len(images)` |
 | `C_b` | channel count of sample `b` (variable, order-free) | `images[b].shape[0]` |
-| `ΣC` | total channels across the batch (`= B`-independent sum) | `sum(C_b)` |
+| `ΣC` | total channels across the batch | `sum(C_b)` |
 | `H, W` | image side (square) | `image_size` |
 | `P` | patch size | `patch_size` |
 | `N` | patches per channel, `= (H/P)²` | `ChannelTiedPatchEmbed.n_patches` |
 | `D` | token/embedding dim | `dim` |
-| `Q` | channel-fusion queries per location (default 1) | `n_queries` |
 | `M` | fixed memory/register tokens per sample | `n_memory` |
+| `T` | real channel-patch tokens in a flattened token set (`T = V` after masking) | `cs.tokens.shape[0]` |
 | `V` | number of **visible** channel-patch tokens (`≤ ΣC·N`) | `keep.sum()` |
 | `Kf` | number of present `(b,n)` locations (`≤ B·N`) | `present.sum()` |
 | `Kt` | number of masked channel-patches (decoder targets) | `~visible` nonzero |
+| `C_u` | number of unique channel instances in the batch | `unique(channel_group_id)` |
+
+The fusion output is one token per location, so there is **no query-count
+axis** in the fused tensor. `n_queries` exists only on the descriptor pooler
+(see below), never on `ChannelFusion`.
 
 ## Front-end — `patch_embed.py` (L3)
 
 - `images`: list of `[C_b, 1, H, W]` → `torch.cat` → `[ΣC, 1, H, W]`.
 - `ChannelTiedPatchEmbed.proj = Conv2d(1, D, kernel_size=P, stride=P)` —
-  **one shared kernel for every channel** (tied, not per-channel).
-- `feat = proj(x).flatten(2).transpose(1,2)` → `[ΣC, N, D]`; then
-  `feat = feat + spatial_pos` where `spatial_pos: [1, N, D]` is shared across
-  channels (position ≠ channel identity).
-- Flatten → `[ΣC·N, D]`; apply the DCP visible mask → `[V, D]`.
-- `ChannelIdentity.embed = nn.Embedding(num_markers, D)`; tokens become
-  `feat + identity` — an **additive** marker vector, never omitted.
+  **one shared kernel for every channel** (tied, not per-channel). It has
+  **no positional embedding and no `spatial_pos` parameter**.
+- `feat = proj(x).flatten(2).transpose(1,2)` → `[ΣC, N, D]`; flatten →
+  `[ΣC·N, D]`. The optional DCP **visible** mask is applied to rows →
+  `[V, D]`.
+- `ChannelTokenizer` computes the additive channel embedding
+  `ChannelEmbedding.embed = nn.Embedding(num_channel_ids, D)`, indexed by the
+  dataset-level `channel_id` (not the panel position `channel_idx`), and
+  produces a `ChannelSet`:
+  - `tokens`: `[V, D]`, already `feat + channel_embed`;
+  - `sample_idx`, `channel_idx`, `patch_idx`, `channel_id` (`[V]`);
+  - `channel_embed`: `[V, D]` (the additive vector per token);
+  - `channel_group_id`: `[V]` global channel instance in the concatenated
+    batch (constant across a channel's patches), used by `IdentityGatedSum`
+    to evaluate its MLP once per channel.
+- Spatial position is **not** added here. Both fusion modules add a learned
+  post-fusion positional embedding to the fused `[B, N, D]` tokens.
 
 ## Masking — `masking.py` (L5)
 
-- `DCPMasker` returns per sample `visible: [C_b, N]` bool (*keep*), one of two
-  modes per sample with probabilities `p_channel` / `p_patch`:
-  - **channel mode**: sample `k` (`count`) then `which k` via `randperm`;
-    mask is constant down the channel's rows.
-  - **patch mode**: `torch.rand(C_b, N) >= p_patch` — an **independent** spatial
-    mask per channel.
-- Guards: never mask every token; at least `min_visible_channels` channels keep
-  some content.
-- Masked ⇒ **omitted row**. Never zeroed, never padded, no `-inf` attention mask.
+- `DCPVisibilitySampler(n_patches, p_patch, p_channel, patch_ratio,
+  min_visible_channels, max_masked_channels_frac, mode_sampling)` implements
+  ChA-MAEViT Eq. 1. A scalar `s ~ U(0,1)` picks the region **per batch**
+  (`mode_sampling="batch"`, default, so one region per training step) or per
+  sample (`"sample"`):
+  - `s < p_patch` → **patch** region;
+  - `s < p_patch + p_channel` → **channel** region;
+  - otherwise → **combined** region (`patch_mask | channel_mask`).
+- **Patch region**: per channel, a **fixed count**
+  `floor(N · patch_ratio)` of spatial positions is masked, drawn independently
+  per channel with `randperm`.
+- **Channel region / HCS**: `HierarchicalChannelSampler` draws the number of
+  *visible* channels `m ~ U{min_visible_channels..C}` and then a uniform
+  `m`-subset. The mask is constant down each dropped channel's rows. DCP's
+  channel and combined regions reuse this sampler — there is one unified
+  channel-subset mechanism, not a second channel-dropping rule.
+- Guards: at least one token stays visible, and at least
+  `min(min_visible_channels, C)` channels keep content (satisfied by HCS by
+  construction; resampling is a fallback). The guard never reveals a whole
+  channel that HCS dropped. `last_modes` records the region actually applied.
+- Dropped channels stay in `images` and become reconstruction targets. This is
+  why HCS and DCP channel masking induce the same visible-count distribution.
+- Masked ⇒ **omitted row**. Never zeroed, never padded, no `-inf` attention
+  mask. `p_patch=0, p_channel=1` is HCS-only, `p_patch=1, p_channel=0` is
+  patch-only, and `p_patch=p_channel=0` selects the combined region.
 
 ## Channel fusion — `fusion.py` (L2, L4)
 
-- `seg = location_segments() = sample_idx * N + patch_idx` → one segment per
-  `(b,n)` location; `n_seg = |unique(seg)| = Kf`.
+Both shipped fusions consume a `ChannelSet` (real tokens only), emit
+`fused: [B, N, D]`, and add the learned post-fusion `spatial_pos: [1, N, D]`.
+They also return `present: [B, N]` (a location exists if it had at least one
+visible channel token).
+
+### `ChannelFusion` (default, single-query PMA)
+
+- `group_id = cs.location_group_ids() = sample_idx * N + patch_idx` → one
+  group per `(b,n)` location; `n_groups = |unique(group_id)| = Kf`.
 - `tok = norm_kv(tokens)[order]` viewed `[V, H, Dh]`.
-- `q = norm_q(queries)` with `queries: [1, Q, D]` — **one shared query set for
-  every spatial location** — expanded to `[Kf, Q, H, Dh]`.
-- `grouped_pool_attention(q, tok, tok, lookup, Kf)` → `[Kf, Q, H, Dh]`
-  (**keys = values = tokens**; there is no `W_Q/W_K/W_V`).
-- Cost: `O(Q·C·D)` per `(b,n)` location. With the default `Q = 1`
-  (fixed-query PMA) this is **`O(C)`**, not the `O(C²)` of dense `C×C`
-  channel self-attention (the ChannelViT / ChAda-ViT baseline).
-- `proj_out` Linear → scatter back to `fused: [B, N, Q·D]`, `present: [B, N]`.
-- `fuse_proj`: `Identity` if `Q·D == D` else `Linear` → `[B, N, D]`.
-- **HypernetworkWeightedSum**: `logits = weight_net(identity) [V, Q]`,
-  `weights = segment_softmax(logits)` over the channel (segment) axis, values
-  `= out_norm(value_proj(tokens))`; `Σ_c weights_c · V_c` → `[B, N, Q·D]`
-  — `O(C)` per location, keys on **marker identity** (`z_c`).
-  (Both shipped fusions are therefore `O(C)` per location; the quadratic
-  `O(C²)` baseline is dense `C×C` cross-channel self-attention.)
+- `q = norm_q(queries)` with `queries: [1, 1, D]` — **exactly one learned
+  query, shared by every sample and every spatial location** — expanded to
+  `[Kf, 1, H, Dh]`. There is no `n_queries` argument and no multi-query path.
+- `grouped_pool_attention(q, tok, tok, lookup, Kf)` → `[Kf, 1, H, Dh]`
+  (**keys = values = the LayerNormed channel tokens**; there are no
+  `W_Q/W_K/W_V` projections).
+- `proj_out: Linear(D, D)` is the only learned output projection →
+  `[Kf, D]`; scatter to `[B, N, D]`; add `spatial_pos`.
+- Cost: `O(C·D)` per `(b,n)` location plus the `D²` output projection —
+  **`O(C)` scaling**, not the `O(C²)` of dense `C×C` channel self-attention
+  (the ChannelViT / ChAda-ViT baseline).
+
+### `IdentityGatedSum` (ablation, `O(C)`)
+
+- Requires `ChannelSet.channel_embed` and `ChannelSet.channel_group_id`;
+  raises otherwise.
+- `weight_net` (Linear → GELU → Linear → 1) is evaluated **once per channel
+  instance** (`channel_group_id`), then broadcast to all of that channel's
+  patches: `logits: [V]`.
+- Values `= out_norm(value_proj(tokens)): [V, D]`.
+- `weights = grouped_softmax(logits, location_group_id, Kf)` over the channel
+  axis at each `(b,n)`; `Σ_c w_c · V_c` via `index_add_` → `[B, N, D]`;
+  then `+ spatial_pos`.
+- Cost: `O(C·D²)` per location (one value projection per token) plus one small
+  MLP per channel; `O(C)` scaling.
+
+### Padding-free reference
+
+`_dense_fusion_reference` is a private, test-only implementation of the same
+`ChannelFusion` math on a materialised `[B, C_max, N, D]` tensor plus an
+attention mask. It is **not** in the model path.
+
+## Descriptor pooler — `fusion.py` / `mae.py` (L1, L2, L6)
+
+- `MultiheadAttentionPooling` is a **PMA readout**, separate from the fusion
+  modules:
+  - learned queries `[1, n_queries, D]` (`n_queries` defaults to 1; this is the
+    only remaining query-count knob);
+  - standard `q_proj / k_proj / v_proj / out_proj` projections;
+  - `grouped_pool_attention` over the real tokens of each **sample** group;
+  - optional post-SAB over the `n_queries` outputs when `n_queries > 1`;
+  - `readout="mean"` averages the query outputs → `[B, D]`.
+- In `ChannelFusionMAE.forward` the pooler is applied to `tok_out` (the
+  encoder's **content tokens only**, not the memory tokens):
+  `desc = pooler(tok_out, enc_group_id, B) → [B, D]`. It is appended as one
+  extra per-sample token to the decoder KV and therefore **trained** through
+  the reconstruction loss. `encode(pool="attention")` returns that same
+  descriptor.
+- `pool="mean"` is the content-token mean ablation; `pool="memory"` does not
+  exist.
 
 ## Encoder — `encoder.py` (L2, L6)
 
-- `enc_tokens = fused[present]` → `[Kf, D]`; `enc_seg` per sample.
-- `memory: [1, M, D]` expanded `[B, M, D]` → `[B·M, D]`.
-- `x = cat([mem, tokens])` → `[B·M + Kf, D]`, `grouped_self_attention` × depth.
-- Returns `mem_out [B·M, D]`, `tok_out [Kf, D]`; `enc_all = cat` = `[B·M + Kf, D]`.
+- `enc_tokens = fused[present]` → `[Kf, D]`; `enc_group_id` is one group per
+  sample (`torch.arange(B).repeat_interleave(present.sum(1))`).
+- `memory: [1, M, D]` expanded `[B, M, D]` → `[B·M, D]`, with per-sample
+  group ids.
+- `x = cat([mem, tokens])` → `[B·M + Kf, D]`.
+- `TransformerEncoder` is a stack of standard pre-norm `TransformerBlock`s:
+  explicit Q/K/V/O projections + MLP, with
+  `grouped_projected_self_attention` (bucketed equal-length groups) per
+  sample. Final `LayerNorm`.
+- Returns `mem_out [B·M, D]`, `tok_out [Kf, D]`.
+- Final decoder KV is `enc_all = cat([mem_out, tok_out, desc])` →
+  `[B·M + Kf + B, D]`, with matching per-sample group ids.
 
 ## Decoder — `decoder.py` (L6)
 
-- Targets: per sample `~visible[b]` → `(channel, patch)` pairs; `tgt_seg`,
-  `tgt_patch`, `tgt_identity [Kt, D]` (**global** channel index → identity).
-- `q = mask_token [D] + spatial_pos[target_patch] + target_proj(target_identity)`
-  → `[Kt, D]`.
-- `grouped_cross_attention(q, tgt_seg, enc_all, enc_all_seg)` × depth.
-- `head = Linear(D, P²)` → predictions `[Kt, P²]`.
+- Targets: per sample `~visible[b]` → `(channel, patch)` pairs; `tgt_group_id`,
+  `tgt_patch`, `tgt_channel_embed [Kt, D]` indexed by the **global** channel
+  instance (`channel_id` → `ChannelEmbedding`).
+- `q = mask_token [D] + spatial_pos[target_patch] + target_proj(tgt_channel_embed)`
+  → `[Kt, D]`. The same channel-embedding table serves two roles: input
+  identity (added to tokens) and target specification (decoder query).
+- Each `DecoderBlock`:
+  1. **target self-attention** over the queries of each sample
+     (`grouped_projected_self_attention`, bucketed);
+  2. **cross-attention** to the encoder representation
+     (`mem_out + tok_out + desc`) using the general grouped primitive
+     `grouped_attention`;
+  3. MLP.
+- `norm` then `head = Linear(D, P²)` → predictions `[Kt, P²]`.
 - Target `= extract_patches(images)[gidx, :, tgt_patch]` → `[Kt, P²]`.
 
 ## Loss — `losses.py` (L6)
 
-- `normalized_patch_mse(pred, target)`: per-patch standardise the target
-  (`(t-mean)/std`), then MSE. No per-channel normalisation.
+- Default `normalized_patch_mse(pred, target)`: standardise each target patch
+  (`(t - mean) / std`), then MSE. No per-channel normalisation.
+- Ablation `cha_maevit_recon_loss(pred, target, lambda_f=0.01)`:
+  `(1-λ)·MSE(raw pixels) + λ·L1(|rFFT₂(pred)|, |rFFT₂(target)|)` —
+  ChA-MAEViT Eq. 2. Selected with `loss="cha_maevit"`.
 
 ## Inference — `mae.py::encode` (L1, L2)
 
 - No masking (`visible = all True`); same front-end + fusion + encoder.
-- `pool`: `attention` (PMA over `[mem; tokens]`) / `mean` (over visible tokens) /
-  `memory` (mean over the `M` memory tokens) → descriptor `[B, D]`.
+- `pool="attention"` (default) applies the trained descriptor pooler to
+  `tok_out`; `pool="mean"` averages the content tokens. Both return a
+  `[B, D]` descriptor; `encode` also returns `mem_out [B·M, D]`.
+- There is no memory-pool readout.
 
 ## The claim the figures must carry
 
@@ -98,3 +192,6 @@ All shapes below are read from the code, not invented. Notation:
 - `[B, C_max, N, D]` is **never materialised** — draw it only as a ghost.
 - Masking / missing channels are handled by **omitting rows**, not zeroing or
   attention masks.
+- The `[B, D]` descriptor is trained, comes from content tokens only, and is
+  appended to the decoder KV. A plot of `fused.mean(dim=1)` is a **fused-token
+  mean**, not this descriptor.

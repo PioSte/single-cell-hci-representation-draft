@@ -6,7 +6,7 @@ patch) and follows its channel tokens through every operation:
 
     gather channels -> LayerNorm (k = v) -> per-head query · key / sqrt(Dh)
     -> softmax over the C channels -> sum(alpha * v) -> concat heads
-    -> shared Linear -> scatter into [B, N, Q*D]
+    -> shared Linear -> scatter into [B, N, D] -> + post-fusion spatial PE
 
 The numbers come from a real ``ChannelFusion`` forward pass with an
 illustrative ``dim=4, n_heads=2`` (the model default is ``dim=192,
@@ -14,9 +14,11 @@ n_heads=6``; a 192-wide vector is unreadable, the math is identical).  That
 probe also confirmed the structural facts this animation leans on:
 
 * keys and values are the **same** tensor -- ``k = v = norm_kv(tokens)``;
-* there are **no** separate ``W_Q/W_K/W_V`` -- the query is a learned per-patch
-  parameter and the only learned linear is the output projection ``proj_out``;
-* the learned query is indexed by *patch*, so it is shared across samples.
+* there are **no** separate ``W_Q/W_K/W_V`` -- the query is one learned
+  parameter vector and the only learned linear is the output projection
+  ``proj_out``;
+* that one query is shared by every sample and every spatial location;
+  ``ChannelFusion`` is single-query and has no ``n_queries`` argument.
 
 The two dot-product steps use ``k.matrix_product`` because that is literally
 what they are: ``q_h · K_hᵀ -> scores`` and ``alpha_h @ V_h -> o_h``.
@@ -52,7 +54,6 @@ KV = [  # k = v = LayerNorm(x)  [C][D]
     [-1.49, 1.25, -0.17, 0.41],
 ]
 Q = [-0.37, -1.43, 1.21, 0.59]
-Q_RAW = [-0.13, -0.45, 0.34, 0.16]  # the learned parameter before LayerNorm
 
 ALPHA = [[0.25, 0.57], [0.69, 0.27], [0.06, 0.16]]  # [channel][head]
 HEADS = [[0.07, -1.15], [0.90, 0.25]]  # [head][Dh]
@@ -288,15 +289,15 @@ def fusion_flow(s: k.Scene):
     s.wait(0.3)
 
     # ===================================================================== #
-    # 4 -- one learned query per patch, shared across samples.
+    # 4 -- one learned query, shared across samples and locations.
     # ===================================================================== #
     nxt("4 / 11")
     s.play(k.fade_out(*x_cells, *x_nums, *x_lab, span_x, c_x), duration=0.5)
     q_cells = vrow(Q, XL, -1.3, QCOL)
     q_nums = nrow(Q, XL, -1.7)
-    q_lab = k.Text("q_j", size=0.28, mono=True, x=XL - 0.55, y=-1.3, color=QCOL, opacity=0.0)
+    q_lab = k.Text("q", size=0.28, mono=True, x=XL - 0.55, y=-1.3, color=QCOL, opacity=0.0)
     span_q = tag_box(XL, D, -1.3, QCOL)
-    c_q = callout("query q_j — one per patch, shared across samples", span_q, "right", QCOL)
+    c_q = callout("query q — one vector for every sample and location", span_q, "right", QCOL)
     s.add(*q_cells, *q_nums, q_lab, span_q, c_q)
     s.play(
         k.stagger([c.to(opacity=1.0) for c in q_cells], lag=0.02),
@@ -305,8 +306,8 @@ def fusion_flow(s: k.Scene):
         duration=0.6,
     )
     cap(
-        "the query is a parameter, not a projection: there is no W_Q; it is shared across samples",
-        "q_j = LayerNorm(queries[j]) ∈ R^D",
+        "the query is a parameter, not a projection: there is no W_Q and one vector serves every location",
+        "q = LayerNorm(queries) ∈ R^D        (queries: [1, 1, D])",
     )
     s.wait(0.3)
 
@@ -474,7 +475,7 @@ def fusion_flow(s: k.Scene):
         duration=0.7,
     )
     cap(
-        "one fused vector per present location: no C_max, no pad slot",
+        "one fused vector per present location, then + post-fusion spatial pos",
         "[ΣC, N, D]  →  [B, N, D]        present = any visible channel",
         FUSEDCOL,
     )
@@ -494,6 +495,7 @@ def fusion_flow(s: k.Scene):
         ("concat", k.PURPLE),
         ("proj_out", k.PINK),
         ("scatter", k.GREEN),
+        ("+pos", k.GREEN),
     ]
     pills, arow = [], []
     for i, (txt, col) in enumerate(ops):
@@ -515,13 +517,13 @@ def fusion_flow(s: k.Scene):
     s.play(k.stagger([p.to(opacity=1.0) for p in pills], lag=0.05),
            k.stagger([a.to(opacity=1.0) for a in arow], lag=0.05), duration=0.7)
     closing = k.Text(
-        "C is summed away at every location: cost O(C), no C_max, no pad token",
+        "C is summed away: O(C), no C_max, no pad token; one query, then + pos",
         size=0.34, color=k.GREEN, x=0.0, y=-0.9,
     )
     s.play(k.write(closing))
     cap(
         "variable channel count in, fixed-size fused tokens out",
-        "[C_b, 1, H, W] → [ΣC, N, D] → [B, N, D]",
+        "[C_b, 1, H, W] → [ΣC, N, D] → [B, N, D] (+ post-fusion pos)",
         k.GREEN,
     )
     s.wait(1.0)

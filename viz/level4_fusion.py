@@ -1,13 +1,15 @@
 """L4 -- channel fusion internals: two interchangeable pooling strategies.
 
-Panel A shows :class:`ChannelFusion`, the default PMA-style pooling over the
-channel axis at each spatial location. Panel B shows
-:class:`IdentityGatedSum`, the identity-routed alternative for
-high-channel-count panels. Both are ``O(C)`` per location: the default
-``ChannelFusion`` uses a single shared query per location, so it never forms a
-``C x C`` attention map. A bottom inset shows the rejected ``O(C^2)`` dense
-``C x C`` channel self-attention baseline (ChannelViT / ChAda-ViT), which
-requires padding and an attention mask.
+Panel A shows :class:`ChannelFusion`, the default single-query PMA-style
+pooling over the channel axis at each spatial location. It is deliberately
+projection-free for K/V (``k = v = norm_kv(x)``) and has no ``n_queries``
+axis. Panel B shows :class:`IdentityGatedSum`, the channel-routed ``O(C)``
+ablation for high-channel-count panels; its channel MLP runs once per channel
+and is broadcast to that channel's patches. Both are ``O(C)`` per location and
+both add the learned post-fusion spatial positional embedding before returning
+``[B, N, D]``. A bottom inset shows the rejected ``O(C^2)`` dense ``C x C``
+channel self-attention baseline (ChannelViT / ChAda-ViT), which requires
+padding and an attention mask.
 
 Usage::
 
@@ -36,7 +38,7 @@ from figure_style import (  # noqa: E402
 OUT = Path(__file__).resolve().parent / "out"
 
 # Short-hand role colours (the figure is built entirely from role colours).
-FUS = FUSION          # orange: every ChannelFusion / Hypernetwork box
+FUS = FUSION          # orange: every ChannelFusion / IdentityGatedSum box
 OUT_C = FUSED         # blue: the fused output vector [B, N, D]
 FE = FRONTEND         # green: patch-embed tokens, additive identity z_c
 REJ = LOSS            # red: the rejected O(C^2) baseline / omitted accent
@@ -101,7 +103,7 @@ def draw_panel_a(ax):
               lw=1.5, rounding=0.6)
         ax.text(cx + CW / 2, y_tok + 3.5, f"$x_{i+1}$", ha="center",
                 va="center", fontsize=8.6, color=col, fontweight="bold")
-        ax.text(cx + CW / 2, y_tok + 1.5, f"$m_{i+1}$", ha="center",
+        ax.text(cx + CW / 2, y_tok + 1.5, f"$c_{i+1}$", ha="center",
                 va="center", fontsize=5.9, color=MUTED, style="italic")
     ax.text(35.0, 75.2, "$C$ present channels", ha="left", va="center",
             fontsize=6.2, color=INK)
@@ -150,14 +152,14 @@ def draw_panel_a(ax):
         arrow(ax, (cx, y_kv), (cx, y_s + h_s), lw=1.1, ms=7)
         arrow(ax, (cx, y_s), (cx, y_a + h_a), lw=1.1, ms=7, color=FUS)
 
-    # ---- the learned query q_j (shared by every location) ----------------- #
+    # ---- the learned query q (shared by every location) ------------------ #
     qx, qw, qh = 2.0, 7.0, 6.0
     qy = y_s + (h_s - qh) / 2
     rrect(ax, qx, qy, qw, qh, edge=FUS, face=tint(FUS, 0.74), lw=1.7,
           rounding=0.6)
-    ax.text(qx + qw / 2, qy + qh / 2, "$q_j$", ha="center", va="center",
+    ax.text(qx + qw / 2, qy + qh / 2, "$q$", ha="center", va="center",
             fontsize=9.6, color=FUS, fontweight="bold")
-    ax.text(2.5, 47.6, "$Q{=}1$ learned query", ha="left",
+    ax.text(2.5, 47.6, "one learned query", ha="left",
             va="center", fontsize=6.0, color=FUS)
     ax.text(2.5, 45.8, "shared by all $(b,n)$", ha="left",
             va="center", fontsize=5.8, color=MUTED, style="italic")
@@ -190,8 +192,8 @@ def draw_panel_a(ax):
     arrow(ax, (px + pw, y_c), (yx, y_c), lw=1.5, color=OUT_C, ms=9)
     edge_label(ax, (GX1 + sx) / 2, y_c + 1.4, "$\\alpha_c$", color=FUS)
 
-    ax.text(36.0, 34.4, "scatter \u2192 $[B, N, Q{\\cdot}D]$ \u2192 "
-            "$[B, N, D]$", ha="left", va="center", fontsize=6.2,
+    ax.text(36.0, 34.4, "scatter \u2192 $[B, N, D]$, then $+$ post-fusion "
+            "spatial pos", ha="left", va="center", fontsize=6.2,
             color=OUT_C, fontweight="bold")
 
     # ---- values v_c tap into the weighted sum ----------------------------- #
@@ -305,7 +307,7 @@ def draw_panel_b(ax):
 
     # fused output chip (blue)
     stage(ax, 84.0, 28.6, 50.0, 3.0,
-          "fused $[B, N, Q{\\cdot}D]$ $\\rightarrow$ $[B, N, D]$",
+          "fused $[B, N, D]$ $+$ post-fusion spatial pos",
           edge=OUT_C, tcolor=OUT_C, tsize=6.6, rounding=0.5, lw=1.5)
     arrow(ax, (109.5, y_sum), (109.5, 31.6), lw=1.4, color=OUT_C, ms=9)
 
@@ -402,7 +404,7 @@ def draw_legends(ax):
         "$D$ \u2014 token / embedding dim",
         "$D_h = D/H$ \u2014 per-head dim",
         "$H$ \u2014 attention heads",
-        "$Q$ \u2014 queries per location (default 1)",
+        "$1$ \u2014 learned query per location",
         "$V$ \u2014 visible channel-patch tokens",
         "$C$ \u2014 present channels (order-free)",
     ]
@@ -411,9 +413,9 @@ def draw_legends(ax):
         ax.text(44.0, yy, e, ha="left", va="center", fontsize=6.1, color=INK)
         yy -= 2.7
 
-    note(ax, 44.0, 6.4,
-         "keys = values = $\\mathrm{norm}_{kv}(\\mathrm{tokens})$,\n"
-         "there is no $W_Q/W_K/W_V$ in either fusion.")
+    note(ax, 44.0, 7.2,
+         "ChannelFusion: $k=v=\\mathrm{norm}_{kv}(\\mathrm{tokens})$, no $W_Q/W_K/W_V$.\n"
+         "IdentityGatedSum: one MLP per channel, broadcast to its patches.")
 
 
 # --------------------------------------------------------------------------- #
