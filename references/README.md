@@ -18,6 +18,7 @@ commands below are enough to reproduce the conversion.
 | Panopticon: Advancing Any-Sensor Foundation Models for Earth Observation | [2503.10845](https://arxiv.org/abs/2503.10845) | [`panopticon/paper.md`](panopticon/paper.md) | 8 | `doc:127996d` |
 | Perceiver: General Perception with Iterative Attention | [2103.03206](https://arxiv.org/abs/2103.03206) | [`perceiver/paper.md`](perceiver/paper.md) | 37 | `doc:edbfd63` |
 | Perceiver IO: A General Architecture for Structured Inputs & Outputs | [2107.14795](https://arxiv.org/abs/2107.14795) | [`perceiver-io/paper.md`](perceiver-io/paper.md) | 7 | `doc:3b5a822` |
+| Masked Autoencoders Are Scalable Vision Learners (MAE) | [2111.06377](https://arxiv.org/abs/2111.06377) | [`mae/paper.md`](mae/paper.md) | 17 | `doc:1b49044` |
 | ChA-MAEViT: Unifying Channel-Aware Masked Autoencoders and Multi-Channel Vision Transformers | [2503.19331](https://arxiv.org/abs/2503.19331) | [`cha-maevit/paper.md`](cha-maevit/paper.md) | 25 | `doc:762255e` |
 | Set Transformer: A Framework for Attention-based Permutation-Invariant Neural Networks | [1810.00825](https://arxiv.org/abs/1810.00825) | [`set-transformer/paper.md`](set-transformer/paper.md) | 6 | `doc:36b5dc3` |
 | Neural Plasticity-Inspired Multimodal Foundation Model for Earth Observation (DOFA) | [2403.15356](https://arxiv.org/abs/2403.15356) | [`dofa/paper.md`](dofa/paper.md) | 45 | `doc:5a8fed9` |
@@ -45,6 +46,7 @@ done <<'IDS'
 2503.10845 panopticon
 2103.03206 perceiver
 2107.14795 perceiver-io
+2111.06377 mae
 2503.19331 cha-maevit
 1810.00825 set-transformer
 2403.15356 dofa
@@ -79,6 +81,7 @@ done <<'IDS'
 2503.10845 panopticon
 2103.03206 perceiver
 2107.14795 perceiver-io
+2111.06377 mae
 2503.19331 cha-maevit
 1810.00825 set-transformer
 2403.15356 dofa
