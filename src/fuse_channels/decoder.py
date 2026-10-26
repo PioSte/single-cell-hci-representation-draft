@@ -16,6 +16,7 @@ import torch
 import torch.nn as nn
 
 from .ops import grouped_attention, grouped_projected_self_attention
+from .pos_embed import add_spatial_pos
 
 
 class DecoderBlock(nn.Module):
@@ -89,6 +90,19 @@ class DecoderBlock(nn.Module):
 
 
 class ChannelAwareDecoder(nn.Module):
+    """Channel-aware shared decoder.
+
+    Each query is ``mask_token + spatial_pos[target_patch] + target_proj(
+    channel_embed)``.  The absolute spatial PE on the target queries is the
+    repo's equivalent of MAE's ``decoder_pos_embed``: without it, every masked
+    patch of a channel would produce the same query and hence the same pixels
+    (``references/mae/paper.md:103``).
+
+    ``pos_embed`` selects the learned ``[n_patches, dim]`` table (default) or the
+    fixed 2D sine-cosine map registered as a buffer; see
+    :mod:`fuse_channels.pos_embed`.
+    """
+
     def __init__(
         self,
         dim: int,
@@ -98,13 +112,15 @@ class ChannelAwareDecoder(nn.Module):
         n_patches: int,
         mlp_ratio: float = 4.0,
         dropout: float = 0.0,
+        pos_embed: str = "learned",
+        grid_size=None,
     ) -> None:
         super().__init__()
         self.mask_token = nn.Parameter(torch.zeros(dim))
-        self.spatial_pos = nn.Parameter(torch.zeros(n_patches, dim))
+        # target spatial PE: learned table by default, fixed 2D sincos optional
+        add_spatial_pos(self, dim, n_patches, pos_embed, grid_size=grid_size)
         self.target_proj = nn.Linear(dim, dim)
         nn.init.trunc_normal_(self.mask_token, std=0.02)
-        nn.init.trunc_normal_(self.spatial_pos, std=0.02)
         self.blocks = nn.ModuleList(
             [DecoderBlock(dim, n_heads, mlp_ratio, dropout) for _ in range(depth)]
         )

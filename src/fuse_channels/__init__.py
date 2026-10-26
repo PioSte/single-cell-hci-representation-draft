@@ -21,6 +21,12 @@ from .ops import (
     grouped_softmax,
 )
 from .patch_embed import ChannelTiedPatchEmbed, ChannelTokenizer
+from .pos_embed import (
+    POS_EMBED_KINDS,
+    add_spatial_pos,
+    build_spatial_pos,
+    get_2d_sincos_pos_embed,
+)
 
 __all__ = [
     "ChannelSet",
@@ -30,6 +36,10 @@ __all__ = [
     "ChannelEmbedding",
     "ChannelTokenizer",
     "ChannelTiedPatchEmbed",
+    "POS_EMBED_KINDS",
+    "add_spatial_pos",
+    "build_spatial_pos",
+    "get_2d_sincos_pos_embed",
     "TransformerEncoder",
     "TransformerBlock",
     "ChannelAwareDecoder",

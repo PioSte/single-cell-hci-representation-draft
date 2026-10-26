@@ -13,8 +13,10 @@ Two interchangeable pooling mechanisms are provided:
   emits per-channel mixing weights from the channel embedding; it does not
   generate network weights.
 
-Both emit one ``[B, N, D]`` token per spatial location and add the learned
-post-fusion spatial positional embedding before returning.  ChannelViT and
+Both emit one ``[B, N, D]`` token per spatial location and add the spatial
+positional embedding before returning (``pos_embed="learned"`` table by
+default, ``"sincos"`` for the fixed MAE/ViT map; see
+:mod:`fuse_channels.pos_embed`).  ChannelViT and
 ChAda-ViT are precedents for cross-channel attention, but they use full joint
 attention over the ``C·N`` tokens rather than fixed-query pooling.
 
@@ -31,6 +33,7 @@ import torch.nn.functional as F
 from .container import ChannelSet
 from .encoder import TransformerBlock
 from .ops import grouped_pool_attention, grouped_softmax
+from .pos_embed import add_spatial_pos
 
 
 def _unique_groups(group_id: torch.Tensor):
@@ -46,7 +49,8 @@ class ChannelFusion(nn.Module):
 
     Channels are fused *within* each ``(sample, patch)`` location into one
     shared learned query; the result is scattered back to ``[B, N, D]`` and the
-    learned spatial positional embedding is added.
+    spatial positional embedding is added (``pos_embed="learned"`` by default,
+    ``"sincos"`` for the fixed sine-cosine map).
 
     K/V projections are intentionally omitted: keys = values = the LayerNormed
     channel tokens, which is the Panopticon-style simplification for per-location
@@ -62,6 +66,12 @@ class ChannelFusion(nn.Module):
         spatial patch count (sizes the post-fusion positional embedding).
     dropout:
         attention dropout.
+    pos_embed:
+        ``"learned"`` (default) or ``"sincos"``; see
+        :mod:`fuse_channels.pos_embed`.
+    grid_size:
+        optional ``int | (grid_h, grid_w)`` for the sine-cosine lattice;
+        defaults to ``sqrt(n_patches)``.
     """
 
     def __init__(
@@ -70,6 +80,8 @@ class ChannelFusion(nn.Module):
         n_heads: int = 8,
         n_patches: int = 0,
         dropout: float = 0.0,
+        pos_embed: str = "learned",
+        grid_size=None,
     ) -> None:
         super().__init__()
         assert dim % n_heads == 0, "dim must be divisible by n_heads"
@@ -86,9 +98,10 @@ class ChannelFusion(nn.Module):
         # one shared query, applied at every spatial location
         self.queries = nn.Parameter(torch.zeros(1, 1, dim))
         nn.init.trunc_normal_(self.queries, std=0.02)
-        # post-fusion spatial positional embedding
-        self.spatial_pos = nn.Parameter(torch.zeros(1, n_patches, dim))
-        nn.init.trunc_normal_(self.spatial_pos, std=0.02)
+        # post-fusion spatial positional embedding (learned table or fixed sincos)
+        add_spatial_pos(
+            self, dim, n_patches, pos_embed, grid_size=grid_size, batch_dims=1
+        )
 
     def _attention_dropout(self) -> float:
         """Attention dropout probability, disabled in eval mode."""
@@ -134,7 +147,7 @@ class ChannelFusion(nn.Module):
 
     # ------------------------------------------------------------------ #
     def extra_repr(self) -> str:
-        return f"dim={self.dim}, n_heads={self.n_heads}"
+        return f"dim={self.dim}, n_heads={self.n_heads}, pos_embed={self.pos_embed}"
 
 
 class MultiheadAttentionPooling(nn.Module):
@@ -266,7 +279,7 @@ class IdentityGatedSum(nn.Module):
     MLP is evaluated **once per unique channel** (via
     ``ChannelSet.channel_group_id``) and broadcast to that channel's tokens.
 
-    The output is ``[B, N, D]`` with the learned post-fusion spatial positional
+    The output is ``[B, N, D]`` with the post-fusion spatial positional
     embedding added, matching :class:`ChannelFusion`.
     """
 
@@ -275,6 +288,8 @@ class IdentityGatedSum(nn.Module):
         dim: int,
         n_patches: int = 0,
         hidden: int | None = None,
+        pos_embed: str = "learned",
+        grid_size=None,
     ) -> None:
         super().__init__()
         assert n_patches > 0, "n_patches is required"
@@ -287,8 +302,9 @@ class IdentityGatedSum(nn.Module):
         )
         self.value_proj = nn.Linear(dim, dim)
         self.out_norm = nn.LayerNorm(dim)
-        self.spatial_pos = nn.Parameter(torch.zeros(1, n_patches, dim))
-        nn.init.trunc_normal_(self.spatial_pos, std=0.02)
+        add_spatial_pos(
+            self, dim, n_patches, pos_embed, grid_size=grid_size, batch_dims=1
+        )
 
     def forward(self, cs: ChannelSet):
         if cs.n_patches != self.n_patches:
@@ -337,7 +353,7 @@ class IdentityGatedSum(nn.Module):
         return fused, present
 
     def extra_repr(self) -> str:
-        return f"dim={self.dim}"
+        return f"dim={self.dim}, pos_embed={self.pos_embed}"
 
 
 # ---------------------------------------------------------------------- #

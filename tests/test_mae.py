@@ -342,3 +342,55 @@ def test_attention_primitives_route_self_and_cross_attention(monkeypatch):
     assert calls["encoder_self"] == len(model.encoder.blocks)
     assert calls["decoder_self"] == len(model.decoder.blocks)
     assert calls["decoder_cross"] == len(model.decoder.blocks)
+
+
+def test_sincos_pos_embed_model():
+    """pos_embed="sincos" swaps both PE tables for fixed buffers; training still runs."""
+    model = _model(pos_embed="sincos")
+    assert model.fusion.pos_embed == "sincos"
+    assert model.decoder.pos_embed == "sincos"
+    assert "spatial_pos" not in dict(model.named_parameters())
+    assert tuple(model.fusion.spatial_pos.shape) == (1, model.n_patches, 32)
+    assert tuple(model.decoder.spatial_pos.shape) == (model.n_patches, 32)
+    assert not model.decoder.spatial_pos.requires_grad
+
+    images, ids = _batch()
+    fusion_before = model.fusion.spatial_pos.clone()
+    before = model.decoder.spatial_pos.clone()
+    out = model(images, ids, generator=torch.Generator().manual_seed(1))
+    assert torch.isfinite(out["loss"])
+    out["loss"].backward()
+    assert any(p.grad is not None for p in model.parameters())
+    # the fixed maps are never optimized
+    assert torch.equal(model.decoder.spatial_pos, before)
+    assert torch.equal(model.fusion.spatial_pos, fusion_before)
+    assert model.decoder.spatial_pos.grad is None
+
+
+def test_sincos_pos_embed_with_identity_gated_fusion():
+    model = _model(pos_embed="sincos", fusion="identity_gated")
+    assert model.fusion.pos_embed == "sincos"
+    assert "spatial_pos" not in dict(model.fusion.named_parameters())
+    images, ids = _batch()
+    out = model(images, ids, generator=torch.Generator().manual_seed(1))
+    assert torch.isfinite(out["loss"])
+    out["loss"].backward()
+
+
+def test_decoder_target_position_changes_predictions():
+    """Absolute target PE is load-bearing: same channel, different patch differs."""
+    for kind in ("learned", "sincos"):
+        model = _model(pos_embed=kind)
+        model.eval()
+        images, ids = _batch(C_list=(2,))
+        # mask one channel entirely: every target query is mask token + PE + identity
+        visible = [torch.zeros(2, model.n_patches, dtype=torch.bool)]
+        visible[0][1] = True  # keep channel 1 fully visible
+        with torch.no_grad():
+            out = model(images, ids, visible=visible)
+        pred = out["pred"]
+        # channel 0 is fully masked: its n_patches target queries share the
+        # mask token and channel embedding, so only the spatial PE separates them
+        per_patch = pred.reshape(model.n_patches, -1)
+        assert not torch.allclose(per_patch[0], per_patch[1])
+        assert not torch.allclose(per_patch[0], per_patch[-1])

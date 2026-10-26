@@ -181,6 +181,13 @@ def main() -> None:
     p.add_argument("--pretrain-lr", type=float, default=1e-3)
     p.add_argument("--probe-steps", type=int, default=50)
     p.add_argument("--probe-lr", type=float, default=1e-2)
+    p.add_argument(
+        "--pos-embed",
+        choices=("learned", "sincos"),
+        default="learned",
+        help="absolute spatial PE for fusion + decoder: learned table "
+        "(default) or fixed 2D sine-cosine (MAE-faithful, zero params)",
+    )
     p.add_argument("--seed", type=int, default=0)
     args = p.parse_args()
 
@@ -219,6 +226,7 @@ def main() -> None:
         n_heads=args.n_heads,
         n_memory=args.n_memory,
         num_channel_ids=args.channel_ids,
+        pos_embed=args.pos_embed,
     )
 
     if args.pretrain_steps > 0:

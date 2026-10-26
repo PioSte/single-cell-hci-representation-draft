@@ -26,6 +26,11 @@ are the same mechanism.
 
 ``p_patch=0, p_channel=1`` is HCS-only, ``p_patch=1, p_channel=0`` is
 patch-only, and ``p_patch=p_channel=0`` is the combined region.
+
+``pos_embed`` selects the absolute positional embedding used by both the
+fusion modules and the decoder: ``"learned"`` (default, matching the trained
+post-fusion embedding) or ``"sincos"`` (fixed 2D sine-cosine, MAE-style; see
+:mod:`fuse_channels.pos_embed`).
 """
 
 from __future__ import annotations
@@ -70,6 +75,7 @@ class ChannelFusionMAE(nn.Module):
         max_masked_channels_frac: float = 1.0,
         dropout: float = 0.0,
         loss: str = "mae",
+        pos_embed: str = "learned",
     ) -> None:
         super().__init__()
         if loss not in _LOSSES:
@@ -88,10 +94,16 @@ class ChannelFusionMAE(nn.Module):
 
         if fusion == "attention":
             self.fusion = ChannelFusion(
-                dim, n_heads=n_heads, n_patches=n_patches, dropout=dropout
+                dim,
+                n_heads=n_heads,
+                n_patches=n_patches,
+                dropout=dropout,
+                pos_embed=pos_embed,
             )
         elif fusion == "identity_gated":
-            self.fusion = IdentityGatedSum(dim, n_patches=n_patches)
+            self.fusion = IdentityGatedSum(
+                dim, n_patches=n_patches, pos_embed=pos_embed
+            )
         else:
             raise ValueError(f"unknown fusion '{fusion}'")
 
@@ -110,7 +122,7 @@ class ChannelFusionMAE(nn.Module):
         )
         self.decoder = ChannelAwareDecoder(
             dim, decoder_depth, n_heads, patch_dim=patch_size * patch_size,
-            n_patches=n_patches, dropout=dropout,
+            n_patches=n_patches, dropout=dropout, pos_embed=pos_embed,
         )
         self.masker = DCPVisibilitySampler(
             n_patches,

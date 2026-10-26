@@ -118,6 +118,34 @@ Consequences:
 * channel identity and spatial position stay separate channels of information;
 * the fusion modules take `n_patches` because they own that table.
 
+**Learned table vs fixed sine-cosine.** `pos_embed` selects between a learned
+`[1, N, D]` table (default) and MAE/ViT's fixed 2D sine-cosine map, registered
+as a non-trainable buffer (`src/fuse_channels/pos_embed.py`). The switch applies
+to the fusion PE and to the decoder's target PE.
+
+MAE establishes only that an absolute positional signal is *present* on both
+encoder and decoder inputs: "We add positional embeddings to all tokens in this
+full set; without this, mask tokens would have no information about their
+location in the image" (`references/mae/paper.md:103`), and "Our MAE adds
+positional embeddings (the sine-cosine version) to both the encoder and decoder
+inputs" (`references/mae/paper.md:546`). The fixedness comes from the released
+code (`decoder_pos_embed` is a `requires_grad=False` buffer filled by
+`get_2d_sincos_pos_embed`), and MAE's Table 1 ablates decoder depth/width, the
+mask token, the reconstruction target, augmentation and mask sampling -- not the
+positional embedding. There is therefore no paper evidence that sine-cosine
+beats a learned table, so the learned table stays the default: it is strictly
+more expressive on the fixed grid the repo trains on, and it is what the
+post-fusion argument above was calibrated against.
+
+`sincos` is kept as an option for three concrete reasons: it removes both
+discarded-in-inference table parameters (the decoder's is only ever used
+for pre-training), it is defined for any `grid_size` (including non-square
+`(H, W)`), and it is the MAE-faithful configuration for the ablation. Row-major
+patch order (`p = r * grid_w + c`) matches `Conv2d(...).flatten(2)` in the
+tokenizer, so the same map indexes fusion tokens and decoder targets.
+`dim` must be divisible by 4; anything else raises rather than silently
+truncating the frequency bands.
+
 ## 4. Trained descriptor
 
 `MultiheadAttentionPooling` pools a padding-free token set with a learned set
@@ -178,6 +206,20 @@ query is
 ```
 mask_token + spatial_pos[target_patch] + target_proj(channel_embed[target_channel]).
 ```
+
+The `spatial_pos[target_patch]` term is the repo's equivalent of MAE's
+`decoder_pos_embed`, and it is load-bearing rather than decorative: our decoder
+builds one query per masked (channel, patch) and does not run full-grid
+self-attention, so without it every masked patch of a channel would get the same
+query and predict the same pixels (`test_decoder_target_position_changes_predictions`).
+MAE reaches the same conclusion from the other side -- it adds PE to the
+unshuffled full token set for exactly this reason
+(`references/mae/paper.md:103`) -- but sums it over visible *and* mask tokens
+(`decoder_pos_embed` in `models_mae.forward_decoder`), because its decoder
+self-attends over the whole grid. Our visible tokens already carry position from
+the post-fusion PE, so only the target queries need one. Either parameterization
+works: `mask_token`/`target_proj` are learned, and `spatial_pos` is a learned
+table or the fixed `sincos` map.
 
 That is Perceiver-IO-style query construction from position and
 modality/target features (`references/perceiver-io/paper.md:101-103`,

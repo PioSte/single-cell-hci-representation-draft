@@ -57,9 +57,16 @@ per-channel tied Conv2d(1 -> D) patch embed        (no positional embedding here
   projections; the Panopticon-style simplification); the query and the output
   projection are learned. `IdentityGatedSum` is the `O(C)` marker-routed
   ablation: `joint = Σ_c softmax_c(MLP(channel_embed_c)) · V_c`.
-* **Post-fusion positional embedding.** Both fusion modules add the learned
-  spatial PE to the `[B, N, D]` fused output, so channel attention is
-  position-agnostic and position enters the encoder once per location.
+* **Post-fusion positional embedding, learned or fixed.** Both fusion
+  modules add one absolute spatial PE to the `[B, N, D]` fused output, so
+  channel attention stays position-agnostic and position enters the encoder
+  once per location. `pos_embed="learned"` (default) is a learned
+  `[n_patches, D]` table; `pos_embed="sincos"` is the fixed 2D sine-cosine map
+  (zero parameters, any `grid_size`) and applies to the decoder's target PE
+  too. The decoder needs an absolute target PE under either choice: masked
+  patches of one channel share the mask token and channel embedding, so the
+  position is what makes their predictions differ (MAE's `decoder_pos_embed`
+  argument, `references/mae/paper.md:103`).
 * **Encoder and descriptor.** Standard pre-norm Q/K/V/O transformer blocks run
   over the flattened real tokens with fixed-count memory tokens. The `[B, D]`
   descriptor is a PMA-style pool over the encoder's *content* tokens (not the
@@ -70,7 +77,9 @@ per-channel tied Conv2d(1 -> D) patch embed        (no positional embedding here
   self-attend within each sample, then cross-attend to the encoder
   representation + memory + descriptor. A fully dropped channel has no encoder
   evidence, only its identity query, so identity acts as a **target
-  specification** as well as an input feature.
+  specification** as well as an input feature. The target PE is absolute
+  (`spatial_pos[target_patch]`, learned or `sincos`) and is load-bearing:
+  without it every masked patch of a channel gets the same query.
 * **Masking.** DCP (ChA-MAEViT Eq. 1): patch-only, channel-only, or combined
   regions, with the region probabilities separate from `patch_ratio`. HCS is
   the channel-subset sampler used by the channel region (and is available as
@@ -113,6 +122,7 @@ model = ChannelFusionMAE(
     n_memory=4, num_channel_ids=32,   # size of the learnable identity table
     fusion="attention",               # or "identity_gated" (ablation)
     loss="mae",                       # or "cha_maevit" (ablation)
+    pos_embed="learned",              # or "sincos" (fixed 2D sine-cosine)
 )
 
 # a batch is a list of variable-channel images: [C_b, 1, H, W]
@@ -145,6 +155,8 @@ ids = [torch.randint(0, 32, (3,)), torch.randint(0, 32, (7,))]
 embedding = ChannelEmbedding(192, num_channel_ids=32)
 tokenizer = ChannelTokenizer(16, 8, 192, embedding)
 fusion = ChannelFusion(192, n_heads=6, n_patches=4)   # one query per location
+# fixed 2D sine-cosine spatial PE instead of the learned table (ablation)
+fusion_sincos = ChannelFusion(192, n_heads=6, n_patches=4, pos_embed="sincos")
 
 cs: ChannelSet = tokenizer(images, ids)   # real tokens only; cs.channel_embed is [ΣC·N, 192]
 fused, present = fusion(cs)              # [B, 4, 192]; no channel padding
@@ -179,6 +191,7 @@ gated_out, present = gated(cs)
 | `src/fuse_channels/identity.py` | `ChannelEmbedding`: learned per-channel-id additive table |
 | `src/fuse_channels/patch_embed.py` | `ChannelTiedPatchEmbed`, `ChannelTokenizer` |
 | `src/fuse_channels/fusion.py` | `ChannelFusion`, `IdentityGatedSum`, `MultiheadAttentionPooling`; `_dense_fusion_reference` (private, test/viz-only) |
+| `src/fuse_channels/pos_embed.py` | absolute spatial PE: learned table or fixed 2D sine-cosine |
 | `src/fuse_channels/encoder.py` | `TransformerEncoder` / `TransformerBlock` with memory tokens |
 | `src/fuse_channels/decoder.py` | `ChannelAwareDecoder` / `DecoderBlock` |
 | `src/fuse_channels/masking.py` | `DCPVisibilitySampler` (Eq. 1) and `HierarchicalChannelSampler` (HCS) |
@@ -208,6 +221,11 @@ Covered by `tests/`:
 - post-fusion PE, one query shared across locations, and attention dropout
   behaviour (`test_post_fusion_spatial_pos`,
   `test_pooling_query_is_shared_across_locations`, dropout tests)
+- `pos_embed` variants: fixed `sincos` adds no parameters, is deterministic,
+  keeps the padding-free ≡ dense equivalence and the cardinality/permutation
+  invariants, and is row-major over the grid (`tests/test_pos_embed.py`,
+  `test_sincos_pos_embed_*`); the decoder's target PE is load-bearing
+  (`test_decoder_target_position_changes_predictions`)
 - encoder input length = number of present locations, with token count
   = visible channel-patches (`test_encoder_input_length_is_present_locations`)
 - DCP Eq. 1 regions and HCS counts (`test_masking.py`); channels dropped by DCP

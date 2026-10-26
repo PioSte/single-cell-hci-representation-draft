@@ -46,6 +46,13 @@ def main() -> None:
         help="mae: patch-normalized MSE (default); "
         "cha_maevit: raw-pixel L2 + Fourier L1 ablation",
     )
+    p.add_argument(
+        "--pos-embed",
+        choices=("learned", "sincos"),
+        default="learned",
+        help="absolute spatial PE for fusion + decoder: learned table "
+        "(default) or fixed 2D sine-cosine (MAE-faithful, zero params)",
+    )
     args = p.parse_args()
 
     p_patch, p_channel = args.p_patch, args.p_channel
@@ -79,6 +86,7 @@ def main() -> None:
         patch_ratio=args.patch_ratio,
         mode_sampling=args.mode_sampling,
         loss=args.loss,
+        pos_embed=args.pos_embed,
     ).to(device)
 
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0.05)

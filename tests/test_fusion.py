@@ -408,3 +408,58 @@ def test_dropout_active_in_train():
     a, _ = fusion(cs)
     b, _ = fusion(cs)
     assert not torch.equal(a, b)
+
+def test_sincos_pos_embed_is_fixed_and_padding_free_equivalent():
+    """pos_embed="sincos": no parameters, deterministic, same math as dense ref."""
+    fusion = ChannelFusion(D, n_heads=HEADS, n_patches=N, pos_embed="sincos")
+    assert fusion.pos_embed == "sincos"
+    assert "spatial_pos" not in dict(fusion.named_parameters())
+    assert "spatial_pos" in dict(fusion.named_buffers())
+
+    cs = make_channel_set([1, 3, 6, 2], N, D)
+    with torch.no_grad():
+        fused, _ = fusion(cs)
+        again, _ = fusion(cs)
+        ref = _dense_fusion_reference(fusion, cs)
+    assert torch.equal(fused, again)
+    assert torch.allclose(fused, ref, atol=1e-5, rtol=1e-4)
+
+
+def test_sincos_pos_embed_keeps_invariants():
+    """Cardinality and permutation invariance hold with the fixed sincos map."""
+    fusion = ChannelFusion(D, n_heads=HEADS, n_patches=N, pos_embed="sincos")
+    fusion.eval()
+    cs = make_channel_set([2, 5], N, D)
+    with torch.no_grad():
+        fused, present = fusion(cs)
+        permuted, _ = fusion(permute_channels(cs))
+    assert fused.shape == (2, N, D)
+    assert present.all()
+    assert torch.allclose(fused, permuted, atol=1e-5, rtol=1e-4)
+
+
+def test_identity_gated_sincos_pos_embed():
+    gated = IdentityGatedSum(D, n_patches=N, pos_embed="sincos")
+    assert gated.pos_embed == "sincos"
+    assert "spatial_pos" not in dict(gated.named_parameters())
+    cs = make_channel_set([2, 3], N, D)
+    out, _ = gated(cs)
+    assert out.shape == (2, N, D)
+    assert torch.isfinite(out).all()
+    with torch.no_grad():
+        before = gated.spatial_pos.clone()
+        gated.spatial_pos.zero_()
+        no_pe, _ = gated(cs)
+    assert not torch.allclose(out, no_pe)
+
+
+def test_pos_embed_option_validation():
+    with pytest.raises(ValueError, match="unknown pos_embed"):
+        ChannelFusion(D, n_heads=HEADS, n_patches=N, pos_embed="rope")
+    # sincos needs a square lattice unless grid_size is given explicitly
+    with pytest.raises(ValueError, match="not a square"):
+        ChannelFusion(D, n_heads=HEADS, n_patches=6, pos_embed="sincos")
+    nonsquare = ChannelFusion(
+        D, n_heads=HEADS, n_patches=6, pos_embed="sincos", grid_size=(2, 3)
+    )
+    assert tuple(nonsquare.spatial_pos.shape) == (1, 6, D)
