@@ -23,6 +23,9 @@ commands below are enough to reproduce the conversion.
 | Set Transformer: A Framework for Attention-based Permutation-Invariant Neural Networks | [1810.00825](https://arxiv.org/abs/1810.00825) | [`set-transformer/paper.md`](set-transformer/paper.md) | 6 | `doc:36b5dc3` |
 | Neural Plasticity-Inspired Multimodal Foundation Model for Earth Observation (DOFA) | [2403.15356](https://arxiv.org/abs/2403.15356) | [`dofa/paper.md`](dofa/paper.md) | 45 | `doc:5a8fed9` |
 | HyperFree: A Channel-adaptive and Tuning-free Foundation Model for Hyperspectral Remote Sensing Imagery | [2503.21841](https://arxiv.org/abs/2503.21841) | [`hyperfree/paper.md`](hyperfree/paper.md) | 107 | `doc:1e4e58f` |
+| FlexiViT: One Model for All Patch Sizes | [2212.08013](https://arxiv.org/abs/2212.08013) | [`flexivit/paper.md`](flexivit/paper.md) | 62 | `doc:516935e` |
+| RoFormer: Enhanced Transformer with Rotary Position Embedding | [2104.09864](https://arxiv.org/abs/2104.09864) | [`roformer/paper.md`](roformer/paper.md) | 4 | `doc:e9a481f` |
+| Rotary Position Embedding for Vision Transformer | [2403.13298](https://arxiv.org/abs/2403.13298) | [`rope-vit/paper.md`](rope-vit/paper.md) | 7 | `doc:416333c` |
 | Evolutionary-scale prediction of atomic level protein structure with a language model (ESM-2) | [bioRxiv 2022.07.20.500902](https://doi.org/10.1101/2022.07.20.500902) | [`esm-2/paper.md`](esm-2/paper.md) | 31 | `doc:23c994c` |
 
 Tables are inline in each `paper.md` (markdown and/or HTML). Figure blocks that
@@ -51,6 +54,9 @@ done <<'IDS'
 1810.00825 set-transformer
 2403.15356 dofa
 2503.21841 hyperfree
+2212.08013 flexivit
+2104.09864 roformer
+2403.13298 rope-vit
 IDS
 # ESM-2 is a bioRxiv preprint, not arXiv:
 curl -L --fail -o references/esm-2/esm-2.pdf \
@@ -86,6 +92,9 @@ done <<'IDS'
 1810.00825 set-transformer
 2403.15356 dofa
 2503.21841 hyperfree
+2212.08013 flexivit
+2104.09864 roformer
+2403.13298 rope-vit
 23c994c esm-2
 IDS
 ```
