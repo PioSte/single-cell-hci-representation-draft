@@ -166,7 +166,10 @@ def test_pooling_query_is_shared_across_locations():
         channel_group_id=torch.arange(C).repeat_interleave(N),
     )
     fused, _ = fusion(cs)
-    centered = fused[0] - fusion.spatial_pos[0]
+    # The default target architecture has no post-fusion PE; when it is
+    # enabled the PE is deliberately position-dependent and must be removed
+    # before checking that the pooling itself is position-agnostic.
+    centered = fused[0] - (fusion.spatial_pos[0] if fusion.has_spatial_pos else 0)
     for n in range(1, N):
         assert torch.allclose(centered[0], centered[n], atol=1e-6)
 
@@ -291,7 +294,8 @@ def test_identity_gated_sum_unsorted_locations():
                 w.unsqueeze(-1) * values[idx]
             ).sum(0)
 
-    assert torch.allclose(out, ref + net.spatial_pos, atol=1e-6)
+    expected = ref + (net.spatial_pos if net.has_spatial_pos else 0)
+    assert torch.allclose(out, expected, atol=1e-6)
 
 
 def test_identity_gated_sum_channel_mlp_once_per_channel():
@@ -324,12 +328,14 @@ def test_identity_gated_sum_requires_channel_embed():
 
 
 def test_fusion_rejects_patch_count_mismatch():
-    """Fusion modules validate the ChannelSet patch count they were built for."""
+    """Table-based fusion PE validates the patch count it was built for."""
     cs = make_channel_set([2], N + 1, D)
+    fusion = ChannelFusion(D, n_heads=HEADS, n_patches=N, pos_embed="learned")
     with pytest.raises(ValueError, match="n_patches"):
-        _fusion()(cs)
+        fusion(cs)
+    gated = IdentityGatedSum(D, n_patches=N, pos_embed="learned")
     with pytest.raises(ValueError, match="n_patches"):
-        IdentityGatedSum(D, n_patches=N)(cs)
+        gated(cs)
 
 
 def test_no_pad_artifacts():
@@ -364,9 +370,15 @@ def test_no_pad_artifacts():
     assert torch.equal(present, expected)
 
 
-def test_post_fusion_spatial_pos():
-    """Both fusion modules own the spatial PE; it shifts token values."""
-    fusion = _fusion(seed=8)
+def test_post_fusion_spatial_pos_is_legacy_opt_in():
+    """The default has no fusion PE; the learned table remains an ablation."""
+    default = _fusion(seed=8)
+    assert default.pos_embed == "none"
+    assert not default.has_spatial_pos
+    assert not hasattr(default, "spatial_pos")
+    assert not hasattr(IdentityGatedSum(D), "spatial_pos")
+
+    fusion = ChannelFusion(D, n_heads=HEADS, n_patches=N, pos_embed="learned")
     assert tuple(fusion.spatial_pos.shape) == (1, N, D)
     cs = make_channel_set([2, 3], N, D)
     with torch.no_grad():
@@ -375,7 +387,7 @@ def test_post_fusion_spatial_pos():
         no_pe, _ = fusion(cs)
     assert not torch.allclose(fused, no_pe)
 
-    gated = IdentityGatedSum(D, n_patches=N)
+    gated = IdentityGatedSum(D, n_patches=N, pos_embed="learned")
     assert tuple(gated.spatial_pos.shape) == (1, N, D)
 
 

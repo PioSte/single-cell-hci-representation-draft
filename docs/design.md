@@ -102,49 +102,61 @@ the descriptor pooler instead.
 `IdentityGatedSum` is the other `O(C)` option (Section 8). It is an ablation,
 not the default.
 
-## 3. Why the positional embedding is post-fusion
+## 3. Position: encoder RoPE, decoder fractional PE
 
 The tied patch embed has no positional embedding. Channel attention at a
 location is over channels at the *same* patch, so it is naturally
 position-agnostic; adding position before it would give the attention keys
-positional offsets that cannot help distinguish channels. Both fusion modules
-therefore add one learned spatial PE of shape `[1, N, D]` to the fused
-`[B, N, D]` result, before the encoder.
+positional offsets that cannot help distinguish channels. Fusion therefore
+stays position-free in the target architecture.
 
-Consequences:
+**Encoder: 2-D axial RoPE.** Position enters the encoder as a rotation of
+queries and keys, not as an additive table. Coordinates are normalized to
+`(r + 0.5)/grid_h` and `(c + 0.5)/grid_w` (times a fixed reference extent), so
+the phase describes layout only and does not change meaning when the patch size
+changes. The head dimension is split into row and column halves, and each axis
+gets `head_dim / 4` frequency pairs with base `100` by default
+(`references/rope-vit/paper.md:157-171`; RoFormer describes the rotation as
+absolute position with relative dependence in the dot product,
+`references/roformer/paper.md:23`). Memory tokens get zero rotation. Axial RoPE
+is the simple first choice; RoPE-Mixed is the stronger upgrade because axial
+frequencies cannot express diagonal directions
+(`references/rope-vit/paper.md:27`).
 
-* position enters the encoder as one clean additive signal per present
-  location;
-* channel identity and spatial position stay separate channels of information;
-* the fusion modules take `n_patches` because they own that table.
+Raw-index RoPE would need no resampling but would also encode sampling
+density: adjacent tokens are one index apart at `p = 8` and at `p = 32`, even
+though the physical distance differs. Normalized coordinates avoid that and
+leave physical scale to the scale conditioner.
 
-**Learned table vs fixed sine-cosine.** `pos_embed` selects between a learned
-`[1, N, D]` table (default) and MAE/ViT's fixed 2D sine-cosine map, registered
-as a non-trainable buffer (`src/fuse_channels/pos_embed.py`). The switch applies
-to the fusion PE and to the decoder's target PE.
+**Decoder: factorized-fractional absolute PE.** Mask tokens need an additive
+absolute anchor: without it every masked patch of a channel gets the same query
+and predicts the same pixels (MAE's `decoder_pos_embed`,
+`references/mae/paper.md:103`). The decoder PE is
 
-MAE establishes only that an absolute positional signal is *present* on both
-encoder and decoder inputs: "We add positional embeddings to all tokens in this
-full set; without this, mask tokens would have no information about their
-location in the image" (`references/mae/paper.md:103`), and "Our MAE adds
-positional embeddings (the sine-cosine version) to both the encoder and decoder
-inputs" (`references/mae/paper.md:546`). The fixedness comes from the released
-code (`decoder_pos_embed` is a `requires_grad=False` buffer filled by
-`get_2d_sincos_pos_embed`), and MAE's Table 1 ablates decoder depth/width, the
-mask token, the reconstruction target, augmentation and mask sampling -- not the
-positional embedding. There is therefore no paper evidence that sine-cosine
-beats a learned table, so the learned table stays the default: it is strictly
-more expressive on the fixed grid the repo trains on, and it is what the
-post-fusion argument above was calibrated against.
+```
+u = (c + 0.5) / grid_w
+v = (r + 0.5) / grid_h
+PE_dec(r, c) = g_row(v) + g_col(u)
+```
 
-`sincos` is kept as an option for three concrete reasons: it removes both
-discarded-in-inference table parameters (the decoder's is only ever used
-for pre-training), it is defined for any `grid_size` (including non-square
-`(H, W)`), and it is the MAE-faithful configuration for the ablation. Row-major
-patch order (`p = r * grid_w + c`) matches `Conv2d(...).flatten(2)` in the
-tokenizer, so the same map indexes fusion tokens and decoder targets.
-`dim` must be divisible by 4; anything else raises rather than silently
-truncating the frequency bands.
+where `g_row` / `g_col` are fixed multi-frequency sinusoids by default (a
+small learned MLP is available as `fractional_pe_mode="mlp"`). It is a function
+of fractional position, not a lookup on a fixed grid, so it is defined for any
+grid and needs no resampling when `p` changes.
+
+**Legacy absolute-table ablation.** `pos_embed="learned"` or `"sincos"`
+restores the pre-FlexiViT scheme: a post-fusion `[1, N, D]` table (learned or
+MAE/ViT sine-cosine) plus the decoder's `spatial_pos[target_patch]` table, and
+no encoder RoPE. This is fixed-grid only. The earlier design notes on MAE's
+sine-cosine code and the lack of a learned-vs-fixed ablation still apply to
+that legacy path (`references/mae/paper.md:546`); the target path replaces both
+tables with functions.
+
+**Scale conditioning.** `log(p)` and, when supplied, `log(µm/px)` are embedded
+with Fourier features and a small MLP. The default `scale_conditioning="add"`
+adds the embedding to encoder and decoder tokens; `"adaln"` modulates the
+LayerNorms instead, which is stronger because an additive constant before a
+LayerNorm is partly normalized away.
 
 ## 4. Trained descriptor
 
@@ -200,26 +212,28 @@ Other details:
 
 ChA-MAEViT conditions its shared decoder on encoder-optimized channel tokens
 added to the patch tokens (`references/cha-maevit/paper.md:121-125`). This
-repo deliberately substitutes the shared `ChannelEmbedding` table: the target
-query is
+repo deliberately substitutes the shared `ChannelEmbedding` table. Under the
+FlexiViT target the target query is
 
 ```
-mask_token + spatial_pos[target_patch] + target_proj(channel_embed[target_channel]).
+mask_token + fractional_pe(r, c, grid_h, grid_w)
+            + target_proj(channel_embed[target_channel]).
 ```
 
-The `spatial_pos[target_patch]` term is the repo's equivalent of MAE's
-`decoder_pos_embed`, and it is load-bearing rather than decorative: our decoder
-builds one query per masked (channel, patch) and does not run full-grid
-self-attention, so without it every masked patch of a channel would get the same
-query and predict the same pixels (`test_decoder_target_position_changes_predictions`).
+The fractional PE term is the repo's equivalent of MAE's `decoder_pos_embed`,
+and it is load-bearing rather than decorative: our decoder builds one query per
+masked (channel, patch) and does not run full-grid self-attention, so without it
+every masked patch of a channel would get the same query and predict the same
+pixels (`test_decoder_target_position_changes_predictions`,
+`test_fractional_decoder_pe_is_load_bearing_for_mask_tokens`).
 MAE reaches the same conclusion from the other side -- it adds PE to the
 unshuffled full token set for exactly this reason
 (`references/mae/paper.md:103`) -- but sums it over visible *and* mask tokens
 (`decoder_pos_embed` in `models_mae.forward_decoder`), because its decoder
-self-attends over the whole grid. Our visible tokens already carry position from
-the post-fusion PE, so only the target queries need one. Either parameterization
-works: `mask_token`/`target_proj` are learned, and `spatial_pos` is a learned
-table or the fixed `sincos` map.
+self-attends over the whole grid. Our visible tokens already carry position from encoder RoPE, so only the
+target queries need an additive anchor. Either parameterization works:
+`mask_token` / `target_proj` are learned, and the decoder PE is a function of
+fractional coordinates (or the legacy learned/`sincos` table).
 
 That is Perceiver-IO-style query construction from position and
 modality/target features (`references/perceiver-io/paper.md:101-103`,

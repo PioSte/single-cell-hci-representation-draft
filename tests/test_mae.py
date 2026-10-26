@@ -243,10 +243,18 @@ def test_forward_and_encode_share_the_descriptor():
     assert torch.allclose(out["descriptor"], pooled, atol=1e-6)
 
 
-def test_post_fusion_pe_and_no_patch_embed_pe():
+def test_default_pe_lives_in_encoder_and_decoder_not_fusion():
     model = _model()
-    assert tuple(model.fusion.spatial_pos.shape) == (1, model.n_patches, 32)
+    assert model.encoder_pos_embed == "rope"
+    assert model.decoder_pos_embed == "fractional"
+    assert model.fusion.pos_embed == "none"
+    assert not hasattr(model.fusion, "spatial_pos")
     assert not hasattr(model.tokenizer.patch_embed, "spatial_pos")
+    assert model.decoder.fractional_pe is not None
+
+    legacy = _model(pos_embed="learned")
+    assert tuple(legacy.fusion.spatial_pos.shape) == (1, legacy.n_patches, 32)
+    assert not hasattr(legacy.tokenizer.patch_embed, "spatial_pos")
 
 
 def test_multi_query_descriptor_smoke():

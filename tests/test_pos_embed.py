@@ -131,7 +131,7 @@ def test_add_spatial_pos_registers_parameter_or_buffer():
 # --------------------------------------------------------------------------
 # module wiring
 # ---------------------------------------------------------------------------
-@pytest.mark.parametrize("kind", POS_EMBED_KINDS)
+@pytest.mark.parametrize("kind", ("learned", "sincos"))
 def test_fusion_modules_expose_selected_pe(kind):
     fusion = ChannelFusion(D, n_heads=4, n_patches=N, pos_embed=kind)
     assert fusion.pos_embed == kind
@@ -150,3 +150,16 @@ def test_fusion_modules_expose_selected_pe(kind):
         assert "spatial_pos" not in dict(fusion.named_parameters())
         assert "spatial_pos" not in dict(gated.named_parameters())
         assert torch.allclose(fusion.spatial_pos[0], get_2d_sincos_pos_embed(D, 4))
+
+
+def test_fusion_has_no_table_for_computed_positions():
+    for kind in ("none",):
+        fusion = ChannelFusion(D, n_heads=4, n_patches=N, pos_embed=kind)
+        assert fusion.pos_embed == kind
+        assert not fusion.has_spatial_pos
+        assert not hasattr(fusion, "spatial_pos")
+        assert not hasattr(IdentityGatedSum(D, n_patches=N, pos_embed=kind), "spatial_pos")
+
+    # ``fractional`` is a decoder concept; it has no fusion table either.
+    with pytest.raises(ValueError, match="computed from grid"):
+        add_spatial_pos(nn.Module(), D, N, "fractional", batch_dims=1)

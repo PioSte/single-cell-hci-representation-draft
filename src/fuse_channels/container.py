@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 from typing import Optional
 
 import torch
@@ -42,7 +43,20 @@ class ChannelSet:
         ``[T, D]`` additive channel-embedding vector (learnable), if already
         computed.
     n_samples, n_patches:
-        batch size and (fixed) number of spatial patches.
+        batch size and the **maximum** number of spatial patches in the batch
+        (a scalar keeps the original fixed-grid API; with variable patch sizes
+        each sample may have a smaller ``n_patches_per_sample``).
+    grid_h, grid_w:
+        optional ``[n_samples]`` per-sample grid extents.
+    n_patches_per_sample:
+        optional ``[n_samples]`` patch counts.
+    patch_row, patch_col:
+        optional ``[T]`` row-major grid coordinates.  With a single patch size
+        these are derivable from ``patch_idx`` and ``grid_w``.
+    patch_size:
+        optional ``[T]`` patch size in pixels for each token.
+    pixel_size:
+        optional ``[T]`` physical pixel size (e.g. micrometres per pixel).
     """
 
     tokens: torch.Tensor
@@ -54,8 +68,46 @@ class ChannelSet:
     n_patches: int
     channel_embed: Optional[torch.Tensor] = None
     channel_group_id: Optional[torch.Tensor] = None
+    grid_h: Optional[torch.Tensor] = None
+    grid_w: Optional[torch.Tensor] = None
+    n_patches_per_sample: Optional[torch.Tensor] = None
+    patch_row: Optional[torch.Tensor] = None
+    patch_col: Optional[torch.Tensor] = None
+    patch_size: Optional[torch.Tensor] = None
+    pixel_size: Optional[torch.Tensor] = None
 
     # ------------------------------------------------------------------ #
     def location_group_ids(self) -> torch.Tensor:
-        """Group id per token for *per-spatial-location* channel attention."""
+        """Group id per token for *per-spatial-location* channel attention.
+
+        ``n_patches`` is the batch maximum, so this is a unique dense group id
+        even when samples have different grid sizes.
+        """
         return self.sample_idx * self.n_patches + self.patch_idx
+
+    def grid_coords(self):
+        """Return ``(rows, cols, grid_h, grid_w)`` per token, inventing a square grid.
+
+        Tokenizers fill these fields.  Hand-built :class:`ChannelSet` objects
+        used by unit tests only have ``patch_idx``; the fallback keeps those
+        usable by assuming a square grid.
+        """
+        if self.patch_row is not None and self.patch_col is not None:
+            rows = self.patch_row
+            cols = self.patch_col
+        else:
+            side = math.isqrt(self.n_patches)
+            if side * side != self.n_patches:
+                raise ValueError(
+                    "ChannelSet has no patch_row/patch_col and n_patches is not a square"
+                )
+            rows = self.patch_idx // side
+            cols = self.patch_idx % side
+        if self.grid_h is not None and self.grid_w is not None:
+            gh = self.grid_h[self.sample_idx]
+            gw = self.grid_w[self.sample_idx]
+        else:
+            side = math.isqrt(self.n_patches)
+            gh = torch.full_like(self.patch_idx, side)
+            gw = torch.full_like(self.patch_idx, side)
+        return rows, cols, gh, gw

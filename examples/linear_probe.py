@@ -161,7 +161,15 @@ def main() -> None:
     p = argparse.ArgumentParser()
     p.add_argument("--samples", type=int, default=96)
     p.add_argument("--image-size", type=int, default=16)
-    p.add_argument("--patch-size", type=int, default=8)
+    p.add_argument("--patch-size", type=int, default=8, help="canonical patch size p0")
+    p.add_argument(
+        "--patch-sizes",
+        type=int,
+        nargs="+",
+        default=None,
+        help="FlexiViT patch sizes available during pretraining "
+        "(evaluation uses the canonical --patch-size)",
+    )
     p.add_argument("--c-max", type=int, default=8)
     p.add_argument("--channel-ids", type=int, default=32)
     p.add_argument(
@@ -183,11 +191,17 @@ def main() -> None:
     p.add_argument("--probe-lr", type=float, default=1e-2)
     p.add_argument(
         "--pos-embed",
-        choices=("learned", "sincos"),
-        default="learned",
-        help="absolute spatial PE for fusion + decoder: learned table "
-        "(default) or fixed 2D sine-cosine (MAE-faithful, zero params)",
+        choices=("fractional", "learned", "sincos"),
+        default="fractional",
+        help="fractional = encoder RoPE + decoder fractional PE (target); "
+        "learned/sincos = legacy fixed-grid table ablation",
     )
+    p.add_argument(
+        "--scale-conditioning",
+        choices=("add", "adaln", "none"),
+        default="add",
+    )
+    p.add_argument("--pixel-size", type=float, default=None, help="um per pixel")
     p.add_argument("--seed", type=int, default=0)
     args = p.parse_args()
 
@@ -220,6 +234,7 @@ def main() -> None:
     model = ChannelFusionMAE(
         image_size=args.image_size,
         patch_size=args.patch_size,
+        patch_sizes=args.patch_sizes,
         dim=args.dim,
         encoder_depth=args.depth,
         decoder_depth=1,
@@ -227,6 +242,8 @@ def main() -> None:
         n_memory=args.n_memory,
         num_channel_ids=args.channel_ids,
         pos_embed=args.pos_embed,
+        scale_conditioning=args.scale_conditioning,
+        pixel_size=args.pixel_size,
     )
 
     if args.pretrain_steps > 0:

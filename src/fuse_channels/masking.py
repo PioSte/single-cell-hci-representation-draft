@@ -127,7 +127,7 @@ class DCPVisibilitySampler:
 
     def __init__(
         self,
-        n_patches: int,
+        n_patches: int | None = None,
         p_patch: float = 0.5,
         p_channel: float = 0.5,
         patch_ratio: float = 0.75,
@@ -135,7 +135,7 @@ class DCPVisibilitySampler:
         max_masked_channels_frac: float = 1.0,
         mode_sampling: str = "batch",
     ) -> None:
-        if n_patches < 1:
+        if n_patches is not None and n_patches < 1:
             raise ValueError(f"n_patches must be >= 1, got {n_patches}")
         if p_patch < 0 or p_channel < 0:
             raise ValueError(
@@ -149,7 +149,11 @@ class DCPVisibilitySampler:
         if not 0.0 < patch_ratio < 1.0:
             raise ValueError(f"patch_ratio must be in (0, 1), got {patch_ratio}")
         patch_region_used = p_patch > 0 or p_patch + p_channel < 1
-        if patch_region_used and math.floor(n_patches * patch_ratio) < 1:
+        if (
+            n_patches is not None
+            and patch_region_used
+            and math.floor(n_patches * patch_ratio) < 1
+        ):
             raise ValueError(
                 "n_patches * patch_ratio must be >= 1 when the patch region "
                 "is used; got "
@@ -210,19 +214,19 @@ class DCPVisibilitySampler:
 
     # ------------------------------------------------------------------ #
     def _draw_visible(
-        self, n_channels: int, device, generator, mode: str
+        self, n_channels: int, n_patches: int, device, generator, mode: str
     ) -> torch.Tensor:
         """Draw a ``[C, N]`` boolean visible mask for one sample."""
         visible = torch.ones(
-            n_channels, self.n_patches, dtype=torch.bool, device=device
+            n_channels, n_patches, dtype=torch.bool, device=device
         )
 
         if mode in ("patch", "combined"):
-            n_masked = int(math.floor(self.n_patches * self.patch_ratio))
+            n_masked = int(math.floor(n_patches * self.patch_ratio))
             for c in range(n_channels):
                 if n_masked:
                     idx = torch.randperm(
-                        self.n_patches, device=device, generator=generator
+                        n_patches, device=device, generator=generator
                     )[:n_masked]
                     visible[c, idx] = False
 
@@ -261,7 +265,7 @@ class DCPVisibilitySampler:
         n_with_content = int(visible.any(dim=1).sum().item())
         return n_with_content >= self._min_content_channels(visible.shape[0])
 
-    def _force_visible_patch(self, visible: torch.Tensor, generator) -> torch.Tensor:
+    def _force_visible_patch(self, visible: torch.Tensor, n_patches: int, generator) -> torch.Tensor:
         """Last-resort guard: reveal one patch in every empty channel.
 
         Never reveals a whole channel row, so a channel dropped by the channel
@@ -277,43 +281,78 @@ class DCPVisibilitySampler:
         missing = torch.nonzero(~visible.any(dim=1), as_tuple=False).squeeze(1)
         if missing.numel() == 0:
             # Cannot happen for C >= 1, but keep the invariant explicit.
-            visible[0, self._randint(self.n_patches, visible.device, generator)] = True
+            visible[0, self._randint(n_patches, visible.device, generator)] = True
             return visible
         for c in missing.tolist():
-            pi = self._randint(self.n_patches, visible.device, generator)
+            pi = self._randint(n_patches, visible.device, generator)
             visible[c, pi] = True
         return visible
 
     # ------------------------------------------------------------------ #
+    def _resolve_n_patches(self, n_samples: int, n_patches) -> List[int]:
+        if n_patches is None:
+            if self.n_patches is None:
+                raise ValueError(
+                    "DCPVisibilitySampler needs n_patches at construction or call time"
+                )
+            return [self.n_patches] * n_samples
+        if isinstance(n_patches, int):
+            return [n_patches] * n_samples
+        ns = [int(n) for n in n_patches]
+        if len(ns) != n_samples:
+            raise ValueError(
+                f"expected {n_samples} n_patches values, got {len(ns)}"
+            )
+        return ns
+
     def __call__(
         self,
         images: Sequence[torch.Tensor],
         generator: Optional[torch.Generator] = None,
+        n_patches=None,
     ) -> List[torch.Tensor]:
-        """Return a list of ``[C_b, n_patches]`` boolean *visible* masks."""
+        """Return a list of ``[C_b, N_b]`` boolean *visible* masks.
+
+        ``n_patches`` overrides the constructor value and may be a scalar or
+        one value per sample, which is what FlexiViT needs when the patch size
+        changes between steps or samples.
+        """
         self.last_modes = []
         if len(images) == 0:
             return []
 
         device = images[0].device
+        ns = self._resolve_n_patches(len(images), n_patches)
         modes = self._select_modes(len(images), device, generator)
         out: List[torch.Tensor] = []
 
-        for im, mode in zip(images, modes):
+        for im, mode, N in zip(images, modes, ns):
+            if N < 1:
+                raise ValueError(f"n_patches must be >= 1, got {N}")
+            patch_region_used = self.p_patch > 0 or self.p_patch + self.p_channel < 1
+            patch_ok = (
+                not patch_region_used
+                or math.floor(N * self.patch_ratio) >= 1
+            )
             C = int(im.shape[0])
             applied = mode
+            if not patch_ok and applied in ("patch", "combined"):
+                # A 1-patch grid cannot use the patch region.  Fall back to
+                # whole-channel masking, or to an unmasked sample when even
+                # channel masking would be a no-op.
+                applied = "channel" if C > self.min_visible_channels else "none"
             if applied == "channel" and C <= self.min_visible_channels:
                 # Channel-only masking would be a no-op (HCS keeps >= 1
                 # channel visible and C <= min_visible); use patch masking.
-                applied = "patch"
+                applied = "patch" if patch_ok else "none"
 
-            visible = self._draw_visible(C, device, generator, applied)
+            visible = self._draw_visible(C, N, device, generator, applied)
             for _ in range(self._MAX_ATTEMPTS):
                 if self._satisfies_guards(visible):
                     break
-                visible = self._draw_visible(C, device, generator, applied)
+                visible = self._draw_visible(C, N, device, generator, applied)
             if not self._satisfies_guards(visible):
-                visible = self._force_visible_patch(visible, generator)
+                visible = self._force_visible_patch(visible, N, generator)
 
             self.last_modes.append(applied)
             out.append(visible)

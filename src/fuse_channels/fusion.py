@@ -13,12 +13,13 @@ Two interchangeable pooling mechanisms are provided:
   emits per-channel mixing weights from the channel embedding; it does not
   generate network weights.
 
-Both emit one ``[B, N, D]`` token per spatial location and add the spatial
-positional embedding before returning (``pos_embed="learned"`` table by
-default, ``"sincos"`` for the fixed MAE/ViT map; see
-:mod:`fuse_channels.pos_embed`).  ChannelViT and
-ChAda-ViT are precedents for cross-channel attention, but they use full joint
-attention over the ``C·N`` tokens rather than fixed-query pooling.
+Both emit one ``[B, N, D]`` token per spatial location.  Under the FlexiViT
+target architecture they add no positional embedding: the encoder owns layout
+through 2-D RoPE and the decoder owns its absolute anchor through fractional
+PE.  ``pos_embed="learned"`` / ``"sincos"`` remain as the legacy fixed-grid
+ablation; ``"none"`` is the default.  ChannelViT and ChAda-ViT are precedents
+for cross-channel attention, but they use full joint attention over the
+``C·N`` tokens rather than fixed-query pooling.
 
 Both are set-native: they consume a :class:`~fuse_channels.container.ChannelSet`
 built from real tokens only and never create a ``[B, C_max, D]`` tensor.
@@ -78,18 +79,20 @@ class ChannelFusion(nn.Module):
         self,
         dim: int,
         n_heads: int = 8,
-        n_patches: int = 0,
+        n_patches: int | None = None,
         dropout: float = 0.0,
-        pos_embed: str = "learned",
+        pos_embed: str = "none",
         grid_size=None,
     ) -> None:
         super().__init__()
         assert dim % n_heads == 0, "dim must be divisible by n_heads"
-        assert n_patches > 0, "n_patches is required"
+        if pos_embed != "none" and not n_patches:
+            raise ValueError("n_patches is required for a table-based spatial PE")
         self.dim = dim
         self.n_heads = n_heads
         self.n_patches = n_patches
         self.dropout = dropout
+        self.has_spatial_pos = pos_embed != "none"
 
         self.norm_q = nn.LayerNorm(dim)
         self.norm_kv = nn.LayerNorm(dim)
@@ -98,10 +101,13 @@ class ChannelFusion(nn.Module):
         # one shared query, applied at every spatial location
         self.queries = nn.Parameter(torch.zeros(1, 1, dim))
         nn.init.trunc_normal_(self.queries, std=0.02)
-        # post-fusion spatial positional embedding (learned table or fixed sincos)
-        add_spatial_pos(
-            self, dim, n_patches, pos_embed, grid_size=grid_size, batch_dims=1
-        )
+        # optional legacy post-fusion positional embedding
+        if pos_embed != "none":
+            add_spatial_pos(
+                self, dim, n_patches, pos_embed, grid_size=grid_size, batch_dims=1
+            )
+        else:
+            self.pos_embed = "none"
 
     def _attention_dropout(self) -> float:
         """Attention dropout probability, disabled in eval mode."""
@@ -114,7 +120,7 @@ class ChannelFusion(nn.Module):
         ``fused`` is ``[B, N, D]`` (post-fusion PE added) and ``present`` is a
         boolean mask marking locations that had at least one channel.
         """
-        if cs.n_patches != self.n_patches:
+        if self.n_patches is not None and cs.n_patches != self.n_patches and self.has_spatial_pos:
             raise ValueError(
                 f"ChannelFusion was built for n_patches={self.n_patches}, "
                 f"got ChannelSet.n_patches={cs.n_patches}"
@@ -139,7 +145,8 @@ class ChannelFusion(nn.Module):
         sample_of_group = uniq // N
         patch_of_group = uniq % N
         fused[sample_of_group, patch_of_group] = out
-        fused = fused + self.spatial_pos
+        if self.has_spatial_pos:
+            fused = fused + self.spatial_pos
 
         present = torch.zeros(B, N, dtype=torch.bool, device=cs.tokens.device)
         present[sample_of_group, patch_of_group] = True
@@ -286,15 +293,17 @@ class IdentityGatedSum(nn.Module):
     def __init__(
         self,
         dim: int,
-        n_patches: int = 0,
+        n_patches: int | None = None,
         hidden: int | None = None,
-        pos_embed: str = "learned",
+        pos_embed: str = "none",
         grid_size=None,
     ) -> None:
         super().__init__()
-        assert n_patches > 0, "n_patches is required"
+        if pos_embed != "none" and not n_patches:
+            raise ValueError("n_patches is required for a table-based spatial PE")
         self.dim = dim
         self.n_patches = n_patches
+        self.has_spatial_pos = pos_embed != "none"
 
         hidden = hidden or dim
         self.weight_net = nn.Sequential(
@@ -302,12 +311,15 @@ class IdentityGatedSum(nn.Module):
         )
         self.value_proj = nn.Linear(dim, dim)
         self.out_norm = nn.LayerNorm(dim)
-        add_spatial_pos(
-            self, dim, n_patches, pos_embed, grid_size=grid_size, batch_dims=1
-        )
+        if pos_embed != "none":
+            add_spatial_pos(
+                self, dim, n_patches, pos_embed, grid_size=grid_size, batch_dims=1
+            )
+        else:
+            self.pos_embed = "none"
 
     def forward(self, cs: ChannelSet):
-        if cs.n_patches != self.n_patches:
+        if self.n_patches is not None and cs.n_patches != self.n_patches and self.has_spatial_pos:
             raise ValueError(
                 f"IdentityGatedSum was built for n_patches={self.n_patches}, "
                 f"got ChannelSet.n_patches={cs.n_patches}"
@@ -345,7 +357,8 @@ class IdentityGatedSum(nn.Module):
         sample_of_group = uniq // N
         patch_of_group = uniq % N
         fused[sample_of_group, patch_of_group] = out
-        fused = fused + self.spatial_pos
+        if self.has_spatial_pos:
+            fused = fused + self.spatial_pos
         present = torch.zeros(
             cs.n_samples, N, dtype=torch.bool, device=cs.tokens.device
         )
@@ -393,4 +406,7 @@ def _dense_fusion_reference(fusion: ChannelFusion, cs: ChannelSet) -> torch.Tens
     o = fusion.proj_out(o).reshape(B, N, D)
     out = o * present.unsqueeze(-1)
     # locations with no channel produced NaNs above; scrub them before adding PE.
-    return torch.nan_to_num(out) + fusion.spatial_pos
+    out = torch.nan_to_num(out)
+    if fusion.has_spatial_pos:
+        out = out + fusion.spatial_pos
+    return out

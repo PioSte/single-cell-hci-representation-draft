@@ -33,7 +33,7 @@ from typing import Tuple, Union
 import torch
 import torch.nn as nn
 
-POS_EMBED_KINDS = ("learned", "sincos")
+POS_EMBED_KINDS = ("learned", "sincos", "none", "fractional")
 
 GridSize = Union[int, Tuple[int, int]]
 
@@ -98,6 +98,110 @@ def get_2d_sincos_pos_embed(
     return torch.cat([emb_h, emb_w], dim=1)
 
 
+def fractional_1d_sincos(
+    dim: int, positions: torch.Tensor, base: float = 10000.0
+) -> torch.Tensor:
+    """Sine-cosine embedding of continuous positions in ``[0, 1]``."""
+    if dim % 2 != 0:
+        raise ValueError(f"fractional sincos needs an even dim, got {dim}")
+    half = dim // 2
+    omega = 1.0 / (
+        base ** (torch.arange(half, dtype=positions.dtype, device=positions.device) / half)
+    )
+    out = positions.reshape(-1, 1) * omega.reshape(1, -1)
+    return torch.cat([out.sin(), out.cos()], dim=1)
+
+
+def get_fractional_sincos_pos_embed(
+    dim: int,
+    rows: torch.Tensor,
+    cols: torch.Tensor,
+    grid_h,
+    grid_w,
+    base: float = 10000.0,
+) -> torch.Tensor:
+    """Factorized fractional absolute PE for arbitrary dynamic grids.
+
+    For each position ``(r, c)``::
+
+        v = (r + 0.5) / grid_h
+        u = (c + 0.5) / grid_w
+        PE(r, c) = g_row(v) + g_col(u)
+
+    The two full-width axis embeddings are added.  The result is defined for
+    any ``grid_h x grid_w`` and has no lookup table to resize.
+    """
+    if dim % 2 != 0:
+        raise ValueError(f"fractional sincos PE needs an even dim, got {dim}")
+    dtype = torch.float32
+    device = rows.device
+    gh = _as_float(grid_h, device, dtype).expand_as(rows)
+    gw = _as_float(grid_w, device, dtype).expand_as(cols)
+    v = (rows.to(dtype) + 0.5) / gh
+    u = (cols.to(dtype) + 0.5) / gw
+    row_pe = fractional_1d_sincos(dim, v, base=base)
+    col_pe = fractional_1d_sincos(dim, u, base=base)
+    return row_pe + col_pe
+
+
+def _as_float(value, device, dtype):
+    if torch.is_tensor(value):
+        return value.to(device=device, dtype=dtype)
+    return torch.as_tensor(value, device=device, dtype=dtype)
+
+
+class FractionalSpatialPE(nn.Module):
+    """Decoder absolute PE as a function of fractional grid coordinates.
+
+    ``mode="sincos"`` (default) is a fixed factorized sine-cosine function.
+    ``mode="mlp"`` evaluates a small learned MLP on each scalar coordinate and
+    sums the two axis embeddings.  Neither variant has a grid-sized table, so
+    both work for any grid and need no resampling when the patch size changes.
+    """
+
+    def __init__(
+        self,
+        dim: int,
+        mode: str = "sincos",
+        base: float = 10000.0,
+        hidden: int | None = None,
+    ) -> None:
+        super().__init__()
+        if dim % 2 != 0:
+            raise ValueError(f"fractional PE needs an even dim, got {dim}")
+        if mode not in ("sincos", "mlp"):
+            raise ValueError(f"unknown fractional PE mode '{mode}'")
+        self.dim = dim
+        self.mode = mode
+        self.base = base
+        if mode == "mlp":
+            hidden = hidden or dim
+            self.row_mlp = nn.Sequential(
+                nn.Linear(1, hidden), nn.GELU(), nn.Linear(hidden, dim)
+            )
+            self.col_mlp = nn.Sequential(
+                nn.Linear(1, hidden), nn.GELU(), nn.Linear(hidden, dim)
+            )
+
+    def forward(self, rows, cols, grid_h, grid_w) -> torch.Tensor:
+        dtype = torch.float32
+        device = rows.device
+        gh = _as_float(grid_h, device, dtype).expand_as(rows)
+        gw = _as_float(grid_w, device, dtype).expand_as(cols)
+        v = (rows.to(dtype) + 0.5) / gh
+        u = (cols.to(dtype) + 0.5) / gw
+        if self.mode == "sincos":
+            return get_fractional_sincos_pos_embed(
+                self.dim, rows, cols, grid_h, grid_w, base=self.base
+            )
+        row_pe = self.row_mlp(v.reshape(-1, 1))
+        col_pe = self.col_mlp(u.reshape(-1, 1))
+        return row_pe + col_pe
+
+    def extra_repr(self) -> str:
+        return f"dim={self.dim}, mode={self.mode}"
+
+
 def build_spatial_pos(
     dim: int,
     n_patches: int,
@@ -112,6 +216,11 @@ def build_spatial_pos(
     """
     if kind not in POS_EMBED_KINDS:
         raise ValueError(f"unknown pos_embed '{kind}'; expected one of {POS_EMBED_KINDS}")
+    if kind in ("none", "fractional"):
+        raise ValueError(
+            f"pos_embed '{kind}' is computed from grid coordinates, not a table;"
+            " use FractionalSpatialPE or skip the table entirely"
+        )
     if n_patches <= 0:
         raise ValueError(f"n_patches must be positive, got {n_patches}")
 
@@ -144,6 +253,9 @@ def add_spatial_pos(
     Also records the choice on ``module.pos_embed`` so it shows up in reprs and
     can be asserted in tests.
     """
+    if kind == "none":
+        module.pos_embed = "none"
+        return
     pos = build_spatial_pos(dim, n_patches, kind, grid_size, batch_dims)
     if isinstance(pos, nn.Parameter):
         module.register_parameter("spatial_pos", pos)

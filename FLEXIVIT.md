@@ -17,33 +17,33 @@ RoPE, or accept that raw-index RoPE also encodes sampling density.
 
 ## Status in this repo
 
-**This document describes a target architecture, not the current behavior of
-the repo.** The current implementation is a fixed-grid, fixed-patch-size,
-no-scale-metadata model:
+**Implemented.** The target architecture is now the default model path:
 
-- one `image_size` and `patch_size` per model; `ChannelSet.n_patches` is a
-  scalar and fusion returns a dense `[B, N, D]` tensor;
-- absolute post-fusion PE is learned or fixed sine-cosine, shared with the
-  decoder `spatial_pos` table;
-- the decoder head is a fixed `Linear(dim, patch_size²)`;
-- masking is constructed with one fixed `n_patches`;
-- there is no µm/pixel metadata, scale token, encoder RoPE, or FlexiViT
-  patch-embedding resize yet.
+1. **Fractional decoder PE** — `ChannelAwareDecoder(pos_embed="fractional")`
+   evaluates `g_row(v) + g_col(u)` from `(r, c, n_h, n_w)`; it has no grid-sized
+   table and works with non-square or changing grids.
+2. **Scale conditioning** — `scale_conditioning="add"` (default) or `"adaln"`
+   embeds `log(p)` and, when supplied, `log(µm/px)` with Fourier features and a
+   small MLP, in both encoder and decoder.
+3. **Encoder RoPE** — `encoder_pos_embed="rope"` (default) applies 2-D axial
+   RoPE to q/k on normalized coordinates.  Fusion no longer owns a spatial
+   table (`fusion_pos_embed="none"`).  The old fixed-grid scheme is available
+   as `pos_embed="learned"` / `"sincos"` with `encoder_pos_embed="none"`.
+4. **FlexiViT per batch** — `patch_sizes=(...)` and `flexi_random=True` pick one
+   `p` per training step; `forward(..., patch_sizes=p)` overrides it.  The
+   canonical patch kernel is PI-resized, `n_patches`, masking, target
+   extraction, RoPE and fractional PE are derived per step, and the shared
+   reconstruction head predicts on a canonical grid and resizes to `p`.
+5. **Per-sample variable `p` / `H, W`** — `forward(..., patch_sizes=[p_b])`
+   passes per-sample sizes.  Tokenization, fusion grouping, RoPE, fractional
+   PE and masking use per-sample grid metadata; predictions are padded to
+   `max(p_b²)` with a validity mask, and the Fourier ablation is evaluated per
+   patch-size group.  The fused scatter buffer is still `[B, max N_b, D]`, but
+   the encoder only ever receives present locations (flattened), so attention
+   is padding-free.
 
-The migration should be staged rather than implemented as one change:
-
-1. **Fractional decoder PE at the fixed grid** — replace the decoder table
-   lookup with a function of `(r, c, n_h, n_w)`; no FlexiViT yet.
-2. **Scale conditioning** — add per-sample and/or per-channel pixel-size
-   metadata, then additive or AdaLN/FiLM conditioning.
-3. **Encoder RoPE at the fixed grid** — apply RoPE to post-fusion tokens, move
-   position out of the fusion modules, and split encoder/decoder PE config.
-4. **FlexiViT per batch** — one `p` per training step, with fixed `H, W`; make
-   `n_patches`, masking, target extraction, and the decoder head dynamic per
-   step. This is the practical first FlexiViT milestone.
-5. **Per-sample variable `p` / `H, W`** — flatten fusion output, use per-sample
-   grid metadata and masking, and accept that this is a larger redesign than
-   the PE changes in this document.
+Tests for these properties live in `tests/test_flexivit.py`, and the original
+fixed-grid invariants remain covered in the other tests.
 
 ---
 
@@ -312,22 +312,27 @@ patch tokens.
 
 ## 7. Repo integration notes
 
-Current state:
+Implementation map for the target architecture:
 
-- `src/fuse_channels/pos_embed.py` supports only `"learned"` and `"sincos"`;
-  `"rope"` is not implemented.
-- `tests/test_pos_embed.py:106` currently asserts that `"rope"` is rejected.
-- `ChannelTiedPatchEmbed` fixes `image_size` and `patch_size` at construction
-  (`src/fuse_channels/patch_embed.py:26-32`); FlexiViT needs dynamic `p`,
-  dynamic `n_h, n_w`, and PI-resized patch weights.
-- `ChannelAwareDecoder` uses `self.spatial_pos[target_patch]`
-  (`src/fuse_channels/decoder.py:149`); fractional PE needs grid coordinates
-  instead of a flat table lookup.
-- Fusion currently adds a post-fusion spatial table. If encoder RoPE is added,
-  decide whether to remove or replace that table so position is not injected
-  twice.
-
----
+- `src/fuse_channels/rope.py` — `axial_rope_cache` / `apply_rope`; the encoder
+  applies them to q/k in every block.
+- `src/fuse_channels/pos_embed.py` — `FractionalSpatialPE` and
+  `get_fractional_sincos_pos_embed`; the decoder uses them by default. The old
+  learned/sine-cosine tables remain for the `pos_embed="learned"` / `"sincos"`
+  ablation.
+- `src/fuse_channels/flexi.py` — `pi_resize_patch_embed`; `ChannelTiedPatchEmbed`
+  keeps one canonical `Conv2d` kernel and PI-resizes it per patch size.
+- `src/fuse_channels/patch_embed.py` — per-sample patch sizes, grid metadata,
+  and row/column coordinates on `ChannelSet`.
+- `src/fuse_channels/container.py` — `grid_h`, `grid_w`,
+  `n_patches_per_sample`, `patch_row`, `patch_col`, `patch_size`, `pixel_size`.
+- `src/fuse_channels/decoder.py` — fractional target PE, optional AdaLN, and a
+  shared canonical-grid reconstruction head resized to the target patch size.
+- `src/fuse_channels/masking.py` — `DCPVisibilitySampler` accepts a scalar or
+  per-sample patch count at call time.
+- `src/fuse_channels/mae.py` — resolves patch sizes, builds scale features,
+  routes RoPE/conditioning through the encoder and decoder, and pads mixed-p
+  targets with a validity mask.
 
 ## 8. References
 

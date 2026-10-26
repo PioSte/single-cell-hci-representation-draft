@@ -20,12 +20,23 @@ from .ops import (
     grouped_self_attention,
     grouped_softmax,
 )
+from .flexi import pi_resize_patch_embed
 from .patch_embed import ChannelTiedPatchEmbed, ChannelTokenizer
 from .pos_embed import (
     POS_EMBED_KINDS,
+    FractionalSpatialPE,
     add_spatial_pos,
     build_spatial_pos,
+    fractional_1d_sincos,
     get_2d_sincos_pos_embed,
+    get_fractional_sincos_pos_embed,
+)
+from .rope import (
+    apply_rope,
+    axial_rope_cache,
+    identity_rope_cache,
+    normalized_grid_coords,
+    rope_frequencies,
 )
 
 __all__ = [
@@ -37,9 +48,18 @@ __all__ = [
     "ChannelTokenizer",
     "ChannelTiedPatchEmbed",
     "POS_EMBED_KINDS",
+    "FractionalSpatialPE",
     "add_spatial_pos",
     "build_spatial_pos",
+    "fractional_1d_sincos",
     "get_2d_sincos_pos_embed",
+    "get_fractional_sincos_pos_embed",
+    "apply_rope",
+    "axial_rope_cache",
+    "identity_rope_cache",
+    "normalized_grid_coords",
+    "rope_frequencies",
+    "pi_resize_patch_embed",
     "TransformerEncoder",
     "TransformerBlock",
     "ChannelAwareDecoder",

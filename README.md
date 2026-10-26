@@ -4,8 +4,13 @@ A PyTorch implementation of the **padding-free channel-fusion tokenizer** for a
 high-content-imaging (HCI) foundation model, plus a channel-aware Masked
 Autoencoder (MAE) built on top of it.
 
-It implements a padding-free channel-fusion module for an HCI foundation model
-and its MAE follow-up. The design rationale, trade-offs, and deviations from the
+The tokenizer supports the FlexiViT target described in
+[`FLEXIVIT.md`](FLEXIVIT.md): a canonical channel-tied patch kernel is
+PI-resized to a per-step or per-sample patch size, the encoder uses 2-D axial
+RoPE on normalized grid coordinates, the decoder uses factorized-fractional
+absolute PE, and an optional scale conditioner carries ``log(p)`` and physical
+pixel size. The legacy fixed-grid learned/sine-cosine absolute PE remains
+available as an ablation. Design rationale, trade-offs, and deviations from the
 literature are in [`docs/design.md`](docs/design.md).
 
 ## What problem it solves
@@ -21,27 +26,29 @@ f({E_1 .. E_C}) -> [N, D] per sample, then -> [D] descriptor,
 
 without concatenation blow-up, with channel identity preserved, and with **no
 padding tokens**. `C` appears only in the tokenizer input length `ΣC·N`; the
-fused output is `[B, N, D]` (`N` is fixed by the image and patch size) and the
-pooled descriptor is `[B, D]`.
+fused output is `[B, N, D]` (`N = (H/p)·(W/p)` is set by the current patch
+size) and the pooled descriptor is `[B, D]`.
 
 ## Architecture
 
 ```
-per-channel tied Conv2d(1 -> D) patch embed        (no positional embedding here)
+per-channel tied Conv2d(1 -> D) patch embed, PI-resized to the current p
+    (no positional embedding here)
     + additive ChannelEmbedding (per channel id)
     -> per-location channel fusion: one learned query over the C channel tokens
-       (ChannelFusion, K = V = LayerNormed tokens)  + post-fusion spatial PE
+       (ChannelFusion, K = V = LayerNormed tokens)  + optional scale embedding
     -> padding-free transformer encoder over [present locations, D]
-       with fixed-count memory tokens
+       with fixed-count memory tokens and 2-D axial RoPE on q/k
     -> trained content-only PMA descriptor [B, D]   (appended to decoder KV)
-    -> channel-aware shared decoder: target-identity + target-position queries,
-       target self-attention, cross-attention to encoder representation + memory
+    -> channel-aware shared decoder: target-identity + fractional target-position
+       queries, target self-attention, cross-attention to encoder representation
 ```
 
-* **Channel-tied projection.** One `Conv2d(1, D, kernel_size=patch_size,
-  stride=patch_size)` is shared by every channel (ChannelViT's tied filters).
-  There is no positional embedding at this stage; position is added after
-  fusion.
+* **Channel-tied projection.** One canonical `Conv2d(1, D, kernel_size=p0,
+  stride=p0)` is shared by every channel (ChannelViT's tied filters). For any
+  other patch size `p` the kernel is **PI-resized**
+  (`(B.T)^+`, FlexiViT), not bilinearly resized. There is no positional
+  embedding at this stage.
 * **Additive channel identity.** `ChannelEmbedding` is a learned
   `num_channel_ids × D` table. The row for a channel id is added to every patch
   token of that channel; it is never normalized across the channel axis.
@@ -57,16 +64,24 @@ per-channel tied Conv2d(1 -> D) patch embed        (no positional embedding here
   projections; the Panopticon-style simplification); the query and the output
   projection are learned. `IdentityGatedSum` is the `O(C)` marker-routed
   ablation: `joint = Σ_c softmax_c(MLP(channel_embed_c)) · V_c`.
-* **Post-fusion positional embedding, learned or fixed.** Both fusion
-  modules add one absolute spatial PE to the `[B, N, D]` fused output, so
-  channel attention stays position-agnostic and position enters the encoder
-  once per location. `pos_embed="learned"` (default) is a learned
-  `[n_patches, D]` table; `pos_embed="sincos"` is the fixed 2D sine-cosine map
-  (zero parameters, any `grid_size`) and applies to the decoder's target PE
-  too. The decoder needs an absolute target PE under either choice: masked
-  patches of one channel share the mask token and channel embedding, so the
-  position is what makes their predictions differ (MAE's `decoder_pos_embed`
-  argument, `references/mae/paper.md:103`).
+* **Encoder position: 2-D axial RoPE.** Fusion is position-agnostic. RoPE is
+  applied to encoder queries and keys from **normalized** coordinates
+  `(r + 0.5)/grid_h` and `(c + 0.5)/grid_w`, so the phase describes layout only;
+  the patch size/scale enters through `log(p)` conditioning instead. Memory
+  tokens get zero rotation. `head_dim = dim / n_heads` must be divisible by 4.
+* **Decoder position: factorized-fractional absolute PE.** Target queries use
+  `g_row(v) + g_col(u)` with `u = (c + 0.5)/grid_w`, `v = (r + 0.5)/grid_h`.
+  This is a function, not a grid-sized table, so it is defined for any
+  `(grid_h, grid_w)` and needs no resampling when `p` changes. It is
+  load-bearing: masked patches of one channel share the mask token and channel
+  embedding, so position is what makes their predictions differ (MAE's
+  `decoder_pos_embed` argument, `references/mae/paper.md:103`).
+* **Legacy absolute PE ablation.** `pos_embed="learned"` or `"sincos"` restores
+  the old fixed-grid scheme: post-fusion table plus decoder target table, with
+  no encoder RoPE. It cannot change patch size within a run.
+* **Scale conditioning.** `scale_conditioning="add"` (default) adds a Fourier
+  embedding of `log(p)` and, when available, `log(µm/px)` to encoder and decoder
+  tokens. `"adaln"` modulates the LayerNorms instead; `"none"` disables it.
 * **Encoder and descriptor.** Standard pre-norm Q/K/V/O transformer blocks run
   over the flattened real tokens with fixed-count memory tokens. The `[B, D]`
   descriptor is a PMA-style pool over the encoder's *content* tokens (not the
@@ -77,9 +92,9 @@ per-channel tied Conv2d(1 -> D) patch embed        (no positional embedding here
   self-attend within each sample, then cross-attend to the encoder
   representation + memory + descriptor. A fully dropped channel has no encoder
   evidence, only its identity query, so identity acts as a **target
-  specification** as well as an input feature. The target PE is absolute
-  (`spatial_pos[target_patch]`, learned or `sincos`) and is load-bearing:
-  without it every masked patch of a channel gets the same query.
+  specification** as well as an input feature. The reconstruction head predicts
+  on a canonical output grid and bilinearly resizes to the target patch size;
+  FlexiViT does not define MAE output-head resampling.
 * **Masking.** DCP (ChA-MAEViT Eq. 1): patch-only, channel-only, or combined
   regions, with the region probabilities separate from `patch_ratio`. HCS is
   the channel-subset sampler used by the channel region (and is available as
@@ -122,7 +137,10 @@ model = ChannelFusionMAE(
     n_memory=4, num_channel_ids=32,   # size of the learnable identity table
     fusion="attention",               # or "identity_gated" (ablation)
     loss="mae",                       # or "cha_maevit" (ablation)
-    pos_embed="learned",              # or "sincos" (fixed 2D sine-cosine)
+    patch_sizes=(4, 8, 16),           # FlexiViT; patch_size is canonical p0
+    scale_conditioning="add",         # or "adaln" / "none"
+    pixel_size=0.5,                   # optional µm/px; log p is always used
+    # pos_embed="learned",            # legacy fixed-grid PE ablation
 )
 
 # a batch is a list of variable-channel images: [C_b, 1, H, W]
@@ -154,15 +172,16 @@ ids = [torch.randint(0, 32, (3,)), torch.randint(0, 32, (7,))]
 
 embedding = ChannelEmbedding(192, num_channel_ids=32)
 tokenizer = ChannelTokenizer(16, 8, 192, embedding)
-fusion = ChannelFusion(192, n_heads=6, n_patches=4)   # one query per location
-# fixed 2D sine-cosine spatial PE instead of the learned table (ablation)
-fusion_sincos = ChannelFusion(192, n_heads=6, n_patches=4, pos_embed="sincos")
+# Default target: no spatial table in fusion (encoder RoPE carries layout).
+fusion = ChannelFusion(192, n_heads=6)
+# Legacy fixed-grid ablation: post-fusion learned table.
+fusion_learned = ChannelFusion(192, n_heads=6, n_patches=4, pos_embed="learned")
 
 cs: ChannelSet = tokenizer(images, ids)   # real tokens only; cs.channel_embed is [ΣC·N, 192]
 fused, present = fusion(cs)              # [B, 4, 192]; no channel padding
 
 # the O(C) marker-routed ablation
-gated = IdentityGatedSum(192, n_patches=4)
+gated = IdentityGatedSum(192)
 gated_out, present = gated(cs)
 ```
 
@@ -191,7 +210,9 @@ gated_out, present = gated(cs)
 | `src/fuse_channels/identity.py` | `ChannelEmbedding`: learned per-channel-id additive table |
 | `src/fuse_channels/patch_embed.py` | `ChannelTiedPatchEmbed`, `ChannelTokenizer` |
 | `src/fuse_channels/fusion.py` | `ChannelFusion`, `IdentityGatedSum`, `MultiheadAttentionPooling`; `_dense_fusion_reference` (private, test/viz-only) |
-| `src/fuse_channels/pos_embed.py` | absolute spatial PE: learned table or fixed 2D sine-cosine |
+| `src/fuse_channels/rope.py` | 2-D axial RoPE on normalized grid coordinates |
+| `src/fuse_channels/flexi.py` | FlexiViT PI-resize for the patch-embedding kernel |
+| `src/fuse_channels/pos_embed.py` | fractional absolute PE plus legacy learned/sincos tables |
 | `src/fuse_channels/encoder.py` | `TransformerEncoder` / `TransformerBlock` with memory tokens |
 | `src/fuse_channels/decoder.py` | `ChannelAwareDecoder` / `DecoderBlock` |
 | `src/fuse_channels/masking.py` | `DCPVisibilitySampler` (Eq. 1) and `HierarchicalChannelSampler` (HCS) |
@@ -218,14 +239,20 @@ Covered by `tests/`:
   (`test_identity_changes_routing`, `test_identity_gated_sum`); no downstream
   task metric is claimed
 - no pad artifacts and an exact presence mask (`test_no_pad_artifacts`)
-- post-fusion PE, one query shared across locations, and attention dropout
-  behaviour (`test_post_fusion_spatial_pos`,
-  `test_pooling_query_is_shared_across_locations`, dropout tests)
+- one shared pooling query per location and attention dropout behaviour
+  (`test_pooling_query_is_shared_across_locations`, dropout tests); the default
+  target has no fusion PE, while the legacy table remains opt-in
+  (`test_post_fusion_spatial_pos_is_legacy_opt_in`)
 - `pos_embed` variants: fixed `sincos` adds no parameters, is deterministic,
   keeps the padding-free ≡ dense equivalence and the cardinality/permutation
   invariants, and is row-major over the grid (`tests/test_pos_embed.py`,
   `test_sincos_pos_embed_*`); the decoder's target PE is load-bearing
   (`test_decoder_target_position_changes_predictions`)
+- FlexiViT target (`tests/test_flexivit.py`): normalized RoPE is grid-size
+  invariant, fractional PE is defined for non-square/dynamic grids, PI-resize
+  uses `pinv(B.T)`, per-batch and per-sample patch sizes change `n_patches` and
+  the reconstruction head dimension, and additive/AdaLN scale conditioning is
+  wired into both ends
 - encoder input length = number of present locations, with token count
   = visible channel-patches (`test_encoder_input_length_is_present_locations`)
 - DCP Eq. 1 regions and HCS counts (`test_masking.py`); channels dropped by DCP
@@ -291,6 +318,8 @@ sampler; the decoder consumes the encoder representation + memory + a trained
 descriptor and conditions on the target channel embedding, not "unmasked
 channel tokens"; the descriptor is trained rather than inference-only; the
 default loss is patch-normalized MSE with ChA-MAEViT as an ablation;
-`IdentityGatedSum` replaces the misleading `HypernetworkWeightedSum` name; and
-the acceptance claims are limited to what the tests cover. Rationale, trade-offs,
+`IdentityGatedSum` replaces the misleading `HypernetworkWeightedSum` name;
+position now follows the FlexiViT target (encoder RoPE + decoder fractional PE,
+no fusion table), with the legacy table retained as an ablation; and the
+acceptance claims are limited to what the tests cover. Rationale, trade-offs,
 and the corrected reference claims are in [`docs/design.md`](docs/design.md).

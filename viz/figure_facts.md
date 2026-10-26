@@ -27,8 +27,9 @@ axis** in the fused tensor. `n_queries` exists only on the descriptor pooler
 
 - `images`: list of `[C_b, 1, H, W]` → `torch.cat` → `[ΣC, 1, H, W]`.
 - `ChannelTiedPatchEmbed.proj = Conv2d(1, D, kernel_size=P, stride=P)` —
-  **one shared kernel for every channel** (tied, not per-channel). It has
-  **no positional embedding and no `spatial_pos` parameter**.
+  **one shared kernel for every channel** (tied, not per-channel), with the
+  kernel **PI-resized** (FlexiViT) when a non-canonical patch size is used.
+  It has **no positional embedding and no `spatial_pos` parameter**.
 - `feat = proj(x).flatten(2).transpose(1,2)` → `[ΣC, N, D]`; flatten →
   `[ΣC·N, D]`. The optional DCP **visible** mask is applied to rows →
   `[V, D]`.
@@ -42,8 +43,9 @@ axis** in the fused tensor. `n_queries` exists only on the descriptor pooler
   - `channel_group_id`: `[V]` global channel instance in the concatenated
     batch (constant across a channel's patches), used by `IdentityGatedSum`
     to evaluate its MLP once per channel.
-- Spatial position is **not** added here. Both fusion modules add a learned
-  post-fusion positional embedding to the fused `[B, N, D]` tokens.
+- Spatial position is **not** added here. In the FlexiViT target the encoder
+  owns layout through 2-D axial RoPE; fusion adds no spatial table. The legacy
+  learned/sincos post-fusion table is opt-in (`pos_embed="learned"`).
 
 ## Masking — `masking.py` (L5)
 
@@ -75,8 +77,9 @@ axis** in the fused tensor. `n_queries` exists only on the descriptor pooler
 
 ## Channel fusion — `fusion.py` (L2, L4)
 
-Both shipped fusions consume a `ChannelSet` (real tokens only), emit
-`fused: [B, N, D]`, and add the learned post-fusion `spatial_pos: [1, N, D]`.
+Both shipped fusions consume a `ChannelSet` (real tokens only) and emit
+`fused: [B, N, D]`. The default target adds no positional table; the legacy
+`pos_embed="learned"`/`"sincos"` ablation adds `spatial_pos: [1, N, D]`.
 They also return `present: [B, N]` (a location exists if it had at least one
 visible channel token).
 
@@ -92,7 +95,7 @@ visible channel token).
   (**keys = values = the LayerNormed channel tokens**; there are no
   `W_Q/W_K/W_V` projections).
 - `proj_out: Linear(D, D)` is the only learned output projection →
-  `[Kf, D]`; scatter to `[B, N, D]`; add `spatial_pos`.
+  `[Kf, D]`; scatter to `[B, N, D]`; add `spatial_pos` only in legacy mode.
 - Cost: `O(C·D)` per `(b,n)` location plus the `D²` output projection —
   **`O(C)` scaling**, not a dense `C×C` per-location block. ChannelViT and
   ChAda-ViT attend over the full `C·N` sequence (`O((C·N)²)`); only ChAda-ViT
@@ -108,7 +111,7 @@ visible channel token).
 - Values `= out_norm(value_proj(tokens)): [V, D]`.
 - `weights = grouped_softmax(logits, location_group_id, Kf)` over the channel
   axis at each `(b,n)`; `Σ_c w_c · V_c` via `index_add_` → `[B, N, D]`;
-  then `+ spatial_pos`.
+  then `+ spatial_pos` only in legacy mode.
 - Cost: `O(C·D²)` per location (one value projection per token) plus one small
   MLP per channel; `O(C)` scaling.
 
@@ -147,7 +150,9 @@ attention mask. It is **not** in the model path.
 - `TransformerEncoder` is a stack of standard pre-norm `TransformerBlock`s:
   explicit Q/K/V/O projections + MLP, with
   `grouped_projected_self_attention` (bucketed equal-length groups) per
-  sample. Final `LayerNorm`.
+  sample. 2-D axial RoPE rotates q/k from normalized `(row, col)` coordinates;
+  memory tokens get zero rotation. Optional AdaLN scale conditioning modulates
+  the LayerNorms. Final `LayerNorm`.
 - Returns `mem_out [B·M, D]`, `tok_out [Kf, D]`.
 - Final decoder KV is `enc_all = cat([mem_out, tok_out, desc])` →
   `[B·M + Kf + B, D]`, with matching per-sample group ids.
@@ -157,9 +162,10 @@ attention mask. It is **not** in the model path.
 - Targets: per sample `~visible[b]` → `(channel, patch)` pairs; `tgt_group_id`,
   `tgt_patch`, `tgt_channel_embed [Kt, D]` indexed by the **global** channel
   instance (`channel_id` → `ChannelEmbedding`).
-- `q = mask_token [D] + spatial_pos[target_patch] + target_proj(tgt_channel_embed)`
-  → `[Kt, D]`. The same channel-embedding table serves two roles: input
-  identity (added to tokens) and target specification (decoder query).
+- `q = mask_token [D] + fractional_pe(row, col, grid_h, grid_w)
+  + target_proj(tgt_channel_embed)` → `[Kt, D]`. The same channel-embedding
+  table serves two roles: input identity (added to tokens) and target
+  specification (decoder query).
 - Each `DecoderBlock`:
   1. **target self-attention** over the queries of each sample
      (`grouped_projected_self_attention`, bucketed);
@@ -167,7 +173,8 @@ attention mask. It is **not** in the model path.
      (`mem_out + tok_out + desc`) using the general grouped primitive
      `grouped_attention`;
   3. MLP.
-- `norm` then `head = Linear(D, P²)` → predictions `[Kt, P²]`.
+- `norm` then a shared canonical-grid head; predictions are resized to the
+  target patch size → `[Kt, p²]` (padded with a mask for mixed per-sample p).
 - Target `= extract_patches(images)[gidx, :, tgt_patch]` → `[Kt, P²]`.
 
 ## Loss — `losses.py` (L6)

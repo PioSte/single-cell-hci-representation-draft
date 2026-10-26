@@ -20,7 +20,19 @@ def main() -> None:
     p.add_argument("--steps", type=int, default=200)
     p.add_argument("--batch-size", type=int, default=8)
     p.add_argument("--image-size", type=int, default=16)
-    p.add_argument("--patch-size", type=int, default=8)
+    p.add_argument("--patch-size", type=int, default=8, help="canonical patch size p0")
+    p.add_argument(
+        "--patch-sizes",
+        type=int,
+        nargs="+",
+        default=None,
+        help="FlexiViT patch sizes, e.g. --patch-sizes 4 8 16 (default: fixed p0)",
+    )
+    p.add_argument(
+        "--no-flexi-random",
+        action="store_true",
+        help="do not sample one patch size per training step",
+    )
     p.add_argument("--dim", type=int, default=128)
     p.add_argument("--depth", type=int, default=4)
     p.add_argument("--n-heads", type=int, default=4)
@@ -48,11 +60,20 @@ def main() -> None:
     )
     p.add_argument(
         "--pos-embed",
-        choices=("learned", "sincos"),
-        default="learned",
-        help="absolute spatial PE for fusion + decoder: learned table "
-        "(default) or fixed 2D sine-cosine (MAE-faithful, zero params)",
+        choices=("fractional", "learned", "sincos"),
+        default="fractional",
+        help="fractional = encoder RoPE + decoder fractional PE (target); "
+        "learned/sincos = legacy fixed-grid table ablation",
     )
+    p.add_argument(
+        "--scale-conditioning",
+        choices=("add", "adaln", "none"),
+        default="add",
+        help="log(p) / log(um per px) conditioning",
+    )
+    p.add_argument("--pixel-size", type=float, default=None, help="um per pixel")
+    p.add_argument("--rope-base", type=float, default=100.0)
+    p.add_argument("--rope-ref-extent", type=float, default=32.0)
     args = p.parse_args()
 
     p_patch, p_channel = args.p_patch, args.p_channel
@@ -75,6 +96,8 @@ def main() -> None:
     model = ChannelFusionMAE(
         image_size=args.image_size,
         patch_size=args.patch_size,
+        patch_sizes=args.patch_sizes,
+        flexi_random=not args.no_flexi_random,
         dim=args.dim,
         encoder_depth=args.depth,
         decoder_depth=2,
@@ -87,6 +110,10 @@ def main() -> None:
         mode_sampling=args.mode_sampling,
         loss=args.loss,
         pos_embed=args.pos_embed,
+        scale_conditioning=args.scale_conditioning,
+        pixel_size=args.pixel_size,
+        rope_base=args.rope_base,
+        rope_ref_extent=args.rope_ref_extent,
     ).to(device)
 
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0.05)

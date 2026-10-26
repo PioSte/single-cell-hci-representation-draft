@@ -143,9 +143,9 @@ def draw_target_queries(ax, x=84.0, y0=51.0, w=12.0):
     sq_bracket(ax, x + w + 1.0, y0, top)
     ax.text(x + w / 2, top + 2.4, "$[K_t, D]$ queries", ha="center", va="center",
             fontsize=7.6, color=INK, fontweight="bold")
-    # Query recipe (decoder.py): mask_token + spatial_pos[patch] + target_proj(z_c)
+    # Query recipe (decoder.py): mask_token + fractional_pe(r,c) + target_proj(z_c)
     ax.text(x + w / 2 - 2.0, y0 - 3.0,
-            r"$q = \mathrm{mask} + \mathrm{pos}_n + W z_c$",
+            r"$q = \mathrm{mask} + \mathrm{fracPE}(r,c) + W z_c$",
             ha="center", va="center", fontsize=6.8, color=MUTED, style="italic")
     return top
 

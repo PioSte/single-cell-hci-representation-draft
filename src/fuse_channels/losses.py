@@ -18,6 +18,7 @@ def normalized_patch_mse(
     pred: torch.Tensor,
     target: torch.Tensor,
     eps: float = 1e-6,
+    mask: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """MSE between predicted and per-patch-normalized target pixels.
 
@@ -28,10 +29,22 @@ def normalized_patch_mse(
         channel-patches.
     """
     target = target.float()
-    mean = target.mean(dim=-1, keepdim=True)
-    std = target.std(dim=-1, keepdim=True, unbiased=False)
+    if mask is None:
+        mean = target.mean(dim=-1, keepdim=True)
+        std = target.std(dim=-1, keepdim=True, unbiased=False)
+        norm_target = (target - mean) / (std + eps)
+        return F.mse_loss(pred, norm_target)
+    if mask.shape != pred.shape:
+        raise ValueError(
+            f"mask must match pred shape, got {tuple(mask.shape)} vs {tuple(pred.shape)}"
+        )
+    m = mask.to(dtype=target.dtype)
+    count = m.sum(dim=-1, keepdim=True).clamp_min(1.0)
+    mean = (target * m).sum(dim=-1, keepdim=True) / count
+    var = (((target - mean) ** 2) * m).sum(dim=-1, keepdim=True) / count
+    std = var.clamp_min(0.0).sqrt()
     norm_target = (target - mean) / (std + eps)
-    return F.mse_loss(pred, norm_target)
+    return (((pred - norm_target) ** 2) * m).sum() / m.sum().clamp_min(1.0)
 
 
 def _fft_input(x: torch.Tensor) -> torch.Tensor:
