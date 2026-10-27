@@ -219,7 +219,7 @@ def draw_glossary(ax):
             ("$c$", "canonical head grid size"),
         ]),
         (108.5, [
-            ("$z_c$", "additive channel embedding"),
+            ("$z_c$", "channel identity (bias + skip)"),
             ("PMA", "pooled multi-head attention"),
             ("RoPE", "rotary position embedding"),
             ("PI-resize", "FlexiViT kernel resizing"),
@@ -270,7 +270,7 @@ def build() -> plt.Figure:
     box(ax, 15, YMID - 7.5, 22, 15, "Channel-tied patch embed",
         "canonical Conv $1{\\to}D$ (kernel $P$)\n"
         "PI-resized $+$ stride $p_b$ per sample\n"
-        "$+\\,z_c$ (additive channel id)",
+        "carry $z_c$ (channel identity)",
         edge=TOKENIZER, sub_size=5.7)
     box(ax, 56, YMID - 7.5, 19, 15, "Channel fusion",
         "pool over channel axis\nper $(b,n)$ location\n"

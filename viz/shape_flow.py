@@ -147,7 +147,7 @@ def shape_flow(s: k.Scene):
     s.wait(0.5)
 
     # ===================================================================== #
-    # 3 -- channel-tied patch embedding + additive identity -> token set.
+    # 3 -- channel-tied patch embedding; identity carried -> token set.
     # ===================================================================== #
     nxt("3 / 10")
     patch = {}
@@ -172,7 +172,7 @@ def shape_flow(s: k.Scene):
         duration=0.5,
     )
     cap(
-        "one tied 1\u2192D filter + identity z_c (position is added after fusion)",
+        "one tied 1\u2192D filter; identity z_c carried alongside (fusion bias + skip)",
         "[\u03a3C, N, D] = [5, 16, 192]",
     )
     s.play(*[k.indicate(p) for p in patch.values()], duration=0.6)

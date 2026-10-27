@@ -24,7 +24,7 @@ They share one design system so they read as one authored set:
 | **L0** | `level0_positioning.py` | single padding-free path: ragged tokens → per-(b,n) fusion → `[B,N,D]` | ChAda-ViT Fig 13 idiom |
 | **L1** | `level1_system.py` | end-to-end system: training path + `encode()` branch | Panopticon Fig 1 / Perceiver-IO Fig 2 |
 | **L2** | `level2_layout.py` | axis-labelled tensor layout (the hero figure) | Perceiver-IO Fig 2 |
-| **L3** | `level3_tokenizer.py` | PI-resized tied patch embed + additive channel embedding; no tokenizer/fusion PE (encoder RoPE, decoder fractional PE) | ChannelViT Fig 1 / ChAda-ViT Fig 2 |
+| **L3** | `level3_tokenizer.py` | PI-resized tied patch embed; channel identity carried separately (fusion routing bias + output skip); no tokenizer/fusion PE (encoder RoPE, decoder fractional PE) | ChannelViT Fig 1 / ChAda-ViT Fig 2 |
 | **L4** | `level4_fusion.py` | fusion internals: single learned query, Q/K/V projections to `D_attn=3D`, no spatial table | Panopticon Fig. 1 / Perceiver-IO Fig 5 inset |
 | **L5** | `level5_masking.py` | DCP Eq. 1 (patch / channel / combined) + unified HCS channel sampler; token omission | ChAda-ViT Fig 2 MASK row |
 | **L6** | `level6_objective.py` | MAE objective: trained content-only descriptor, RoPE/scale-conditioned encoder, target self-attention, canonical-head resize, default reconstruction loss | Panopticon teacher–student |
@@ -62,7 +62,7 @@ modules and recomputes every number when you move a control:
 | --- | --- |
 | channel count `C` (1–60) | cardinality invariance — output shape never changes |
 | permute channel order | permutation invariance (exact) |
-| use channel embedding | the additive `z_c` changes routing |
+| use channel embedding | the channel identity `z_c` changes routing (logit bias + output skip) |
 | channel index to omit | omission correctness vs. the masked-padded reference |
 | MAE training steps | channel-masked reconstruction (virtual staining) |
 
@@ -126,7 +126,7 @@ A step-by-step, spatial explanation of *why* the output does not depend on the
 number of channels. Written to `viz/out/cardinality.{pdf,svg,png}`.
 
 * **A** — a filmstrip of consecutive steps for one sample: input channel set →
-  tied embed + additive `z_c` (`C×N` token grid) → per-location channel fusion (the
+  tied embed; identity `z_c` carried alongside (no pre-LN add) → per-location channel fusion (the
   `C` tokens at each `(b,n)` collapse to one) → fixed `[B,N,D]` grid, memory and
   descriptor. The variable-height channel axis is the thing you watch vanish.
 * **B** — the invariance itself: `C=1`, `C=3`, `C=5` token stacks (input length

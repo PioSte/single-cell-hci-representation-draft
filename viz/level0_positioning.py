@@ -3,8 +3,9 @@
 A single hero panel for the *shipped* padding-free path:
 
     multi-channel input -> tied Conv2d patch embed (canonical kernel,
-      PI-resized per runtime patch size p) + additive channel identity z_c
-      -> ragged token list [V, D]   (solid primary object; rows are real
+      PI-resized per runtime patch size p) -> ragged content tokens [V, D]
+      together with a parallel channel-identity list z_c [V, D]
+      (solid primary object; rows are real
          tokens only, never padded or zeroed; V <= Sum C . N)
       -> grouped_pool_attention at each (b, n): one shared learned query,
          Q/K/V projections to D_attn = 3D, proj_out; fusion adds no
@@ -17,8 +18,8 @@ appears merely as a small dashed ghost tagged "never allocated"; no dense /
 padded baseline and no alternative fusion is shown.  The decoder (not drawn)
 uses fractional absolute PE.
 
-Colour is semantic (see ``figure_style`` role palette): additive channel
-identity green, channel fusion orange, encoder pink, fused tokens blue,
+Colour is semantic (see ``figure_style`` role palette): channel identity
+green, channel fusion orange, encoder pink, fused tokens blue,
 never-materialised padded tensor a dashed ghost.
 
 Usage::
@@ -178,10 +179,10 @@ def draw_panel(ax):
 
     draw_input(ax)
 
-    # tokenizer path: tied conv (PI-resized kernel) + additive channel identity
+    # tokenizer path: tied conv (PI-resized kernel); identity carried separately
     arrow(ax, (CX, INPUT_TILE_Y), (CX, RAG_TOP + 0.3), color=TOKENIZER, lw=1.5)
     ax.text(CX + 2.2, (INPUT_TILE_Y + RAG_TOP) / 2,
-            "tied conv · kernel PI-resized\n+ additive $z_c$",
+            "tied conv · kernel PI-resized\ncontent token; carry $z_c$",
             ha="left", va="center", fontsize=6.0, color=TOKENIZER,
             linespacing=1.3)
 
@@ -239,7 +240,7 @@ _GLOSSARY = [
     ("$M$", "memory tokens per sample"),
     ("$V$", "visible channel-patches ($\\leq \\Sigma C{\\cdot}N$)"),
     ("$K_f$", "present $(b,n)$ locations ($\\leq B{\\cdot}N$)"),
-    ("$z_c$", "additive channel identity"),
+    ("$z_c$", "channel identity (routing bias + skip)"),
     ("PMA", "pooled multi-head attn, shared query"),
     ("RoPE", "2-D axial rotary position on $(row,col)$"),
     ("DCP", "dynamic channel-patch masking (L5)"),
@@ -271,7 +272,7 @@ def draw_legends(ax):
     legend(
         ax, 3.0, 70.5,
         [
-            ("tokenizer: tied conv + additive $z_c$", TOKENIZER, "fill"),
+            ("tokenizer: tied conv; carry $z_c$", TOKENIZER, "fill"),
             ("channel fusion (grouped_pool_attention)", FUSION, "fill"),
             ("encoder: TransformerEncoder + RoPE", ENCODER, "fill"),
             ("fused tokens $[B,N,D]$", FUSED, "cross"),

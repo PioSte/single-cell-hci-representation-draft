@@ -199,8 +199,9 @@ attention mask. It is **not** in the model path.
   instance (`channel_id` → `ChannelEmbedding`).
 - `q = mask_token [D] + fractional_pe(row, col, grid_h, grid_w)
   + target_proj(tgt_channel_embed + scale_emb)` → `[Kt, D]`. The same
-  channel-embedding table serves two roles: input identity (added to tokens)
-  and target specification (decoder query). With the default
+  channel-embedding table serves two roles: input identity (fusion routing
+  bias + output skip; never added to `tokens`) and target specification
+  (decoder query). With the default
   `scale_conditioning="add"`, the per-sample scale embedding is folded into the
   target channel embedding; with `"adaln"` it conditions the decoder blocks.
 - Each `DecoderBlock`:

@@ -25,7 +25,7 @@ Okabe-Ito palette (colour-blind safe).
 Role palette -- the same *role* always gets the same colour in every figure,
 so the L0-L8 set reads as one authored system:
 
-    TOKENIZER green   patch embed / tied Conv / spatial pos / additive z_c
+    TOKENIZER green   patch embed / tied Conv / spatial pos / channel identity z_c
     FUSION    orange  channel fusion (ChannelFusion + IdentityGatedSum)
     ENCODER   pink    transformer encoder + its memory-augmented blocks
     DECODER   violet  channel-aware decoder + reconstruction head

@@ -404,7 +404,7 @@ def _(mo):
     * Toggle **permute channel order**: the permutation-invariance row must
       stay exact.  The model is order-independent but channel-aware.
     * Toggle **use channel embedding (z_c)**: the identity-ablation row changes
-      and the heatmap routing shifts — the additive channel embedding is doing
+      and the heatmap routing shifts — the channel identity (logit bias + skip) is doing
       real work (as shown by the ChannelViT channel-embedding ablation).
     * The **fused-token mean vs. C** panels are a shape proxy. The trained
       `[B, D]` descriptor is the pooler output over encoder content tokens

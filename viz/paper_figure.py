@@ -137,8 +137,7 @@ def draw_pipeline(ax) -> None:
          "$C_b\\in\\{1,\\dots,60{+}\\}$; order-free", BLUE),
         ("Channel-tied embed", "shared $1{\\to}D$ conv\n"
          "no spatial PE", GREEN),
-        ("Additive channel emb.", "$+\\,z_c$\n"
-         "per channel id", ORANGE),
+        ("Channel identity", "$z_c$ routing bias\n+ output skip\nper channel id", ORANGE),
         ("Padding-free tokens", "$[\\,\\Sigma C\\cdot N,\\; D\\,]$ $+$ idx\n"
          "$(b,c,n)$; ragged, no pad row", SKY),
         ("Channel fusion (PMA)", "single query per $(b,n)$\n"

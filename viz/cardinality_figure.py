@@ -157,7 +157,7 @@ def draw_filmstrip(ax):
     xs = [1.0 + i * 29.5 for i in range(4)]
     frames = [
         ("1 · input set", "one single-channel image per channel", step1),
-        ("2 · tied embed $+$ identity", "shared $1{\\to}D$ conv $+\\,z_c$", step2),
+        ("2 · tied embed · identity", "shared $1{\\to}D$ conv; carry $z_c$", step2),
         ("3 · channel fusion", "pool over channels per location", step3),
         ("4 · spatial path", "transformer $+$ descriptor", step4),
     ]

@@ -377,7 +377,7 @@ def draw_glossary(ax):
         ("$K_f$", "present $(b,n)$ locations"),
         ("$K_t$", "decoder targets (masked)"),
         ("$P$ / $p_b$", "canonical / runtime patch"),
-        ("$c,\\,z_c$", "channel idx / additive embed"),
+        ("$c,\\,z_c$", "channel idx / identity vector"),
         ("PMA", "single-query attention pool"),
         ("RoPE", "2-D axial rotary PE"),
         ("PI-resize", "FlexiViT kernel resize to $p_b$"),

@@ -1,14 +1,16 @@
-"""L3 -- patch embed + additive identity tokenizer detail.
+"""L3 -- patch embed + channel identity (carried separately) tokenizer detail.
 
 Shows the channel-tied patch embedding (one PI-resized Conv2d kernel shared by
-all channels) plus the additive channel embedding `z_c`.  Emphasizes:
+all channels) and the channel identity `z_c`, which is carried alongside the
+content token instead of being added to it.  Emphasizes:
 
 - Tokenizer and fusion add **no** spatial table; the encoder supplies 2-D axial
   RoPE on normalized `(row, col)`, and the decoder a fractional absolute PE.
 - The Conv2d kernel is stored at a canonical `P` and **PI-resized** to each
   sample's patch size `p_b`; each sample has `N_b = (H/p_b)^2` patches.
 - `z_c` is indexed by the dataset-level `channel_id`, not the panel position.
-- DCP-omitted tokens are rejected at flatten, *before* `+ z_c`, as absent rows.
+- DCP-omitted tokens are rejected at flatten as absent rows; they have no
+  content token and no `z_c` entry.
 - The output is one concatenated ragged token list `[V, D]` (`V <= sum C * N_b`).
 
 Usage::
@@ -95,11 +97,12 @@ def build() -> plt.Figure:
     # ---- Title ------------------------------------------------------------ #
     ax.text(2, 77.5, "L3", ha="left", va="center", fontsize=15,
             fontweight="bold", color=INK)
-    ax.text(6.5, 77.5, "Tokenizer: channel-tied patch embed + additive channel embedding",
+    ax.text(6.5, 77.5, "Tokenizer: channel-tied patch embed + channel identity (carried separately)",
             ha="left", va="center", fontsize=12.2, fontweight="bold", color=INK)
     ax.text(2, 73.8,
-            "Two channels share one PI-resized projection W, but each adds its "
-            "own channel embedding z_c; the tokenizer and fusion add no spatial table.",
+            "Two channels share one PI-resized projection W; each looks up its own "
+            "z_c, carried alongside the content token (fusion routing bias + skip); "
+            "no spatial table.",
             ha="left", va="center", fontsize=7.4, color=MUTED, style="italic")
     ax.text(2, 70.9,
             "No spatial table in tokenizer or fusion  |  encoder = 2-D axial RoPE  "
@@ -108,8 +111,8 @@ def build() -> plt.Figure:
             fontweight="bold")
     ax.text(2, 67.9,
             "Shapes:  $[1,H,W]$  \u2192  Conv2d($P \\to p_b$, PI-resized)  \u2192  "
-            "$[N_b, D]$  $+[D]$ ($z_c$)  \u2192  ragged "
-            "$[V,D]$,  $V \\leq \\Sigma C \\cdot N_b$",
+            "$[N_b, D]$ content  +  $z_c$ $[D]$ carried  \u2192  ragged "
+            "$[V,D]$ tokens + $[V,D]$ channel_embed,  $V \\leq \\Sigma C \\cdot N_b$",
             ha="left", va="center", fontsize=6.8, color=INK)
 
     # ---- Shared geometry: both lanes on one grid -------------------------- #
@@ -149,17 +152,22 @@ def build() -> plt.Figure:
         ax.text(stack_x + stack_w / 2, top + 1.9, "$[N_b, D]$", ha="center",
                 va="center", fontsize=6.8, color=MUTED)
 
-        # + identity z_c  (per-channel colour)
+        # identity z_c is carried alongside the content token (never added)
         arrow(ax, (stack_x + stack_w, yc), (z_x, yc), color=color)
-        ax.text((stack_x + stack_w + z_x) / 2, yc + 2.4, "$+$", ha="center",
-                va="center", fontsize=9.5, fontweight="bold", color=INK)
-        draw_identity_card(ax, z_x, yc - z_h / 2, z_w, z_h, color,
+        ax.text((stack_x + stack_w + z_x) / 2, yc + 2.0, "content", ha="center",
+                va="center", fontsize=6.2, color=MUTED, style="italic")
+        z_cy = yc + (-6.0 if lane == 0 else -3.5)
+        draw_identity_card(ax, z_x, z_cy - z_h / 2, z_w, z_h, color,
                            f"$z_{{c_{lane}}}$")
-        ax.text(z_x - 0.5, yc - 4.6,
-                f"channel id  \u00b7  $[D]$", ha="center", va="center",
+        label_dy = 0.8 if lane == 0 else -1.4
+        ax.text(z_x + z_w + 0.6, z_cy + label_dy,
+                "carried, not added", ha="left", va="center",
+                fontsize=6.0, color=MUTED)
+        ax.text(z_x + z_w + 0.6, z_cy + label_dy - 2.6,
+                f"channel id  \u00b7  $[D]$", ha="left", va="center",
                 fontsize=6.0, color=MUTED)
 
-        # -> per-channel tokens: still N_b rows, still [N_b, D]
+        # -> per-channel content tokens: still N_b rows, still [N_b, D]
         arrow(ax, (z_x + z_w, yc), (out_x, yc), color=color)
         o_y0 = yc - stack_htot / 2
         top = draw_patch_stack(ax, out_x, o_y0, stack_w, stack_h,
@@ -179,14 +187,17 @@ def build() -> plt.Figure:
     sq_bracket_mirror(ax, br_x, y_lo, y_hi, color=INK, lw=1.3, tick=0.9)
     ax.text(br_x + 1.4, (y_lo + y_hi) / 2 + 1.6, "$[V, D]$", ha="left",
             va="center", fontsize=8.6, fontweight="bold", color=INK)
-    ax.text(br_x + 1.4, (y_lo + y_hi) / 2 - 1.2, "ragged tokens", ha="left",
+    ax.text(br_x + 1.4, (y_lo + y_hi) / 2 - 1.2, "ragged content tokens", ha="left",
             va="center", fontsize=6.4, color=MUTED)
     ax.text(br_x + 1.4, (y_lo + y_hi) / 2 - 3.6,
+            "+ channel_embed $[V,D]$ (parallel)", ha="left", va="center",
+            fontsize=6.2, color=MUTED)
+    ax.text(br_x + 1.4, (y_lo + y_hi) / 2 - 5.8,
             "$V \\leq \\Sigma C \\cdot N_b$", ha="left", va="center",
             fontsize=6.2, color=MUTED)
 
     # annotate the omitted row on the (upper) projected stack of channel 1:
-    # it is dropped at flatten, before it can receive + z_c
+    # it is dropped at flatten, before any identity use
     row_y = lane_yc[1] - stack_htot / 2 + omit_idx * stack_pitch + stack_h / 2
     ax.plot([stack_x + stack_w, stack_x + stack_w + 1.0], [row_y, row_y - 1.3],
             color=RED, lw=1.0, zorder=7)
@@ -238,24 +249,25 @@ def build() -> plt.Figure:
     dashed_route(ax, [(emb_x + emb_w * 0.5, emb_y + emb_h),
                       (emb_x + emb_w * 0.5, 64.0),
                       (z_x + 3.0, 64.0),
-                      (z_x + 3.0, lane_yc[0] + z_h / 2)],
+                      (z_x + 3.0, lane_yc[0] - 6.0 + z_h / 2)],
                  color=lane_color[0])
     dashed_route(ax, [(emb_x + emb_w * 0.12, emb_y),
                       (emb_x + emb_w * 0.12, 20.0),
                       (z_x + 3.0, 20.0),
-                      (z_x + 3.0, lane_yc[1] - z_h / 2)],
+                      (z_x + 3.0, lane_yc[1] - 3.5 - z_h / 2)],
                  color=lane_color[1])
 
-    # ---- Additive-token formula (centre band, clear of everything) -------- #
+    # ---- Identity handling (centre band, clear of everything) ------------- #
     rrect(ax, 29.0, 38.5, 12.0, 9.0, edge=MUTED, face=tint(MUTED, 0.97),
           lw=1.1, dashed=True, rounding=0.5, z=2)
-    ax.text(35.0, 45.4, "per token", ha="center", va="center",
+    ax.text(35.0, 45.4, "identity", ha="center", va="center",
             fontsize=6.4, fontweight="bold", color=INK, zorder=4)
-    ax.text(35.0, 42.9, "(additive)", ha="center", va="center",
+    ax.text(35.0, 42.9, "(per channel)", ha="center", va="center",
             fontsize=6.4, fontweight="bold", color=INK, zorder=4)
-    ax.text(35.0, 40.2, "proj(patch; $p_b$)\n$+$ $z_c$",
-            ha="center", va="center", fontsize=5.9, color=MUTED, zorder=4,
-            linespacing=1.5)
+    ax.text(35.0, 40.1, "not summed into token\nfusion: logits $+=$ bias\n"
+            "fused $+=$ skip",
+            ha="center", va="center", fontsize=5.4, color=MUTED, zorder=4,
+            linespacing=1.4)
 
     # ---- DCP omission strip (full width) ---------------------------------- #
     strip_x, strip_y, strip_w, strip_h = 4.0, 2.0, 144.0, 16.0
@@ -277,8 +289,8 @@ def build() -> plt.Figure:
             "$[V, D]$.", ha="left", va="center", fontsize=6.4, color=INK,
             zorder=4)
     ax.text(strip_x + 12.5, strip_y + 8.4,
-            "Omission happens at flatten, before $+z_c$: masked rows never "
-            "receive $z_c$.", ha="left", va="center", fontsize=6.4,
+            "Omission happens at flatten: masked rows have no content token "
+            "and no $z_c$ entry.", ha="left", va="center", fontsize=6.4,
             color=INK, zorder=4)
     ax.text(strip_x + 12.5, strip_y + 5.6,
             "$V \\leq \\Sigma C \\cdot N_b$  \u00b7  omitted rows are absent, "
@@ -298,7 +310,7 @@ def build() -> plt.Figure:
         "$V$=visible channel-patch tokens",
         "$P$=canonical kernel, $p_b$=per-sample patch; "
         "PI-resize = pseudoinverse $P\\to p_b$",
-        "$c$=channel id, $z_c$=additive channel embedding; "
+        "$z_c$=channel identity (routing bias + output skip); "
         "DCP omission = drop rows (never zero)",
     ]
     note_y = ny + nh - 4.2
@@ -353,7 +365,7 @@ def build() -> plt.Figure:
             ha="left", va="center", fontsize=6.3, color=INK)
     ax.text(112.0, 31.9, "$[V, D]$,  $V \\leq \\Sigma C \\cdot N_b$ after masking",
             ha="left", va="center", fontsize=6.3, color=INK)
-    ax.text(112.0, 29.4, "masked rows absent (dropped before $+z_c$)",
+    ax.text(112.0, 29.4, "masked rows absent (no content, no $z_c$)",
             ha="left", va="center", fontsize=6.3, color=MUTED)
 
     return fig

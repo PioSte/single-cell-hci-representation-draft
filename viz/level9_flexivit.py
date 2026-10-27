@@ -119,7 +119,7 @@ def build() -> plt.Figure:
             bbox=dict(boxstyle="round,pad=0.12", facecolor="white",
                       edgecolor="none", alpha=0.9), zorder=7)
 
-    # --- bottom row: image -> conv -> +z_c -> ragged ------------------------ #
+    # --- bottom row: image -> conv; z_c carried -> ragged ------------------- #
     i_top, i_right = grid_cells(ax, 8.0, 59.4, 3, 3, cw=2.2, pitch=2.6,
                                 edge=BLUE, crossed=True)
     ax.text(11.7, 68.3, "single-channel image  $[1,H,W]$", ha="center",
@@ -135,10 +135,10 @@ def build() -> plt.Figure:
         edge=TOKENIZER, title_size=7.0, sub_size=5.9)
 
     arrow(ax, (56.3, 63.2), (58.3, 63.2), color=TOKENIZER, lw=1.5)
-    box(ax, 58.3, 58.3, 15.5, 10.0, "add  $z_c$",
+    box(ax, 58.3, 58.3, 15.5, 10.0, "carry  $z_c$",
         r"$\mathtt{ChannelEmbedding}$" "\n"
-        r"additive identity" "\n"
-        r"$\to$ ragged $[V,D]$",
+        r"routing bias + skip" "\n"
+        r"not added to token",
         edge=TOKENIZER, title_size=8.2, sub_size=5.5)
 
     # ragged, crossed token column -- the primary object
@@ -273,7 +273,7 @@ def build() -> plt.Figure:
     right = [
         r"$B$  bilinear resize operator on the patch grid",
         r"$\mathrm{PI}(W_P;P{\to}p)=\mathrm{pinv}(B^\top)W_P$  PI-resize",
-        r"$z_c$  additive channel embedding",
+        r"$z_c$  channel identity (routing bias + skip)",
         r"RoPE  2-D axial rotary position embedding",
         r"fracPE  factorized fractional absolute PE",
         r"$\mathtt{has}_{\mu}$  marks whether $\mu$m/px is supplied",
