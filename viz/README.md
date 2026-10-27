@@ -2,7 +2,7 @@
 
 Several kinds of artifact, because they answer different questions.
 
-## 0. The level ladder — L0–L8
+## 0. The level ladder — L0–L9
 
 A coherent set of hand-authored, vector-first figures (PDF/SVG/PNG) that walk
 from *where the model sits in the literature* down to *the attention primitive*.
@@ -30,12 +30,14 @@ They share one design system so they read as one authored set:
 | **L6** | `level6_objective.py` | MAE objective: trained content-only descriptor, RoPE/scale-conditioned encoder, target self-attention, canonical-head resize, default reconstruction loss | Panopticon teacher–student |
 | **L7** | `level7_invariance.py` | measured invariance & cost (runs the real model) | ChAda-ViT scaling panels |
 | **L8** | `level8_segment_ops.py` | the padding-free grouped-attention primitive | Perceiver-IO Fig 5 |
+| **L9** | `level9_flexivit.py` | FlexiViT: one canonical kernel PI-resized to runtime `p`, patch-size sources, no PE-table resizing, canonical reconstruction head | FlexiViT Fig 1 / Sec. 3 |
 
 Run any level (writes into the git-ignored `viz/out/`):
 
 ```bash
 uv run --extra viz python viz/level2_layout.py                 # pdf + svg + png
 uv run --extra viz python viz/level7_invariance.py             # measures the real model
+uv run --extra viz python viz/level9_flexivit.py               # FlexiViT patch-size path
 uv run --extra viz python viz/level4_fusion.py --formats pdf svg
 ```
 

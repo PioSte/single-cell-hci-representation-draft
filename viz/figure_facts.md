@@ -1,4 +1,4 @@
-# Figure facts — shapes and semantics drawn by the L0–L8 figures
+# Figure facts — shapes and semantics drawn by the L0–L9 figures
 
 Single source of truth so every figure agrees with `src/fuse_channels/`.
 All shapes below are read from the code, not invented. Notation:
@@ -49,6 +49,33 @@ axis** in the fused tensor. `n_queries` exists only on the descriptor pooler
 - Spatial position is **not** added here. In the FlexiViT target the encoder
   owns layout through 2-D axial RoPE; fusion adds no spatial table. The legacy
   learned/sincos post-fusion table is opt-in (`pos_embed="learned"`).
+
+## FlexiViT / variable patch size — `flexi.py`, `patch_embed.py`, `mae.py`, `decoder.py` (L9)
+
+- `ChannelTiedPatchEmbed.proj.weight` is stored at the canonical `P×P` size.
+  For `p != P`, `_project` calls `pi_resize_patch_embed(weight, p)`:
+  `P_resize = pinv(B^T)`, where `B` is the bilinear resize operator on the
+  `P²→p²` patch grid, then convolves with `stride=p`. The bias is shared.
+- `ChannelFusionMAE._resolve_patch_sizes`:
+  - explicit `forward(..., patch_sizes=...)` → int (same `p` for the batch) or
+    one `p_b` per sample;
+  - legacy learned/sincos table PE → fixed canonical `P`;
+  - otherwise, if more than one `patch_sizes` is configured and
+    `flexi_random=True` in training → one `p` sampled per step/batch;
+  - otherwise → canonical `P`.
+- Each sample derives `N_b = (H/p_b)·(W/p_b)`, `grid_h = H/p_b`,
+  `grid_w = W/p_b`; the masker uses `[C_b, N_b]`, targets use `p_b`, and
+  `ChannelSet.n_patches = max_b N_b`.
+- No positional table is resized: encoder `2-D axial RoPE` uses normalized
+  `(row,col)`, decoder uses factorized fractional PE from `(r,c,g_h,g_w)`,
+  and `ChannelFusion` adds no spatial table.
+- `scale_conditioning="add"` (default) embeds `[log p, log µm/px, has_µ]` with
+  Fourier features + MLP and adds it to encoder tokens and to the decoder
+  target channel embedding before `target_proj`.
+- The reconstruction head is on a **canonical** grid
+  `c = head_patch_size or max(patch_sizes)`: `Linear(D, c²)` then **bilinear**
+  resize `c→p_b`. With mixed per-sample `p`, predictions are padded to
+  `max_b p_b²` and accompanied by a validity mask.
 
 ## Masking — `masking.py` (L5)
 
