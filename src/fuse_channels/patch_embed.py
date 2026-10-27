@@ -238,7 +238,7 @@ class ChannelTokenizer(nn.Module):
         channel_embed = embed_per_ch[channel_global]
 
         return ChannelSet(
-            tokens=tokens + channel_embed,
+            tokens=tokens,
             sample_idx=meta["sample_idx"],
             channel_idx=meta["channel_idx"],
             patch_idx=meta["patch_idx"],

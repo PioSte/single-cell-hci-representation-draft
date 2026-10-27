@@ -196,6 +196,7 @@ patch-embedding weights (`references/flexivit/paper.md:105`, `:168`, `:171`,
 | Encoder RoPE | **No table / no resampling** — use normalized coordinates for layout-only PE |
 | Decoder fractional PE | **No table / no resampling** |
 | Decoder PE table | **No table** (there isn’t one) |
+| Channel identity | **Not added to the patch token** — routing bias + pooled skip (see §3.1) |
 
 FlexiViT assumes patches tile the image. For arbitrary `H, W`, use
 padding/cropping or dynamic `p` selection and mask padded cells.
@@ -215,6 +216,46 @@ The decoder reconstruction head is the open part. An MAE-style head maps
 Resampling that linear weight is possible but is not the same operation as
 PI-resizing an input patch kernel. Prefer a fixed canonical token grid,
 unpatchify + resize, or a convolution/MLP decoder conditioned on `p`.
+
+### 3.1 Channel identity must not ride on the patch token
+
+PI-resize keeps the *patch kernel* well scaled, but the token magnitude still
+depends on `p` because a real `p`-patch is not the resized `p₀`-patch (see the
+mixture of `x ~ N(0,I)` and real content above). That is harmless on its own —
+the fusion LayerNorm is scale-invariant — but it becomes a confound if a
+**fixed-scale vector is added to the token before that LayerNorm**. ChannelViT's
+identity embedding is exactly such a vector, and in an HCI panel the same
+marker can appear at 8 px in one dataset and 40 px in another, so the
+identity/content ratio would vary with acquisition scale.
+
+The shipped design therefore **decouples identity from content** while keeping
+what ChannelViT and Panopticon establish:
+
+- `ChannelSet.tokens` is content only; the channel embedding travels separately
+  (`cs.channel_embed`) and is never summed into the token.
+- Identity still routes the channel attention: a per-head bias
+  `identity_bias(e_c)` is added to the per-location logits. This is the
+  scale-free part of adding `e_c` to the keys, which is how Panopticon uses its
+  spectral embeddings (`references/panopticon/paper.md:33,45,94`).
+- Identity still reaches the representation: the attention weights pool an
+  identity vector `Σ_c a_c e_c`, added back as a learned skip after the content
+  projection. Removing or sharing identity is catastrophic in ChannelViT
+  (Table 10, `references/channelvit/paper.md:670-688`), and this preserves it
+  per channel.
+- Because LayerNorm is invariant to positive rescaling, the fused token is
+  invariant to content magnitude up to LayerNorm ε on vanishing content. Empty
+  patches still map to identity (so “marker absent here” survives); they do not
+  get amplified into noise.
+- No per-`p` gain or per-token normalization is needed. The earlier
+  candidate — a scalar `g_p` calibrated from `‖P_p ω‖` — is unnecessary and
+  only partial: the residual drift is content SNR, not the operator, and
+  Token-LN would remove the empty/signal distinction.
+
+Tests: `test_fusion_is_content_scale_invariant`,
+`test_identity_routing_is_patch_size_invariant`,
+`test_zero_content_is_identity_only`,
+`test_padding_free_matches_dense_reference` in
+`tests/test_identity_decoupling.py`.
 
 ---
 
@@ -315,6 +356,13 @@ patch tokens.
   `log(µm/px)`, or both.
 - **Don’t add a constant scale vector before LayerNorm and expect strong
   conditioning.** Use AdaLN/FiLM if scale is important.
+- **Don’t add the channel identity to the patch token before the fusion
+  LayerNorm.** A fixed-scale vector summed into a variable-scale token makes the
+  identity/content ratio a function of `p`; use a routing bias + output skip
+  (§3.1).
+- **Don’t “fix” the identity drift with per-token normalization (Token-LN).**
+  It makes vanishing patches full-norm noise, which destroys the empty/signal
+  distinction that sparse HCI markers rely on.
 - **Don’t forget dynamic grid metadata.** The decoder needs `(r, c, n_h, n_w)`,
   not only a flat patch index.
 

@@ -13,7 +13,7 @@ def make_channel_set(C_list, N, D, n_channel_ids=16, seed=0, with_channel_embed=
             cid = int(torch.randint(0, n_channel_ids, (1,), generator=g).item())
             embed = torch.randn(D, generator=g)
             for n in range(N):
-                tokens.append(torch.randn(D, generator=g) + embed)
+                tokens.append(torch.randn(D, generator=g))
                 sample_idx.append(b)
                 channel_idx.append(c)
                 patch_idx.append(n)

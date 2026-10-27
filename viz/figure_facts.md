@@ -36,13 +36,14 @@ axis** in the fused tensor. `n_queries` exists only on the descriptor pooler
 - `feat = proj(x).flatten(2).transpose(1,2)` → `[ΣC, N, D]`; flatten →
   `[ΣC·N, D]`. The optional DCP **visible** mask is applied to rows →
   `[V, D]`.
-- `ChannelTokenizer` computes the additive channel embedding
+- `ChannelTokenizer` looks up the channel embedding
   `ChannelEmbedding.embed = nn.Embedding(num_channel_ids, D)`, indexed by the
   dataset-level `channel_id` (not the panel position `channel_idx`), and
   produces a `ChannelSet`:
-  - `tokens`: `[V, D]`, already `feat + channel_embed`;
+  - `tokens`: `[V, D]`, **content only** (`feat`); identity is never added here;
   - `sample_idx`, `channel_idx`, `patch_idx`, `channel_id` (`[V]`);
-  - `channel_embed`: `[V, D]` (the additive vector per token);
+  - `channel_embed`: `[V, D]` (the per-channel identity vector, kept separate
+    so the fusion can use it as a routing bias and an output skip);
   - `channel_group_id`: `[V]` global channel instance in the concatenated
     batch (constant across a channel's patches), used by `IdentityGatedSum`
     to evaluate its MLP once per channel.
@@ -136,6 +137,7 @@ visible channel token).
 ### `IdentityGatedSum` (ablation, `O(C)`)
 
 - Requires `ChannelSet.channel_embed` and `ChannelSet.channel_group_id`;
+  identity is a routing bias + attention-pooled skip, never added to `tokens`;
   raises otherwise.
 - `weight_net` (Linear → GELU → Linear → 1) is evaluated **once per channel
   instance** (`channel_group_id`), then broadcast to all of that channel's

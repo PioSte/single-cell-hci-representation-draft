@@ -112,7 +112,7 @@ def _(ChannelSet, math, torch):
                 channel_id = int(torch.randint(0, N_CHANNEL_IDS, (1,), generator=g).item())
                 vec = torch.randn(DIM, generator=g)
                 for n in range(NP):
-                    tokens.append(torch.randn(DIM, generator=g) + vec)
+                    tokens.append(torch.randn(DIM, generator=g))
                     si.append(b)
                     ci.append(c)
                     pi.append(n)
@@ -131,7 +131,7 @@ def _(ChannelSet, math, torch):
             channel_group_id=torch.tensor(cgid),
         )
         if not include_identity:
-            cs.tokens = cs.tokens - cs.channel_embed
+            cs.channel_embed = torch.zeros_like(cs.channel_embed)
         return cs
 
     def permute_set(cs, seed=0):

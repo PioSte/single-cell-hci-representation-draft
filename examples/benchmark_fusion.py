@@ -21,7 +21,7 @@ def make_set(B, C, N, D, seed=0):
     pi = torch.arange(N).repeat(C).repeat(B)
     embed = torch.randn(T, D, generator=g)
     return ChannelSet(
-        tokens=tok + embed,
+        tokens=tok,
         sample_idx=si,
         channel_idx=ci,
         patch_idx=pi,

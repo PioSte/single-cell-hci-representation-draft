@@ -105,12 +105,11 @@ def test_permutation_invariance():
 
 
 def test_identity_changes_routing():
-    """Channel identity changes the fused output through the additive embedding."""
+    """Channel identity changes the fused output through bias + skip."""
     fusion = _fusion(seed=4)
     fusion.eval()
     cs = make_channel_set([3], N, D)
-    stripped = make_channel_set([3], N, D, seed=0)
-    stripped.tokens = stripped.tokens - stripped.channel_embed  # strip embedding
+    stripped = replace(cs, channel_embed=torch.zeros_like(cs.channel_embed))
     a, _ = fusion(cs)
     b, _ = fusion(stripped)
     assert not torch.allclose(a, b)
@@ -134,13 +133,8 @@ def test_identity_changes_routing():
         )
         cs_shifted = tokenizer(images, ids)
         fused_shifted, _ = fusion(cs_shifted)
-    # patch content is identical before the additive identity is added
-    assert torch.allclose(
-        cs_zero.tokens - cs_zero.channel_embed,
-        cs_shifted.tokens - cs_shifted.channel_embed,
-        atol=1e-6,
-        rtol=0,
-    )
+    # patch content is identical; only the identity has changed
+    assert torch.allclose(cs_zero.tokens, cs_shifted.tokens, atol=1e-6, rtol=0)
     assert not torch.allclose(fused_zero, fused_shifted)
 
 
@@ -163,6 +157,7 @@ def test_pooling_query_is_shared_across_locations():
         channel_id=torch.zeros(C * N, dtype=torch.long),
         n_samples=1,
         n_patches=N,
+        channel_embed=torch.zeros(C * N, D),
         channel_group_id=torch.arange(C).repeat_interleave(N),
     )
     fused, _ = fusion(cs)
@@ -315,15 +310,17 @@ def test_identity_gated_sum_unsorted_locations():
 
     with torch.no_grad():
         logits = net.weight_net(shuffled.channel_embed).squeeze(-1)  # [T]
-        values = net.out_norm(net.value_proj(shuffled.tokens))  # [T, D]
+        values = net.out_norm(net.value_proj(net.content_norm(shuffled.tokens)))
         loc = shuffled.location_group_ids()
         ref = torch.zeros(cs.n_samples, N, D)
         for g in torch.unique(loc):
             idx = (loc == g).nonzero(as_tuple=True)[0]
             w = torch.softmax(logits[idx], dim=0)
+            content = (w.unsqueeze(-1) * values[idx]).sum(0)
+            ident = (w.unsqueeze(-1) * shuffled.channel_embed[idx]).sum(0)
             ref[shuffled.sample_idx[idx[0]], shuffled.patch_idx[idx[0]]] = (
-                w.unsqueeze(-1) * values[idx]
-            ).sum(0)
+                content + net.identity_skip(ident)
+            )
 
     expected = ref + (net.spatial_pos if net.has_spatial_pos else 0)
     assert torch.allclose(out, expected, atol=1e-6)

@@ -10,8 +10,14 @@ Citation line numbers refer to the extracted paper texts under
 ## 1. Additive channel embedding
 
 `ChannelEmbedding` is a learned `nn.Embedding(num_channel_ids, dim)` table. A
-channel id selects one row; that row is added to every patch token of the
-channel and is never normalized across the channel axis.
+channel id selects one row, and that row is used per channel, never shared
+across channels. It is **not** added to the patch token before the fusion
+LayerNorm: it enters the fusion as a per-head routing bias on the channel
+attention and as an attention-pooled skip on the fused token after the content
+projection (`fused = proj(Σ_c a_c LN(t_c)) + skip(Σ_c a_c e_c)`). This keeps
+ChannelViT's per-channel identity signal (routing *and* representation) while
+making the identity/content balance independent of content magnitude, and hence
+of patch size; see `../FLEXIVIT.md` §3.1.
 
 **The table is the width-efficient form of the same additive bias.** For a
 token `x` and channel id `m`,
@@ -23,7 +29,10 @@ concat(x, onehot(m)) @ W
 ```
 
 The concatenation path is therefore not a different function; its `W_e` rows
-*are* the embedding table. The differences are parameter count and width: the
+*are* the embedding table. In the shipped placement `W_x` is the fusion output
+projection and the identity term is applied after content normalisation (bias +
+skip), so the equivalence is preserved without summing identity into the patch
+token. The differences are parameter count and width: the
 concat path widens every token to `D + num_channel_ids` and pays that width in
 every attention and MLP layer, while the table needs `num_channel_ids × D`
 parameters and leaves the network width independent of the registry size. This

@@ -81,6 +81,14 @@ class ChannelFusion(nn.Module):
         width of the Q/K/V attention space.  ``None`` (default) uses
         ``3 * dim``, Panopticon's ``D_attn = 3D``; ``dim`` reproduces the
         narrower, parameter-matched ablation.
+
+    Channel identity is decoupled from content: ``cs.tokens`` holds patch
+    content only, and the channel embedding enters (i) as a per-head additive
+    bias on the pooling logits and (ii) as an attention-pooled skip added
+    *after* the content projection.  This preserves ChannelViT's per-channel
+    identity routing without ever summing a fixed-scale vector into a
+    variable-scale content token before a LayerNorm, so the identity/content
+    balance cannot drift with patch size (or any other content-scale change).
     """
 
     def __init__(
@@ -104,6 +112,13 @@ class ChannelFusion(nn.Module):
         self.n_patches = n_patches
         self.dropout = dropout
         self.has_spatial_pos = pos_embed != "none"
+
+        # per-channel, per-head additive routing bias, and a skip that carries
+        # the pooled identity into the fused representation (outside the LN).
+        self.identity_bias = nn.Linear(dim, n_heads, bias=False)
+        self.identity_skip = nn.Linear(dim, dim, bias=False)
+        nn.init.trunc_normal_(self.identity_bias.weight, std=0.02)
+        nn.init.trunc_normal_(self.identity_skip.weight, std=0.02)
 
         self.norm_q = nn.LayerNorm(dim)
         self.norm_kv = nn.LayerNorm(dim)
@@ -156,10 +171,24 @@ class ChannelFusion(nn.Module):
             .expand(n_groups, 1, H, Dh)
         )
 
-        out = grouped_pool_attention(
-            q, k, v, lookup, n_groups, self._attention_dropout()
+        if cs.channel_embed is None:
+            raise ValueError("ChannelFusion requires ChannelSet.channel_embed")
+        ident = cs.channel_embed[order]  # [T, D]
+        logit_bias = self.identity_bias(ident)  # [T, H]
+        out, weights = grouped_pool_attention(
+            q,
+            k,
+            v,
+            lookup,
+            n_groups,
+            self._attention_dropout(),
+            logit_bias=logit_bias,
+            return_weights=True,
         )
-        out = self.proj_out(out.reshape(n_groups, self.attn_dim))  # [n_groups, D]
+        ident_pool = out.new_zeros(n_groups, D)
+        ident_pool.index_add_(0, lookup, weights.unsqueeze(-1) * ident)
+        out = self.proj_out(out.reshape(n_groups, self.attn_dim))
+        out = out + self.identity_skip(ident_pool)  # [n_groups, D]
 
         fused = out.new_zeros(B, N, D)
         sample_of_group = uniq // N
@@ -311,6 +340,11 @@ class IdentityGatedSum(nn.Module):
 
     The output is ``[B, N, D]`` with the post-fusion spatial positional
     embedding added, matching :class:`ChannelFusion`.
+
+    Channel identity is decoupled from content: ``cs.tokens`` holds patch
+    content only, the gate still comes from ``channel_embed``, and the identity
+    is added back as an attention-weighted skip *after* the content
+    normalisation.
     """
 
     def __init__(
@@ -327,7 +361,11 @@ class IdentityGatedSum(nn.Module):
         self.dim = dim
         self.n_patches = n_patches
         self.has_spatial_pos = pos_embed != "none"
-
+        # normalise content before the value projection so its bias cannot
+        # re-introduce a content-scale dependence.
+        self.content_norm = nn.LayerNorm(dim)
+        self.identity_skip = nn.Linear(dim, dim, bias=False)
+        nn.init.trunc_normal_(self.identity_skip.weight, std=0.02)
         hidden = hidden or dim
         self.weight_net = nn.Sequential(
             nn.Linear(dim, hidden), nn.GELU(), nn.Linear(hidden, 1)
@@ -362,7 +400,7 @@ class IdentityGatedSum(nn.Module):
         chan_embed = cs.channel_embed[order[first]]  # [C_uniq, D]
         chan_logits = self.weight_net(chan_embed).squeeze(-1)  # [C_uniq]
         logits = chan_logits[inverse]  # [T]
-        values = self.out_norm(self.value_proj(cs.tokens))  # [T, D]
+        values = self.out_norm(self.value_proj(self.content_norm(cs.tokens)))  # [T, D]
 
         # ``logits``/``values`` are in input-token order, so the group mapping
         # must be too: a sorted-order lookup would scramble locations.
@@ -374,6 +412,11 @@ class IdentityGatedSum(nn.Module):
         contrib = weights.unsqueeze(-1) * values  # [T, D]
         out = values.new_zeros(n_groups, self.dim)
         out.index_add_(0, location_inverse, contrib)
+        ident_pool = out.new_zeros(n_groups, self.dim)
+        ident_pool.index_add_(
+            0, location_inverse, weights.unsqueeze(-1) * cs.channel_embed
+        )
+        out = out + self.identity_skip(ident_pool)
 
         N = cs.n_patches
         fused = out.new_zeros(cs.n_samples, N, self.dim)
@@ -400,9 +443,11 @@ def _dense_fusion_reference(fusion: ChannelFusion, cs: ChannelSet) -> torch.Tens
     """Dense ``[B, C_max, N, D]`` + mask reference for :class:`ChannelFusion`.
 
     Implements the exact same math as :meth:`ChannelFusion.forward` (including
-    the post-fusion positional embedding) but materialises the padded channel
-    axis and an attention mask.
+    the identity routing bias, the identity skip and the post-fusion positional
+    embedding) but materialises the padded channel axis and an attention mask.
     """
+    import math
+
     B, N, D = cs.n_samples, cs.n_patches, fusion.dim
     H = fusion.n_heads
     Dh = fusion.attn_dim // H
@@ -411,8 +456,10 @@ def _dense_fusion_reference(fusion: ChannelFusion, cs: ChannelSet) -> torch.Tens
     Cmax = int(cs.channel_idx.max().item()) + 1 if cs.channel_idx.numel() else 1
 
     x = cs.tokens.new_zeros(B, Cmax, N, D)
+    e = cs.tokens.new_zeros(B, Cmax, N, D)
     mask = torch.zeros(B, Cmax, N, dtype=torch.bool, device=device)
     x[cs.sample_idx, cs.channel_idx, cs.patch_idx] = cs.tokens
+    e[cs.sample_idx, cs.channel_idx, cs.patch_idx] = cs.channel_embed
     mask[cs.sample_idx, cs.channel_idx, cs.patch_idx] = True
     present = mask.any(dim=1)  # [B, N]
 
@@ -422,15 +469,22 @@ def _dense_fusion_reference(fusion: ChannelFusion, cs: ChannelSet) -> torch.Tens
     v = fusion.v_proj(kv)
     m = mask.permute(0, 2, 1).reshape(B * N, Cmax)
 
+    # identity routing bias, per head
+    eb = e.permute(0, 2, 1, 3).reshape(B * N, Cmax, D)
+    bias = fusion.identity_bias(eb).permute(0, 2, 1)  # [B*N, H, Cmax]
+    bias = bias.masked_fill(~m[:, None, :], float("-inf"))
+
     qh = q.reshape(B * N, 1, H, Dh).permute(0, 2, 1, 3)
     kh = k.view(B * N, Cmax, H, Dh).permute(0, 2, 1, 3)
     vh = v.view(B * N, Cmax, H, Dh).permute(0, 2, 1, 3)
-    bias = torch.zeros(B * N, 1, 1, Cmax, device=device)
-    bias = bias.masked_fill(~m[:, None, None, :], float("-inf"))
-    o = F.scaled_dot_product_attention(qh, kh, vh, attn_mask=bias)
-    o = o.permute(0, 2, 1, 3).reshape(B * N, 1, fusion.attn_dim)
-    o = fusion.proj_out(o).reshape(B, N, D)
-    out = o * present.unsqueeze(-1)
+    scores = (qh @ kh.transpose(-1, -2)) / math.sqrt(Dh) + bias.unsqueeze(2)
+    attn = torch.softmax(scores, dim=-1)
+
+    o = (attn @ vh).permute(0, 2, 1, 3).reshape(B * N, 1, fusion.attn_dim)
+    content = fusion.proj_out(o).reshape(B, N, D)
+    ident = (attn.mean(dim=1) @ eb).reshape(B, N, D)
+    out = content + fusion.identity_skip(ident)
+    out = out * present.unsqueeze(-1)
     # locations with no channel produced NaNs above; scrub them before adding PE.
     out = torch.nan_to_num(out)
     if fusion.has_spatial_pos:

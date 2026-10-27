@@ -19,6 +19,8 @@ heads).
 
 from __future__ import annotations
 
+import math
+
 import torch
 import torch.nn.functional as F
 
@@ -136,7 +138,9 @@ def grouped_pool_attention(
     kv_group_id: torch.Tensor,
     n_groups: int,
     dropout_p: float = 0.0,
-) -> torch.Tensor:
+    logit_bias: torch.Tensor | None = None,
+    return_weights: bool = False,
+):
     """Cross-attention with one query set per group (PMA-style pooling).
 
     Parameters
@@ -148,16 +152,35 @@ def grouped_pool_attention(
         ``[T, n_heads, head_dim]`` flattened key/value tokens.
     kv_group_id:
         ``[T]`` group id of each key/value token.
+    logit_bias:
+        optional ``[T, n_heads]`` additive bias on the attention logits (e.g. a
+        channel-identity routing bias).  Supplying it switches to an explicit
+        softmax so the bias can be applied before normalisation.
+    return_weights:
+        also return ``[T]`` attention weights (mean over heads and queries) in
+        the input token order.  Useful for pooling an identity vector with the
+        same weights that pooled the content.
+
+    Returns
+    -------
+    ``out`` or ``(out, weights)`` when ``return_weights`` is true.
     """
     _, n_q, n_heads, head_dim = q.shape
     out = torch.zeros_like(q)
-    if kv_group_id.numel() == 0:
+    T = kv_group_id.numel()
+    if T == 0:
+        if return_weights:
+            return out, kv_group_id.new_zeros(0, dtype=q.dtype)
         return out
 
     lengths, offsets = _lengths_and_offsets(kv_group_id, n_groups)
     order = torch.argsort(kv_group_id, stable=True)
     k_sorted = k[order]
     v_sorted = v[order]
+    manual = logit_bias is not None or return_weights
+    scale = math.sqrt(head_dim)
+    bias_sorted = logit_bias[order] if logit_bias is not None else None
+    w_sorted = torch.zeros(T, device=k.device, dtype=q.dtype) if return_weights else None
 
     for L in torch.unique(lengths).tolist():
         if L == 0:
@@ -169,8 +192,25 @@ def grouped_pool_attention(
         kk = k_sorted[idx].permute(0, 2, 1, 3)  # [M, H, L, Dh]
         vv = v_sorted[idx].permute(0, 2, 1, 3)
         qq = q[group_ids].permute(0, 2, 1, 3)  # [M, H, n_q, Dh]
-        o = F.scaled_dot_product_attention(qq, kk, vv, dropout_p=dropout_p)
+        if manual:
+            scores = torch.matmul(qq, kk.transpose(-1, -2)) / scale  # [M,H,n_q,L]
+            if bias_sorted is not None:
+                bb = bias_sorted[idx].permute(0, 2, 1).unsqueeze(2)  # [M,H,1,L]
+                scores = scores + bb
+            attn = torch.softmax(scores, dim=-1)
+            if dropout_p:
+                attn = F.dropout(attn, p=dropout_p, training=True)
+            o = torch.matmul(attn, vv)
+            if w_sorted is not None:
+                w_sorted[idx] = attn.mean(dim=(1, 2))
+        else:
+            o = F.scaled_dot_product_attention(qq, kk, vv, dropout_p=dropout_p)
         out[group_ids] = o.permute(0, 2, 1, 3)
+
+    if return_weights:
+        weights = torch.zeros_like(w_sorted)
+        weights[order] = w_sorted
+        return out, weights
     return out
 
 

@@ -36,10 +36,11 @@ size) and the pooled descriptor is `[B, D]`.
 
 ```
 per-channel tied Conv2d(1 -> D) patch embed, PI-resized to the current p
-    (no positional embedding here)
-    + additive ChannelEmbedding (per channel id)
+    (content-only token; no positional embedding, no channel id here)
     -> per-location channel fusion: one learned query over the C channel tokens
-       (ChannelFusion, Q/K/V projections to 3D)  + optional scale embedding
+       (ChannelFusion, Q/K/V projections to 3D)
+       logits += identity routing bias;  fused += identity skip
+       + optional scale embedding
     -> padding-free transformer encoder over [present locations, D]
        with fixed-count memory tokens and 2-D axial RoPE on q/k
     -> trained content-only PMA descriptor [B, D]   (appended to decoder KV)
@@ -57,9 +58,18 @@ per-channel tied Conv2d(1 -> D) patch embed, PI-resized to the current p
   no separate intensity gain is needed. For `p < p0` the resize is
   rank-deficient and PI-resize is the least-squares fit instead. Every `p` must divide `H` and `W`: patches tile the
   image, as in FlexiViT. There is no positional embedding at this stage.
-* **Additive channel identity.** `ChannelEmbedding` is a learned
-  `num_channel_ids × D` table. The row for a channel id is added to every patch
-  token of that channel; it is never normalized across the channel axis.
+* **Channel identity: routing bias + output skip.** `ChannelEmbedding` is a
+  learned `num_channel_ids × D` table, one row per channel id, never shared
+  across channels. It is deliberately **not** added to the patch token before
+  the fusion LayerNorm. Instead it enters twice: as a per-head additive bias on
+  the per-location channel-attention logits, and as an attention-pooled skip on
+  the fused token after the content projection:
+  `fused = proj(Σ_c a_c LN(t_c)) + skip(Σ_c a_c e_c)`. This keeps identity
+  load-bearing for routing and in the encoder representation (ChannelViT's
+  finding) while making the fused representation invariant to content
+  magnitude, so the identity/content balance cannot drift when the patch size
+  changes (a fixed-scale vector summed into a variable-scale token before a
+  LayerNorm would drift with `p`; see `FLEXIVIT.md` §3.1).
 * **Padding-free.** Tokens from the tokenizer are flattened `[ΣC·N, D]` with integer
   group ids; no `[B, C_max, N, D]` tensor and no attention masks for
   cardinality are ever materialised. Masking is token *omission*, never
@@ -115,11 +125,13 @@ per-channel tied Conv2d(1 -> D) patch embed, PI-resized to the current p
   `loss="cha_maevit"` selects the ChA-MAEViT ablation: raw-pixel L2 plus
   Fourier-amplitude L1 (`lambda_f=0.01`).
 
-### Why additive channel embedding
+### Why a learned channel-embedding table
 
 A learned table is the width-efficient parameterization of the same additive
 identity bias that `concat(x, onehot(m)) @ W` learns:
-`W_x x + W_e · onehot(m) = W_x x + E[m]`. The concat path widens every token to
+`W_x x + W_e · onehot(m) = W_x x + E[m]` — here applied to the fused content
+(`W_x` is the fusion output projection) and to the routing logits rather than
+inside the patch token. The concat path widens every token to
 `D + num_channel_ids` and pays that width in every attention and MLP layer; the
 table carries the same signal at fixed width and `num_channel_ids × D`
 parameters. Identity is not optional: ChannelViT's mean-embedding ablation
@@ -220,7 +232,7 @@ gated_out, present = gated(cs)
 | `src/fuse_channels/ops.py` | padding-free grouped attention primitives |
 | `src/fuse_channels/container.py` | `ChannelSet`: flattened variable-channel token batch |
 | `src/fuse_channels/identity.py` | `ChannelEmbedding`: learned per-channel-id additive table |
-| `src/fuse_channels/patch_embed.py` | `ChannelTiedPatchEmbed`, `ChannelTokenizer` |
+| `src/fuse_channels/patch_embed.py` | `ChannelTiedPatchEmbed`, `ChannelTokenizer` (content-only tokens; identity travels separately) |
 | `src/fuse_channels/fusion.py` | `ChannelFusion`, `IdentityGatedSum`, `MultiheadAttentionPooling`; `_dense_fusion_reference` (private, test/viz-only) |
 | `src/fuse_channels/rope.py` | 2-D axial RoPE on normalized grid coordinates |
 | `src/fuse_channels/flexi.py` | FlexiViT PI- (pseudoinverse-) resize for the patch-embedding kernel |
@@ -248,8 +260,10 @@ Covered by `tests/`:
 - omission vs the dense reference (`test_omission_equivalence`)
 - permutation invariance (`test_permutation_invariance`)
 - identity routing: changing the channel embedding changes the fused output
-  (`test_identity_changes_routing`, `test_identity_gated_sum`); no downstream
-  task metric is claimed
+  (`test_identity_changes_routing`, `test_identity_gated_sum`); identity is a
+  routing bias + output skip, never summed into content before a LayerNorm
+  (`tests/test_identity_decoupling.py`), so identity routing is patch-size
+  invariant; no downstream task metric is claimed
 - no pad artifacts and an exact presence mask (`test_no_pad_artifacts`)
 - one shared pooling query per location and attention dropout behaviour
   (`test_pooling_query_is_shared_across_locations`, dropout tests); the default
@@ -334,6 +348,9 @@ channel tokens"; the descriptor is trained rather than inference-only; the
 default loss is patch-normalized MSE with ChA-MAEViT as an ablation;
 `IdentityGatedSum` replaces the misleading `HypernetworkWeightedSum` name;
 position now follows the FLEXIVIT.md target (encoder RoPE + decoder fractional PE,
-no fusion table), with the legacy table retained as an ablation; and the
-acceptance claims are limited to what the tests cover. Rationale, trade-offs,
+no fusion table), with the legacy table retained as an ablation; channel
+identity is decoupled from the patch token (routing bias + output skip) so the
+identity/content balance is patch-size invariant, a placement deviation from
+ChannelViT's additive token that keeps its finding that per-channel identity is
+load-bearing; and the acceptance claims are limited to what the tests cover. Rationale, trade-offs,
 and the corrected reference claims are in [`docs/design.md`](docs/design.md).
