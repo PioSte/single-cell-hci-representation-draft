@@ -117,19 +117,21 @@ visible channel token).
 
 - `group_id = cs.location_group_ids() = sample_idx * N + patch_idx` → one
   group per `(b,n)` location; `n_groups = |unique(group_id)| = Kf`.
-- `tok = norm_kv(tokens)[order]` viewed `[V, H, Dh]`.
-- `q = norm_q(queries)` with `queries: [1, 1, D]` — **exactly one learned
-  query, shared by every sample and every spatial location** — expanded to
-  `[Kf, 1, H, Dh]`. There is no `n_queries` argument and no multi-query path.
-- `grouped_pool_attention(q, tok, tok, lookup, Kf)` → `[Kf, 1, H, Dh]`
-  (**keys = values = the LayerNormed channel tokens**; there are no
-  `W_Q/W_K/W_V` projections).
-- `proj_out: Linear(D, D)` is the only learned output projection →
-  `[Kf, D]`; scatter to `[B, N, D]`; add `spatial_pos` only in legacy mode.
-- Cost: `O(C·D)` per `(b,n)` location plus the `D²` output projection —
-  **`O(C)` scaling**, not a dense `C×C` per-location block. ChannelViT and
-  ChAda-ViT attend over the full `C·N` sequence (`O((C·N)²)`); only ChAda-ViT
-  pads and masks.
+- `tok = norm_kv(tokens)[order]` (LayerNormed channel tokens).
+- `k = k_proj(tok)`, `v = v_proj(tok)` into `attn_dim = 3D` by default
+  (Panopticon's `D_attn = 3D`); `attn_dim=D` is the parameter-matched ablation.
+- `q = q_proj(norm_q(queries))` with `queries: [1, 1, D]` — **exactly one
+  learned query, shared by every sample and every spatial location** — expanded
+  to `[Kf, 1, H, Dh]`. There is no `n_queries` argument and no multi-query path.
+- `grouped_pool_attention(q, k, v, lookup, Kf)` → `[Kf, 1, H, Dh]`
+  (**separate learned `W_Q/W_K/W_V` projections**, Panopticon's channel
+  cross-attention recipe).
+- `proj_out: Linear(D_attn, D)` maps back → `[Kf, D]`; scatter to
+  `[B, N, D]`; add `spatial_pos` only in legacy mode.
+- Cost: `O(C·D·D_attn)` per `(b,n)` location plus `O(D·D_attn)` for
+  `proj_out` — **`O(C)` scaling**, not a dense `C×C` per-location block.
+  ChannelViT and ChAda-ViT attend over the full `C·N` sequence
+  (`O((C·N)²)`); only ChAda-ViT pads and masks.
 
 ### `IdentityGatedSum` (ablation, `O(C)`)
 

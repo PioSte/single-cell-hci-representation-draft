@@ -67,11 +67,19 @@ hypernetwork-generated conditioning, which this repo deliberately does not.
 
 Panopticon reduces the channel axis at each patch by cross-attention with a
 single learned query `q ∈ R^{1×D}`, using the per-channel patch embeddings as
-keys and values (`references/panopticon/paper.md:92`). `ChannelFusion` follows
-that mechanism: one learned query is shared across every sample and every
-spatial location, keys and values are the LayerNormed channel tokens
-(`k = v`, no K/V projections), and a learned output projection scatters the
-pooled vector back to `[B, N, D]`. The fusion group is `(sample, patch)`, so
+keys and values (`references/panopticon/paper.md:92`). Its actual recipe is
+wider than "one query": the tokens are projected with learned Q/K/V
+projections into an attention dimension `D_attn`, attention runs there, and a
+final projection maps back to the backbone width. Panopticon sets
+`D_attn = 3D` and its Table 5 ablation shows `D_attn > D` improves the metric
+substantially (`references/panopticon/paper.md:92,194,219`; the earlier
+"projection-free K/V" reading in this repo was wrong).
+
+`ChannelFusion` follows that recipe: one learned query is shared across every
+sample and every spatial location, the LayerNormed channel tokens go through
+learned `q_proj`/`k_proj`/`v_proj` into `attn_dim = 3·dim` by default, and
+`proj_out` maps the pooled vector back to `[B, N, D]`. `attn_dim=dim` is the
+narrow, parameter-matched ablation. The fusion group is `(sample, patch)`, so
 the softmax axis is the channel axis, never the patch axis.
 
 The cost is `O(C)` per location, `O(N·C)` per sample. The whole-sequence
@@ -297,4 +305,5 @@ for the cost/ablation comparison.
 | ChA-MAEViT's additive channel tokens are at `:113` | `:113` is the memory-token formula; the additive channel tokens are at `:121-125`. | `references/cha-maevit/paper.md:111-113`, `:121-125` |
 | ChannelViT Table 11 is a token-level one-hot ablation | Table 11 conditions the final classifier; Table 10 is the channel-embedding ablation that supports "identity matters". | `references/channelvit/paper.md:670-688`, `:692-714` |
 | Every reference architecture uses an additive learned identity | Narrow to ChannelViT/ChAda-ViT/ChA-MAEViT; Panopticon uses fixed wavelength PE plus concatenation, and DOFA/HyperFree use hypernetwork conditioning. | `references/panopticon/paper.md:94-108` |
+| Panopticon's channel attention is projection-free (`k = v`, no K/V projections) | It uses learned Q/K/V projections into `D_attn`, with `D_attn = 3D` by default; Table 5 shows `D_attn > D` matters. | `references/panopticon/paper.md:92,194,219` |
 | `IdentityGatedSum` provides data-dependent weighting | It is marker-routed: weights depend on the channel embedding, not on token content; only the attention fusion is content-dependent. | `src/fuse_channels/fusion.py` (class `IdentityGatedSum`) |

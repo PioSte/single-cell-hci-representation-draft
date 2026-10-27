@@ -247,7 +247,7 @@ def build() -> plt.Figure:
         "Grouped SDPA primitives",
         "projected self-attn (bucketed)\n"
         "general cross-attn (per-group loop)\n"
-        "channel-fusion pooling K=V; descriptor pooler projected",
+        "channel fusion and descriptor pooler: both Q/K/V projected",
         edge=FUSED, title_size=8.8, sub_size=5.9)
 
     rrect(ax, 104.0, Y0 + 4.0, 33.0, 11.0, edge=LOSS, face=tint(LOSS, 0.92),

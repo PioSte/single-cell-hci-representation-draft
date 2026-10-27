@@ -37,6 +37,12 @@ def main() -> None:
     p.add_argument("--depth", type=int, default=4)
     p.add_argument("--n-heads", type=int, default=4)
     p.add_argument("--n-memory", type=int, default=4)
+    p.add_argument(
+        "--fusion-attn-dim",
+        type=int,
+        default=None,
+        help="Q/K/V attention width (default: 3*dim, Panopticon's D_attn=3D)",
+    )
     p.add_argument("--lr", type=float, default=1e-3)
     p.add_argument("--c-max", type=int, default=8)
     p.add_argument("--channel-ids", type=int, default=32)
@@ -103,6 +109,7 @@ def main() -> None:
         decoder_depth=2,
         n_heads=args.n_heads,
         n_memory=args.n_memory,
+        fusion_attn_dim=args.fusion_attn_dim,
         num_channel_ids=args.channel_ids,
         p_patch=p_patch,
         p_channel=p_channel,

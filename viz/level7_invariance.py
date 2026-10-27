@@ -116,20 +116,22 @@ def measure_permutation_invariance(
     return results
 
 
-def analytic_cost(Cs, D):
+def analytic_cost(Cs, D, attn_dim=None):
     """Per-location analytic multiply-adds of the default fusion + ablation.
 
-    * default single-query PMA (``ChannelFusion``): scores + weighted sum
-      ``2·C·D``, plus the per-location output projection ``D²``
-      → ``2·C·D + D²``;
+    * default single-query PMA (``ChannelFusion``): Q/K/V projections
+      ``3·C·D·D_attn``, scores + weighted sum ``2·C·D_attn``, and the
+      per-location output projection ``D·D_attn``, with
+      ``D_attn = 3D`` by default;
     * ``IdentityGatedSum`` ablation: one per-channel ``D→D`` MLP + ``D→1`` head
       (``D² + D``) and a ``D→D`` value projection (``D²``) → ``C·(2·D² + D)``.
 
     Both scale as ``O(C)`` in the channel count.
     """
+    A = 3 * D if attn_dim is None else attn_dim
     attn, gated = [], []
     for C in Cs:
-        attn.append(2 * C * D + D * D)
+        attn.append(3 * C * D * A + 2 * C * A + D * A)
         gated.append(C * (2 * D * D + D))
     return np.array(attn), np.array(gated)
 

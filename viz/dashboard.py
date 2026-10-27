@@ -177,11 +177,19 @@ def _(ChannelSet, math, torch):
         Requires a single sample with a full ``(c, n)`` grid.
         """
         heads = fusion.n_heads
-        dh = DIM // heads
+        dh = fusion.attn_dim // heads
         C = int(cs.channel_idx.max()) + 1
         tok = cs.tokens.reshape(C, NP, DIM)
-        q = fusion.norm_q(fusion.queries).reshape(1, 1, heads, dh).expand(NP, 1, heads, dh)
-        kv = fusion.norm_kv(tok).reshape(C, NP, heads, dh).permute(1, 2, 0, 3)
+        q = (
+            fusion.q_proj(fusion.norm_q(fusion.queries))
+            .reshape(1, 1, heads, dh)
+            .expand(NP, 1, heads, dh)
+        )
+        kv = (
+            fusion.k_proj(fusion.norm_kv(tok))
+            .reshape(C, NP, heads, dh)
+            .permute(1, 2, 0, 3)
+        )
         qq = q.permute(0, 2, 1, 3)
         att = (qq @ kv.transpose(-1, -2)) / math.sqrt(dh)
         return att.softmax(-1).mean(dim=(1, 2)).detach()

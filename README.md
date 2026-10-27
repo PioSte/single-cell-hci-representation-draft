@@ -39,7 +39,7 @@ per-channel tied Conv2d(1 -> D) patch embed, PI-resized to the current p
     (no positional embedding here)
     + additive ChannelEmbedding (per channel id)
     -> per-location channel fusion: one learned query over the C channel tokens
-       (ChannelFusion, K = V = LayerNormed tokens)  + optional scale embedding
+       (ChannelFusion, Q/K/V projections to 3D)  + optional scale embedding
     -> padding-free transformer encoder over [present locations, D]
        with fixed-count memory tokens and 2-D axial RoPE on q/k
     -> trained content-only PMA descriptor [B, D]   (appended to decoder KV)
@@ -68,10 +68,13 @@ per-channel tied Conv2d(1 -> D) patch embed, PI-resized to the current p
   number of visible channel-patches.
 * **Per-location fusion.** `ChannelFusion` reduces the `C` channels at each
   `(sample, patch)` location with one shared learned query, costing `O(C)` per
-  location. Keys and values are the LayerNormed tokens themselves (no K/V
-  projections; the Panopticon-style simplification); the query and the output
-  projection are learned. `IdentityGatedSum` is the `O(C)` marker-routed
-  ablation: `joint = Σ_c softmax_c(MLP(channel_embed_c)) · V_c`.
+  location. It follows Panopticon's recipe: LayerNormed tokens go through
+  learned `q_proj` / `k_proj` / `v_proj` into an attention width
+  `attn_dim = 3·D` (Panopticon's `D_attn = 3D`), attention runs there, and
+  `proj_out` maps back to `D`. `attn_dim=D` is the parameter-matched ablation;
+  Panopticon's Table 5 found `D_attn > D` important. `IdentityGatedSum` is the
+  `O(C)` marker-routed ablation:
+  `joint = Σ_c softmax_c(MLP(channel_embed_c)) · V_c`.
 * **Encoder position: 2-D axial RoPE.** Fusion is position-agnostic. RoPE is
   applied to encoder queries and keys from **normalized** coordinates
   `(r + 0.5)/grid_h` and `(c + 0.5)/grid_w`, so the phase describes layout only;
@@ -180,7 +183,8 @@ ids = [torch.randint(0, 32, (3,)), torch.randint(0, 32, (7,))]
 
 embedding = ChannelEmbedding(192, num_channel_ids=32)
 tokenizer = ChannelTokenizer(16, 8, 192, embedding)
-# Default target: no spatial table in fusion (encoder RoPE carries layout).
+# Default target: no spatial table in fusion (encoder RoPE carries layout);
+# Q/K/V project to attn_dim=3*192=576, matching Panopticon's D_attn=3D.
 fusion = ChannelFusion(192, n_heads=6)
 # Legacy fixed-grid ablation: post-fusion learned table.
 fusion_learned = ChannelFusion(192, n_heads=6, n_patches=4, pos_embed="learned")

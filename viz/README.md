@@ -25,7 +25,7 @@ They share one design system so they read as one authored set:
 | **L1** | `level1_system.py` | end-to-end system: training path + `encode()` branch | Panopticon Fig 1 / Perceiver-IO Fig 2 |
 | **L2** | `level2_layout.py` | axis-labelled tensor layout (the hero figure) | Perceiver-IO Fig 2 |
 | **L3** | `level3_tokenizer.py` | PI-resized tied patch embed + additive channel embedding; no tokenizer/fusion PE (encoder RoPE, decoder fractional PE) | ChannelViT Fig 1 / ChAda-ViT Fig 2 |
-| **L4** | `level4_fusion.py` | fusion internals: single learned query, projection-free K/V, no spatial table | Perceiver-IO Fig 5 inset |
+| **L4** | `level4_fusion.py` | fusion internals: single learned query, Q/K/V projections to `D_attn=3D`, no spatial table | Panopticon Fig. 1 / Perceiver-IO Fig 5 inset |
 | **L5** | `level5_masking.py` | DCP Eq. 1 (patch / channel / combined) + unified HCS channel sampler; token omission | ChAda-ViT Fig 2 MASK row |
 | **L6** | `level6_objective.py` | MAE objective: trained content-only descriptor, RoPE/scale-conditioned encoder, target self-attention, canonical-head resize, default reconstruction loss | Panopticon teacher–student |
 | **L7** | `level7_invariance.py` | measured invariance & cost (runs the real model) | ChAda-ViT scaling panels |
@@ -173,11 +173,12 @@ A deeper animation of the **default** fusion path (`ChannelFusion`). It zooms
 into one `(sample, patch)` location and follows
 its channel tokens through every operation, one at a time:
 
-`x_c` → `LayerNorm` (`k = v`) → per-head `q_h · k_{c,h} / √D_h` → `softmax` over
-the `C` channels → `Σ_c α_c v_c` → `concat` heads → `proj_out` Linear →
+`x_c` → `LayerNorm` → `W_K`/`W_V` → per-head `q_h · k_{c,h} / √D_h` → `softmax`
+over the `C` channels → `Σ_c α_c v_c` → `concat` heads → `proj_out` Linear →
 scatter into `[B, N, D]` → add the post-fusion spatial PE. `ChannelFusion` is
-single-query (one learned `[1,1,D]` query for every location) and projection-free
-for K/V; the only learned linear is `proj_out`.
+single-query (one learned `[1,1,D]` query for every location) and follows
+Panopticon's Q/K/V recipe: `W_Q/W_K/W_V` project into `D_attn = 3D` by default,
+and `proj_out` projects back to `D`.
 
 The two dot-product steps are drawn with `k.matrix_product` (each score/entry is
 shown cell by cell while its query row and key/value column are highlighted), and
@@ -187,10 +188,11 @@ keys / scores, the attention weights, the values, the head output, the projectio
 the concat and the fused vector, plus present vs. absent locations. The numbers
 come from a real forward pass at `dim=4, n_heads=2` — small enough to read; the
 model default is `dim=192, n_heads=6`. It makes three structural points explicit:
-keys and values are the *same* tensor (`k = v = norm_kv(x)`), there is no
-`W_Q/W_K/W_V` (the query is one learned parameter vector shared by every sample
-and every patch, so `ChannelFusion` has no `n_queries`), and the softmax axis is
-the channel axis — never patches or samples.
+keys and values come from separate learned projections (`W_K`, `W_V`), the query
+is `W_Q` applied to one learned parameter vector shared by every sample and every
+patch (so `ChannelFusion` has no `n_queries`), and the softmax axis is the channel
+axis — never patches or samples. The animation uses `D_attn = D` for readability;
+the model default is `D_attn = 3D`.
 
 ```bash
 uv run kinemo check --strict viz/fusion_flow.py

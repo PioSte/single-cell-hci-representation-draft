@@ -4,21 +4,22 @@ The default fusion is :class:`fuse_channels.fusion.ChannelFusion` -- PMA-style
 pooling of the channel axis at every spatial location.  This scene zooms into **one** location (one sample, one
 patch) and follows its channel tokens through every operation:
 
-    gather channels -> LayerNorm (k = v) -> per-head query · key / sqrt(Dh)
+    gather channels -> LayerNorm -> W_K/W_V -> per-head query · key / sqrt(Dh)
     -> softmax over the C channels -> sum(alpha * v) -> concat heads
-    -> shared Linear -> scatter into [B, N, D] -> + post-fusion spatial PE
+    -> proj_out -> scatter into [B, N, D] -> + post-fusion spatial PE
 
 The numbers come from a real ``ChannelFusion`` forward pass with an
 illustrative ``dim=4, n_heads=2`` (the model default is ``dim=192,
 n_heads=6``; a 192-wide vector is unreadable, the math is identical).  That
 probe also confirmed the structural facts this animation leans on:
 
-* keys and values are the **same** tensor -- ``k = v = norm_kv(tokens)``;
-* there are **no** separate ``W_Q/W_K/W_V`` -- the query is one learned
-  parameter vector and the only learned linear is the output projection
-  ``proj_out``;
-* that one query is shared by every sample and every spatial location;
-  ``ChannelFusion`` is single-query and has no ``n_queries`` argument.
+* keys and values come from separate learned projections ``W_K`` and ``W_V``
+  applied to ``norm_kv(tokens)``;
+* the query is projected by ``W_Q`` and then shared by every sample and every
+  spatial location; ``ChannelFusion`` is single-query and has no ``n_queries``
+  argument;
+* the shown ``attn_dim`` equals ``D`` for readability (the model default is
+  ``attn_dim = 3D``), and the scene visualises the post-projection tensors.
 
 The two dot-product steps use ``k.matrix_product`` because that is literally
 what they are: ``q_h · K_hᵀ -> scores`` and ``alpha_h @ V_h -> o_h``.
@@ -48,24 +49,29 @@ X = [  # raw channel tokens x_c, [C][D]
     [0.52, -1.31, 0.19, 0.54],
     [-2.22, 0.26, -1.03, -0.50],
 ]
-KV = [  # k = v = LayerNorm(x)  [C][D]
-    [-1.29, -0.19, 1.51, -0.03],
-    [0.70, -1.70, 0.27, 0.73],
-    [-1.49, 1.25, -0.17, 0.41],
+K = [  # k = W_K norm_kv(x)  [C][D]
+    [-0.35, 0.03, -0.92, 0.26],
+    [-1.22, -0.93, 0.63, -1.21],
+    [0.19, -0.46, -0.50, 0.63],
 ]
-Q = [-0.37, -1.43, 1.21, 0.59]
+V = [  # v = W_V norm_kv(x)  [C][D]
+    [0.06, 0.01, -0.22, -1.15],
+    [0.58, -0.31, 0.26, -0.08],
+    [0.86, -0.38, -0.26, -0.09],
+]
+Q = [0.01, 1.48, 0.91, -0.85]  # q = W_Q norm_q(queries)
 
-ALPHA = [[0.25, 0.57], [0.69, 0.27], [0.06, 0.16]]  # [channel][head]
-HEADS = [[0.07, -1.15], [0.90, 0.25]]  # [head][Dh]
+ALPHA = [[0.51, 0.12], [0.18, 0.76], [0.31, 0.12]]  # [channel][head]
+HEADS = [[0.40, -0.17], [0.14, -0.20]]  # [head][Dh]
 CONCAT = HEADS[0] + HEADS[1]
 W = [  # proj_out weight, [D][D]
-    [-0.00, 0.27, -0.41, -0.37],
-    [-0.19, 0.13, -0.01, 0.40],
-    [-0.04, 0.13, -0.15, -0.10],
-    [-0.48, -0.33, -0.21, 0.02],
+    [0.09, 0.11, -0.18, -0.16],
+    [-0.01, 0.42, 0.35, 0.23],
+    [-0.17, -0.30, 0.40, 0.19],
+    [-0.27, 0.25, -0.49, 0.07],
 ]
-BIAS = [0.20, 0.30, -0.34, -0.22]
-FUSED = [-0.57, 0.22, -0.65, -0.05]
+BIAS = [-0.46, -0.32, 0.24, -0.34]
+FUSED = [-0.44, -0.39, 0.24, -0.57]
 
 CH = [k.BLUE, k.ORANGE, k.PURPLE]
 QCOL = k.TEAL
@@ -259,20 +265,20 @@ def fusion_flow(s: k.Scene):
     s.wait(0.3)
 
     # ===================================================================== #
-    # 3 -- LayerNorm: keys and values are the same tensor.
+    # 3 -- LayerNorm -> separate key and value projections.
     # ===================================================================== #
     nxt("3 / 11")
     k_cells, k_nums = [], []
     for c in range(C):
-        k_cells += vrow(KV[c], XR, YROWS[c], CH[c], stroke=k.WHITE)
-        k_nums += nrow(KV[c], XR, YROWS[c] - 0.4)
+        k_cells += vrow(K[c], XR, YROWS[c], CH[c], stroke=k.WHITE)
+        k_nums += nrow(K[c], XR, YROWS[c] - 0.4)
     arrows = [
         k.Arrow(start=(XL + 2.35, YROWS[c]), end=(XR - 2.35, YROWS[c]),
                 stroke=k.GRAY, fill=k.GRAY, opacity=0.0)
         for c in range(C)
     ]
     span_k = span_rows(XR, D, YROWS, k.WHITE)
-    c_k = callout("keys k = values v — one tensor", span_k, "right", k.WHITE)
+    c_k = callout("keys k = W_K norm_kv(x)", span_k, "right", k.WHITE)
     c_norm = callout("LayerNorm", arrows[1], "bottom", k.GRAY, style="line")
     s.add(*k_cells, *k_nums, *arrows, span_k, c_k, c_norm)
     s.play(
@@ -283,8 +289,8 @@ def fusion_flow(s: k.Scene):
         duration=0.8,
     )
     cap(
-        "normalize every token; keys and values are literally the same tensor",
-        "k_c = v_c = (x_c − μ) / σ ⊙ γ + β        (γ = 1, β = 0 fresh here)",
+        "normalize every token, then project with separate W_K and W_V",
+        "k_c = W_K norm_kv(x_c)      v_c = W_V norm_kv(x_c)",
     )
     s.wait(0.3)
 
@@ -306,8 +312,8 @@ def fusion_flow(s: k.Scene):
         duration=0.6,
     )
     cap(
-        "the query is a parameter, not a projection: there is no W_Q and one vector serves every location",
-        "q = LayerNorm(queries) ∈ R^D        (queries: [1, 1, D])",
+        "the query is one learned vector, projected by W_Q and shared by every location",
+        "q = W_Q norm_q(queries) ∈ R^D        (queries: [1, 1, D])",
     )
     s.wait(0.3)
 
@@ -345,7 +351,7 @@ def fusion_flow(s: k.Scene):
         duration=0.4,
     )
     A1 = k.Matrix([[Q[0], Q[1]]], size=0.38, x=-4.2, y=0.3)
-    B1 = k.Matrix([[KV[c][0] for c in range(C)], [KV[c][1] for c in range(C)]],
+    B1 = k.Matrix([[K[c][0] for c in range(C)], [K[c][1] for c in range(C)]],
                   size=0.38, x=-0.5, y=0.3)
     P1 = A1 @ B1
     P1.set(x=3.4, y=0.3)
@@ -389,7 +395,7 @@ def fusion_flow(s: k.Scene):
     nxt("8 / 11")
     s.play(k.fade_out(alpha_m, e_alpha, c_alpha), duration=0.4)
     a_h0 = k.Matrix([[ALPHA[0][0], ALPHA[1][0], ALPHA[2][0]]], size=0.4, x=-4.0, y=0.2)
-    Vt0 = k.Matrix([[KV[0][0], KV[0][1]], [KV[1][0], KV[1][1]], [KV[2][0], KV[2][1]]],
+    Vt0 = k.Matrix([[V[0][0], V[0][1]], [V[1][0], V[1][1]], [V[2][0], V[2][1]]],
                    size=0.4, x=0.0, y=0.2)
     o0 = a_h0 @ Vt0
     o0.set(x=3.6, y=0.2)
@@ -397,7 +403,7 @@ def fusion_flow(s: k.Scene):
     e_v = surround(Vt0, color=H1COL, opacity=0.0)
     e_o = surround(o0, color=H0COL, opacity=0.0)
     c_w = callout("weights α_h", a_h0, "top", H0COL, gap=0.5)
-    c_v = callout("values V_h (= k)", Vt0, "top", H1COL, gap=0.5)
+    c_v = callout("values V_h (from W_V)", Vt0, "top", H1COL, gap=0.5)
     c_o = callout("head output o_h", o0, "top", H0COL, gap=0.5)
     s.add(e_w, e_v, e_o, c_w, c_v, c_o)
     s.play(k.draw(a_h0), k.draw(Vt0))
@@ -488,7 +494,7 @@ def fusion_flow(s: k.Scene):
     s.play(k.fade_out(*out_grid, *out_fill, out_note, c_present, c_absent), duration=0.4)
     ops = [
         ("gather", k.BLUE),
-        ("LayerNorm", k.WHITE),
+        ("LN+QKV", k.WHITE),
         ("q·kᵀ/√D", k.TEAL),
         ("softmax_c", k.YELLOW),
         ("Σ α·v", k.ORANGE),

@@ -7,7 +7,7 @@ A single hero panel for the *shipped* padding-free path:
       -> ragged token list [V, D]   (solid primary object; rows are real
          tokens only, never padded or zeroed; V <= Sum C . N)
       -> grouped_pool_attention at each (b, n): one shared learned query,
-         keys = values = norm_kv(tokens), proj_out; fusion adds no
+         Q/K/V projections to D_attn = 3D, proj_out; fusion adds no
          positional table
       -> fused [B, N, D] tokens -> encoder (TransformerEncoder) with
          2-D axial RoPE and scale conditioning.
@@ -189,8 +189,8 @@ def draw_panel(ax):
 
     # channel fusion -- the O(C) primitive lives here
     box(ax, X0, FUSE_BOX_Y, COL_W, FUSE_BOX_H, "Channel fusion",
-        "one shared query · $K{=}V{=}$norm_kv(tokens) · proj_out\n"
-        "no fusion PE · $O(C{\\cdot}D)+D^2$ per location ($D^2$ = proj_out)",
+        "one shared query · $W_Q/W_K/W_V$ to $D_{attn}\\!=\\!3D$ · proj_out\n"
+        "no fusion PE · $O(C{\\cdot}D{\\cdot}D_{attn})$ per location",
         edge=FUSION,
         title_size=7.8, sub_size=5.9)
     ax.text(CX, ANNOT_Y, "grouped_pool_attention", ha="center", va="center",

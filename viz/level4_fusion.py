@@ -1,11 +1,12 @@
 """L4 -- ChannelFusion: single-query PMA pooling over the channel axis.
 
 Shows :class:`ChannelFusion`, the **default** fusion.  It is a single-query
-PMA-style pooling over the channel axis at each spatial location.  It is
-deliberately projection-free for K/V (``k = v = norm_kv(tokens)``), LayerNorms
-the shared query, keeps one learned query ``q`` and an output projection
-(``proj_out``), and has no ``n_queries`` axis: the fused tensor is
-``[B, N, D]``, one token per present ``(b, n)`` location.
+PMA-style pooling over the channel axis at each spatial location.  It follows
+Panopticon's recipe: LayerNormed tokens pass through learned ``q_proj`` /
+``k_proj`` / ``v_proj`` into an attention width ``D_attn`` (3·D by default),
+attention runs there, and ``proj_out`` maps back to ``D``.  One learned query
+is shared by every location, and there is no ``n_queries`` axis: the fused
+tensor is ``[B, N, D]``, one token per present ``(b, n)`` location.
 
 It adds **no positional table**: the encoder owns layout through 2-D axial
 RoPE, so the fused ``[B, N, D]`` carries content only.  The module consumes the
@@ -124,22 +125,24 @@ def draw_fusion(ax):
     ax.text(60.0, 74.8, "$C$ present channels, order-free $\\cdot$ one "
             "$(b,n)$", ha="left", va="center", fontsize=6.2, color=INK)
 
-    # ---- stage 2: LayerNorm -> keys = values ------------------------------ #
+    # ---- stage 2: LayerNorm -> learned Q/K/V projections ------------------ #
     y_ln, h_ln = 62.0, 3.0
-    stage(ax, GX0, y_ln, GX1 - GX0, h_ln, "LayerNorm $\\mathrm{norm}_{kv}$",
-          tcolor=FUS, tsize=7.0)
+    stage(ax, GX0, y_ln, GX1 - GX0, h_ln,
+          "LayerNorm $\\mathrm{norm}_{kv}$ $\\to$ Q/K/V projections",
+          "$W_Q, W_K, W_V: D \\to D_{attn}$ (here $D_{attn}=3D$)",
+          tcolor=FUS, tsize=6.6)
 
     y_kv, h_kv = 53.6, 6.0
     for i, cx in enumerate(CX):
         col = CHANNEL_COLORS[i]
-        data_cell(ax, cx, y_kv, CW, h_kv, col, f"$k_{i+1}\\!=\\!v_{i+1}$",
-                  tsize=8.0)
+        data_cell(ax, cx, y_kv, CW, h_kv, col, f"$k_{i+1}$",
+                  sub="from $W_K$", tsize=8.4)
 
     # ---- stage 3: scores q_h . k_c,h / sqrt(D_h) -------------------------- #
     y_s, h_s = 44.0, 6.0
     stage(ax, GX0, y_s, GX1 - GX0, h_s,
           "$s_{c,h} = q_h \\cdot k_{c,h} / \\sqrt{D_h}$",
-          "$H$ heads  $\\cdot$  $D_h = D/H$", tcolor=FUS, tsize=8.0)
+          "$H$ heads  $\\cdot$  $D_h = D_{attn}/H$", tcolor=FUS, tsize=8.0)
 
     # ---- stage 4: softmax over the channel axis --------------------------- #
     y_a, h_a = 33.6, 6.0
@@ -147,7 +150,7 @@ def draw_fusion(ax):
           "$\\alpha_{c} = \\mathrm{softmax}_c\\,(s_{c})$",
           "softmax over the channel ($C$) axis", tcolor=FUS, tsize=7.8)
 
-    # ---- connectors: tokens -> LayerNorm -> k=v -> scores -> alpha -------- #
+    # ---- connectors: tokens -> LayerNorm -> Q/K/V -> scores -> alpha ------ #
     for cx in CTR:
         arrow(ax, (cx, 76.6), (cx, y_tok + h_tok), lw=1.0, ms=7, color=TOK)
         arrow(ax, (cx, y_tok), (cx, y_ln + h_ln), lw=1.1, ms=7)
@@ -162,8 +165,8 @@ def draw_fusion(ax):
           rounding=0.6)
     ax.text(qx + qw / 2, qy + qh / 2 + 0.8, "$q$", ha="center",
             va="center", fontsize=10.0, color=FUS, fontweight="bold")
-    ax.text(qx + qw / 2, qy + qh / 2 - 1.5, "$\\mathrm{norm}_q$",
-            ha="center", va="center", fontsize=5.4, color=MUTED,
+    ax.text(qx + qw / 2, qy + qh / 2 - 1.5, "$W_Q\\,\\mathrm{norm}_q$",
+            ha="center", va="center", fontsize=5.2, color=MUTED,
             style="italic")
     ax.text(2.5, 41.6, "one learned query $q$", ha="left", va="center",
             fontsize=6.0, color=FUS)
@@ -203,14 +206,14 @@ def draw_fusion(ax):
 
     # ---- explanatory notes: fill the right half of the panel -------------- #
     n_kw = dict(ha="left", va="center", fontsize=6.0, color=MUTED)
-    ax.text(60.0, 72.0, "keys = values = $\\mathrm{norm}_{kv}(x_c)$; no "
-            "$W_Q/W_K/W_V$", **n_kw)
-    ax.text(60.0, 69.5, "one learned query $q$, shared by every $(b,n)$",
-            **n_kw)
+    ax.text(60.0, 72.0, "$k_c=W_K\\,\\mathrm{norm}_{kv}(x_c)$, "
+            "$v_c=W_V\\,\\mathrm{norm}_{kv}(x_c)$", **n_kw)
+    ax.text(60.0, 69.5, "one learned query $q=W_Q\\,\\mathrm{norm}_q$, "
+            "shared by every $(b,n)$", **n_kw)
     ax.text(60.0, 67.0, "attention over the $C$ present channels at $(b,n)$",
             **n_kw)
-    ax.text(60.0, 64.5, "$O(C{\\cdot}D)+D^2$ per location ($D^2$ from "
-            "$\\mathrm{proj\\_out}$)", **n_kw)
+    ax.text(60.0, 64.5, "$O(C{\\cdot}D{\\cdot}D_{attn})$ per location; "
+            "$D_{attn}=3D$ by default", **n_kw)
     ax.text(60.0, 62.0, "no positional table; encoder owns layout via 2-D "
             "axial RoPE", ha="left", va="center", fontsize=6.0, color=OUT_C)
     ax.text(84.0, 56.6, "scatter $\\rightarrow$ $[B, N, D]$; one token per "
@@ -218,8 +221,8 @@ def draw_fusion(ax):
             color=OUT_C, fontweight="bold")
     ax.text(84.0, 54.0, "$\\alpha_c$ weights each channel's value",
             **n_kw)
-    ax.text(84.0, 51.5, "then $\\mathrm{proj\\_out}$ merges the heads",
-            **n_kw)
+    ax.text(84.0, 51.5, "then $\\mathrm{proj\\_out}: D_{attn}\\to D$ "
+            "merges the heads", **n_kw)
 
 
 # --------------------------------------------------------------------------- #
@@ -270,7 +273,8 @@ def draw_legends(ax):
     right = [
         "$K_f$ \u2014 present $(b,n)$ locations",
         "$D$ \u2014 token / embedding dim",
-        "$D_h=D/H$ \u2014 per-head dim",
+        "$D_{attn}$ \u2014 Q/K/V width ($3D$ default)",
+        "$D_h=D_{attn}/H$ \u2014 per-head dim",
         "$H$ \u2014 attention heads",
         "$q$ \u2014 one learned query, shared",
     ]
@@ -284,10 +288,9 @@ def draw_legends(ax):
         yy -= 2.7
 
     ax.text(72.0, 9.4,
-            "cost is per $(b,n)$ location: $O(C{\\cdot}D)+D^2$ "
-            "($D^2$ from $\\mathrm{proj\\_out}$), no $W_Q/W_K/W_V$;\n"
-            "$k=v=\\mathrm{norm}_{kv}(\\mathrm{tokens})$, "
-            "$q=\\mathrm{norm}_q(q)$. No positional table \u2014 the encoder "
+            "cost is per $(b,n)$ location: $O(C{\\cdot}D{\\cdot}D_{attn})$;\n"
+            "$k=W_K\\mathrm{norm}_{kv}(x)$, $v=W_V\\mathrm{norm}_{kv}(x)$, "
+            "$q=W_Q\\mathrm{norm}_q(q)$. No positional table \u2014 the encoder "
             "owns layout via 2-D axial RoPE.",
             ha="left", va="top", fontsize=5.9, color=MUTED, style="italic",
             linespacing=1.55, zorder=5)
@@ -307,12 +310,12 @@ def build() -> plt.Figure:
     # title + subtitle
     ax.text(2, 87.0, "L4", ha="left", va="center", fontsize=15,
             fontweight="bold", color=INK)
-    ax.text(6.5, 87.0, "ChannelFusion: single-query PMA pooling",
+    ax.text(6.5, 87.0, "ChannelFusion: Panopticon-style channel pooling",
             ha="left", va="center", fontsize=12.2, fontweight="bold",
             color=INK)
     ax.text(2.0, 83.4,
-            "one shared learned query per $(b,n)$ location; keys = values = "
-            "LayerNormed tokens; no padding, no positional table.",
+            "one shared learned query per $(b,n)$ location; learned Q/K/V "
+            "projections to $D_{attn}=3D$; no padding, no positional table.",
             ha="left", va="center", fontsize=7.0, color=MUTED,
             style="italic")
 

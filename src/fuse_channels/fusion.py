@@ -5,9 +5,9 @@ Two interchangeable pooling mechanisms are provided:
 
 * :class:`ChannelFusion` -- PMA-style attention pooling over the channel axis
   (the default; the same single-query per-location pattern used by Panopticon).
-  It is **deliberately projection-free for K/V** (the Panopticon-style
-  simplification: keys and values are the LayerNormed tokens themselves), but
-  keeps a learned query and an output projection.
+  It follows Panopticon's recipe: learned Q/K/V projections into an attention
+  dimension ``attn_dim`` (usually wider than ``dim``), a learned query, and a
+  final projection back to ``dim``.
 * :class:`IdentityGatedSum` -- ``O(C)`` identity-gated weighted sum, the cheap
   ablation for 20-60 channel panels.  It is *not* a hypernetwork: a small MLP
   emits per-channel mixing weights from the channel embedding; it does not
@@ -50,19 +50,23 @@ class ChannelFusion(nn.Module):
 
     Channels are fused *within* each ``(sample, patch)`` location into one
     shared learned query; the result is scattered back to ``[B, N, D]`` and the
-    spatial positional embedding is added (``pos_embed="learned"`` by default,
-    ``"sincos"`` for the fixed sine-cosine map).
+    spatial positional embedding is added when the legacy ``pos_embed`` table
+    is enabled (``"learned"`` or ``"sincos"``; the default is ``"none"``).
 
-    K/V projections are intentionally omitted: keys = values = the LayerNormed
-    channel tokens, which is the Panopticon-style simplification for per-location
-    channel pooling.  The learned query and the output projection remain.
+    This is Panopticon's channel cross-attention recipe: LayerNormed tokens are
+    projected with learned ``q_proj`` / ``k_proj`` / ``v_proj`` into an attention
+    dimension ``attn_dim`` (``3 * dim`` by default, matching Panopticon's
+    ``D_attn = 3D``), attention runs there, and ``proj_out`` maps back to
+    ``dim``.  Panopticon's ablation found ``attn_dim > dim`` important
+    (``references/panopticon/paper.md:92,194,219``).  Set ``attn_dim=dim`` for
+    the parameter-matched variant.
 
     Parameters
     ----------
     dim:
         token feature dimension.
     n_heads:
-        attention heads (``dim`` must be divisible by it).
+        attention heads (``attn_dim`` must be divisible by it).
     n_patches:
         spatial patch count (sizes the post-fusion positional embedding).
     dropout:
@@ -73,6 +77,10 @@ class ChannelFusion(nn.Module):
     grid_size:
         optional ``int | (grid_h, grid_w)`` for the sine-cosine lattice;
         defaults to ``sqrt(n_patches)``.
+    attn_dim:
+        width of the Q/K/V attention space.  ``None`` (default) uses
+        ``3 * dim``, Panopticon's ``D_attn = 3D``; ``dim`` reproduces the
+        narrower, parameter-matched ablation.
     """
 
     def __init__(
@@ -83,12 +91,15 @@ class ChannelFusion(nn.Module):
         dropout: float = 0.0,
         pos_embed: str = "none",
         grid_size=None,
+        attn_dim: int | None = None,
     ) -> None:
         super().__init__()
-        assert dim % n_heads == 0, "dim must be divisible by n_heads"
+        attn_dim = 3 * dim if attn_dim is None else attn_dim
+        assert attn_dim % n_heads == 0, "attn_dim must be divisible by n_heads"
         if pos_embed != "none" and not n_patches:
             raise ValueError("n_patches is required for a table-based spatial PE")
         self.dim = dim
+        self.attn_dim = attn_dim
         self.n_heads = n_heads
         self.n_patches = n_patches
         self.dropout = dropout
@@ -96,7 +107,10 @@ class ChannelFusion(nn.Module):
 
         self.norm_q = nn.LayerNorm(dim)
         self.norm_kv = nn.LayerNorm(dim)
-        self.proj_out = nn.Linear(dim, dim)
+        self.q_proj = nn.Linear(dim, attn_dim)
+        self.k_proj = nn.Linear(dim, attn_dim)
+        self.v_proj = nn.Linear(dim, attn_dim)
+        self.proj_out = nn.Linear(attn_dim, dim)
 
         # one shared query, applied at every spatial location
         self.queries = nn.Parameter(torch.zeros(1, 1, dim))
@@ -127,19 +141,25 @@ class ChannelFusion(nn.Module):
             )
         B, N, D = cs.n_samples, cs.n_patches, self.dim
         H = self.n_heads
-        Dh = D // H
+        Dh = self.attn_dim // H
 
         group_id = cs.location_group_ids()
         uniq, _, order, lookup = _unique_groups(group_id)
         n_groups = uniq.numel()
 
-        tok = self.norm_kv(cs.tokens[order]).view(-1, H, Dh)
-        q = self.norm_q(self.queries).reshape(1, 1, H, Dh).expand(n_groups, 1, H, Dh)
+        tok = self.norm_kv(cs.tokens[order])
+        k = self.k_proj(tok).view(-1, H, Dh)
+        v = self.v_proj(tok).view(-1, H, Dh)
+        q = (
+            self.q_proj(self.norm_q(self.queries))
+            .reshape(1, 1, H, Dh)
+            .expand(n_groups, 1, H, Dh)
+        )
 
         out = grouped_pool_attention(
-            q, tok, tok, lookup, n_groups, self._attention_dropout()
+            q, k, v, lookup, n_groups, self._attention_dropout()
         )
-        out = self.proj_out(out.reshape(n_groups, D))  # [n_groups, D]
+        out = self.proj_out(out.reshape(n_groups, self.attn_dim))  # [n_groups, D]
 
         fused = out.new_zeros(B, N, D)
         sample_of_group = uniq // N
@@ -154,7 +174,10 @@ class ChannelFusion(nn.Module):
 
     # ------------------------------------------------------------------ #
     def extra_repr(self) -> str:
-        return f"dim={self.dim}, n_heads={self.n_heads}, pos_embed={self.pos_embed}"
+        return (
+            f"dim={self.dim}, attn_dim={self.attn_dim}, n_heads={self.n_heads}, "
+            f"pos_embed={self.pos_embed}"
+        )
 
 
 class MultiheadAttentionPooling(nn.Module):
@@ -382,7 +405,7 @@ def _dense_fusion_reference(fusion: ChannelFusion, cs: ChannelSet) -> torch.Tens
     """
     B, N, D = cs.n_samples, cs.n_patches, fusion.dim
     H = fusion.n_heads
-    Dh = D // H
+    Dh = fusion.attn_dim // H
     device = cs.tokens.device
 
     Cmax = int(cs.channel_idx.max().item()) + 1 if cs.channel_idx.numel() else 1
@@ -394,15 +417,18 @@ def _dense_fusion_reference(fusion: ChannelFusion, cs: ChannelSet) -> torch.Tens
     present = mask.any(dim=1)  # [B, N]
 
     kv = fusion.norm_kv(x).permute(0, 2, 1, 3).reshape(B * N, Cmax, D)
-    q = fusion.norm_q(fusion.queries).expand(B * N, 1, D)
+    q = fusion.q_proj(fusion.norm_q(fusion.queries)).expand(B * N, 1, fusion.attn_dim)
+    k = fusion.k_proj(kv)
+    v = fusion.v_proj(kv)
     m = mask.permute(0, 2, 1).reshape(B * N, Cmax)
 
     qh = q.reshape(B * N, 1, H, Dh).permute(0, 2, 1, 3)
-    kh = kv.view(B * N, Cmax, H, Dh).permute(0, 2, 1, 3)
+    kh = k.view(B * N, Cmax, H, Dh).permute(0, 2, 1, 3)
+    vh = v.view(B * N, Cmax, H, Dh).permute(0, 2, 1, 3)
     bias = torch.zeros(B * N, 1, 1, Cmax, device=device)
     bias = bias.masked_fill(~m[:, None, None, :], float("-inf"))
-    o = F.scaled_dot_product_attention(qh, kh, kh, attn_mask=bias)
-    o = o.permute(0, 2, 1, 3).reshape(B * N, 1, D)
+    o = F.scaled_dot_product_attention(qh, kh, vh, attn_mask=bias)
+    o = o.permute(0, 2, 1, 3).reshape(B * N, 1, fusion.attn_dim)
     o = fusion.proj_out(o).reshape(B, N, D)
     out = o * present.unsqueeze(-1)
     # locations with no channel produced NaNs above; scrub them before adding PE.

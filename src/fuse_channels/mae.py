@@ -113,6 +113,7 @@ class ChannelFusionMAE(nn.Module):
         n_queries: int = 1,
         num_channel_ids: int = 16,
         fusion: str = "attention",
+        fusion_attn_dim: int | None = None,
         p_patch: float = 0.5,
         p_channel: float = 0.5,
         patch_ratio: float = 0.75,
@@ -234,6 +235,7 @@ class ChannelFusionMAE(nn.Module):
                 n_patches=fusion_n_patches,
                 dropout=dropout,
                 pos_embed=fusion_pos_embed,
+                attn_dim=fusion_attn_dim,
             )
         elif fusion == "identity_gated":
             self.fusion = IdentityGatedSum(

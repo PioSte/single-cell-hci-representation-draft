@@ -221,6 +221,37 @@ def test_multihead_attention_pooling_multi_query_shapes():
         raise AssertionError("invalid readout must raise")
 
 
+def test_channel_fusion_uses_panopticon_qkv_projections():
+    """Panopticon recipe: full Q/K/V projections into a wider attn_dim."""
+    torch.manual_seed(0)
+    fusion = ChannelFusion(D, n_heads=HEADS, n_patches=N)
+    # default is Panopticon's D_attn = 3D
+    assert fusion.attn_dim == 3 * D
+    assert isinstance(fusion.q_proj, torch.nn.Linear)
+    assert isinstance(fusion.k_proj, torch.nn.Linear)
+    assert isinstance(fusion.v_proj, torch.nn.Linear)
+    assert fusion.q_proj.in_features == D
+    assert fusion.q_proj.out_features == fusion.attn_dim
+    assert fusion.k_proj.out_features == fusion.attn_dim
+    assert fusion.v_proj.out_features == fusion.attn_dim
+    assert fusion.proj_out.in_features == fusion.attn_dim
+    assert fusion.proj_out.out_features == D
+
+    narrow = ChannelFusion(D, n_heads=HEADS, n_patches=N, attn_dim=D)
+    assert narrow.attn_dim == D
+    cs = make_channel_set([1, 3, 6, 2], N, D)
+    with torch.no_grad():
+        got, _ = fusion(cs)
+        ref = _dense_fusion_reference(fusion, cs)
+        got_narrow, _ = narrow(cs)
+        ref_narrow = _dense_fusion_reference(narrow, cs)
+    assert torch.allclose(got, ref, atol=1e-5, rtol=1e-4)
+    assert torch.allclose(got_narrow, ref_narrow, atol=1e-5, rtol=1e-4)
+
+    with pytest.raises(AssertionError, match="divisible"):
+        ChannelFusion(D, n_heads=HEADS, attn_dim=D + 1)
+
+
 def test_channel_fusion_is_single_query():
     """ChannelFusion is one token per location; multi-query lives in the pooler."""
     assert "n_queries" not in inspect.signature(ChannelFusion.__init__).parameters
