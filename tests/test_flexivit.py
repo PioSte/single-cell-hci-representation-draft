@@ -4,6 +4,7 @@ import math
 
 import pytest
 import torch
+import torch.nn.functional as F
 
 from fuse_channels import (
     ChannelFusionMAE,
@@ -133,6 +134,59 @@ def test_pi_resize_uses_the_pseudoinverse_resize_operator():
     # PI-resize is not the same operation as bilinear resize.
     bilinear = (B @ w.reshape(-1))
     assert not torch.allclose(w_pi, bilinear)
+
+
+def test_bilinear_resize_matrix_is_the_real_resize_operator():
+    """``B @ vec(x)`` must equal ``F.interpolate(x)``, for both directions."""
+    from fuse_channels.flexi import _bilinear_resize_matrix
+
+    for p_in, p_out in [(8, 4), (8, 8), (8, 12), (8, 24)]:
+        B = _bilinear_resize_matrix(p_in, p_out)
+        for seed in range(3):
+            g = torch.Generator().manual_seed(seed)
+            x = torch.randn(p_in, p_in, generator=g)
+            via_matrix = (B @ x.reshape(-1)).reshape(p_out, p_out)
+            via_interp = F.interpolate(
+                x[None, None], size=(p_out, p_out), mode="bilinear", align_corners=False
+            )[0, 0]
+            assert torch.allclose(via_matrix, via_interp, atol=1e-6)
+
+
+def test_pi_resize_preserves_token_intensity_when_upsampling():
+    """For ``p_out >= p_in``, ``<B x, P w> == <x, w>`` for every patch.
+
+    This is FlexiViT Eq. (3): PI-resize compensates the magnitude change that
+    bilinear resizing both the patch and the kernel would introduce, with no
+    explicit intensity/gain scalar.
+    """
+    from fuse_channels.flexi import _bilinear_resize_matrix, _pi_resize_matrix
+
+    for p_in, p_out in [(8, 8), (8, 12), (8, 16), (8, 24)]:
+        g = torch.Generator().manual_seed(0)
+        X = torch.randn(5, p_in * p_in, generator=g)  # canonical patches
+        W = torch.randn(3, p_in * p_in, generator=g)  # flattened kernels
+        B = _bilinear_resize_matrix(p_in, p_out)
+        P = _pi_resize_matrix(p_in, p_out)
+        ref: torch.Tensor = X @ W.T  # <x, w>
+        got: torch.Tensor = (X @ B.T) @ (W @ P.T).T  # <B x, P w>
+        assert torch.allclose(got, ref, atol=1e-4), (p_in, p_out)
+
+
+def test_pi_resized_kernel_keeps_token_scale_bounded():
+    """Regression guard: token RMS must not blow up away from the canonical p.
+
+    The buggy axis order of ``_bilinear_resize_matrix`` produced kernels whose
+    norm grew by ~100x at p=24 from a canonical p=16, silently destroying the
+    patch embedding (and the relative weight of the additive channel id).
+    """
+    for p_out in [8, 10, 12, 15, 20, 24, 30, 40]:
+        g = torch.Generator().manual_seed(0)
+        w = torch.randn(4, 16, 16, generator=g)  # canonical p=16 kernels
+        X = torch.randn(64, p_out * p_out, generator=g)  # white-noise patches
+        w_pi = pi_resize_patch_embed(w.unsqueeze(1), p_out).reshape(4, -1)
+        rms = (X @ w_pi.T).norm(dim=-1).mean()
+        canonical = (torch.randn(64, 256, generator=g) @ w.reshape(4, -1).T).norm(dim=-1).mean()
+        assert rms < 5.0 * canonical, (p_out, rms.item(), canonical.item())
 
 
 def test_tokenizer_pi_resizes_and_reports_dynamic_grid():

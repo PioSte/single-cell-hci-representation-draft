@@ -4,9 +4,12 @@ A PyTorch implementation of the **padding-free channel-fusion tokenizer** for a
 high-content-imaging (HCI) foundation model, plus a channel-aware Masked
 Autoencoder (MAE) built on top of it.
 
-The tokenizer supports the FlexiViT target described in
-[`FLEXIVIT.md`](FLEXIVIT.md): a canonical channel-tied patch kernel is
-PI-resized to a per-step or per-sample patch size, the encoder uses 2-D axial
+The tokenizer supports the variable-patch-size target described in
+[`FLEXIVIT.md`](FLEXIVIT.md). FlexiViT (Beyer et al., *One Model for All Patch
+Sizes*, [`references/flexivit/paper.md`](references/flexivit/paper.md)) supplies
+the patch-kernel resampling: a canonical channel-tied kernel is **PI-resized**
+(**p**seudo**i**nverse resize, Eq. 4) to a per-step or per-sample patch size.
+The PE and scale choices go beyond FlexiViT: the encoder uses 2-D axial
 RoPE on normalized grid coordinates, the decoder uses factorized-fractional
 absolute PE, and an optional scale conditioner carries ``log(p)`` and physical
 pixel size. The legacy fixed-grid learned/sine-cosine absolute PE remains
@@ -46,9 +49,14 @@ per-channel tied Conv2d(1 -> D) patch embed, PI-resized to the current p
 
 * **Channel-tied projection.** One canonical `Conv2d(1, D, kernel_size=p0,
   stride=p0)` is shared by every channel (ChannelViT's tied filters). For any
-  other patch size `p` the kernel is **PI-resized**
-  (`(B.T)^+`, FlexiViT), not bilinearly resized. There is no positional
-  embedding at this stage.
+  other patch size `p` the kernel is **PI-resized** — pseudoinverse resize,
+  `(B.T)^+`, not bilinearly resized (`references/flexivit/paper.md:135-171`,
+  Eqs. 2-4). For `p >= p0` it is the exact inverse of the patch resize: a
+  `p0`-patch that is bilinearly resized to `p` keeps its token exactly,
+  `⟨B x, P ω⟩ = ⟨x, ω⟩`, so token magnitude does not drift with patch size and
+  no separate intensity gain is needed. For `p < p0` the resize is
+  rank-deficient and PI-resize is the least-squares fit instead. Every `p` must divide `H` and `W`: patches tile the
+  image, as in FlexiViT. There is no positional embedding at this stage.
 * **Additive channel identity.** `ChannelEmbedding` is a learned
   `num_channel_ids × D` table. The row for a channel id is added to every patch
   token of that channel; it is never normalized across the channel axis.
@@ -211,7 +219,7 @@ gated_out, present = gated(cs)
 | `src/fuse_channels/patch_embed.py` | `ChannelTiedPatchEmbed`, `ChannelTokenizer` |
 | `src/fuse_channels/fusion.py` | `ChannelFusion`, `IdentityGatedSum`, `MultiheadAttentionPooling`; `_dense_fusion_reference` (private, test/viz-only) |
 | `src/fuse_channels/rope.py` | 2-D axial RoPE on normalized grid coordinates |
-| `src/fuse_channels/flexi.py` | FlexiViT PI-resize for the patch-embedding kernel |
+| `src/fuse_channels/flexi.py` | FlexiViT PI- (pseudoinverse-) resize for the patch-embedding kernel |
 | `src/fuse_channels/pos_embed.py` | fractional absolute PE plus legacy learned/sincos tables |
 | `src/fuse_channels/encoder.py` | `TransformerEncoder` / `TransformerBlock` with memory tokens |
 | `src/fuse_channels/decoder.py` | `ChannelAwareDecoder` / `DecoderBlock` |
@@ -249,8 +257,10 @@ Covered by `tests/`:
   `test_sincos_pos_embed_*`); the decoder's target PE is load-bearing
   (`test_decoder_target_position_changes_predictions`)
 - FlexiViT target (`tests/test_flexivit.py`): normalized RoPE is grid-size
-  invariant, fractional PE is defined for non-square/dynamic grids, PI-resize
-  uses `pinv(B.T)`, per-batch and per-sample patch sizes change `n_patches` and
+  invariant, fractional PE is defined for non-square/dynamic grids; `B @
+  vec(x)` equals `F.interpolate(x)`, PI-resize preserves `⟨B x, P ω⟩ =
+  ⟨x, ω⟩` for upsampling and keeps token RMS bounded across `p` (no intensity
+  scalar), per-batch and per-sample patch sizes change `n_patches` and
   the reconstruction head dimension, and additive/AdaLN scale conditioning is
   wired into both ends
 - encoder input length = number of present locations, with token count
@@ -319,7 +329,7 @@ descriptor and conditions on the target channel embedding, not "unmasked
 channel tokens"; the descriptor is trained rather than inference-only; the
 default loss is patch-normalized MSE with ChA-MAEViT as an ablation;
 `IdentityGatedSum` replaces the misleading `HypernetworkWeightedSum` name;
-position now follows the FlexiViT target (encoder RoPE + decoder fractional PE,
+position now follows the FLEXIVIT.md target (encoder RoPE + decoder fractional PE,
 no fusion table), with the legacy table retained as an ablation; and the
 acceptance claims are limited to what the tests cover. Rationale, trade-offs,
 and the corrected reference claims are in [`docs/design.md`](docs/design.md).

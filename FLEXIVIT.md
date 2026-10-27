@@ -200,6 +200,16 @@ patch-embedding weights (`references/flexivit/paper.md:105`, `:168`, `:171`,
 FlexiViT assumes patches tile the image. For arbitrary `H, W`, use
 padding/cropping or dynamic `p` selection and mask padded cells.
 
+**Intensity is handled by the resize operator, not by a scalar.** The reason
+FlexiViT prefers PI-resize is exactly the token-norm change that plain resize
+introduces (`references/flexivit/paper.md:135`); no explicit gain such as
+`(p/p₀)²` is applied. PI-resize satisfies `<B x, P ω> = <x, ω>` for `p ≥ p₀`.
+That equality depends on `B` being the true bilinear operator, i.e.
+`B @ vec(x) == F.interpolate(x)`; this is enforced by
+`test_bilinear_resize_matrix_is_the_real_resize_operator`, and the invariant
+itself by `test_pi_resize_preserves_token_intensity_when_upsampling`. Token RMS
+is bounded across `p` by `test_pi_resized_kernel_keeps_token_scale_bounded`.
+
 The decoder reconstruction head is the open part. An MAE-style head maps
 `d -> p²·C`; changing `p` changes both the output basis and the pixel target.
 Resampling that linear weight is possible but is not the same operation as

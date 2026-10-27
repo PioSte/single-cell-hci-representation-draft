@@ -22,14 +22,20 @@ import torch.nn.functional as F
 def _bilinear_resize_matrix(
     p_in: int, p_out: int, dtype: torch.dtype = torch.float32
 ) -> torch.Tensor:
-    """Bilinear resize operator ``B`` of shape ``[p_out**2, p_in**2]``."""
+    """Bilinear resize operator ``B`` of shape ``[p_out**2, p_in**2]``.
+
+    ``B @ vec(x)`` equals ``F.interpolate(x, (p_out, p_out))`` under row-major
+    ``(row, col)`` flattening.  Build it by pushing each input pixel through
+    the resize as its own batch element, then transpose the resulting
+    ``[p_in**2, p_out**2]`` coefficient table into ``[p_out**2, p_in**2]``.
+    """
     eye = torch.eye(p_in * p_in, dtype=dtype).reshape(
-        1, p_in * p_in, p_in, p_in
+        p_in * p_in, 1, p_in, p_in
     )
     out = F.interpolate(
         eye, size=(p_out, p_out), mode="bilinear", align_corners=False
     )
-    return out.reshape(p_out * p_out, p_in * p_in).contiguous()
+    return out.reshape(p_in * p_in, p_out * p_out).T.contiguous()
 
 
 @lru_cache(maxsize=32)
