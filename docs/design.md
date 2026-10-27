@@ -169,11 +169,35 @@ sine-cosine code and the lack of a learned-vs-fixed ablation still apply to
 that legacy path (`references/mae/paper.md:546`); the target path replaces both
 tables with functions.
 
+**Reconstruction head.** `PatchReconstructionHead` keeps one linear
+`dim -> p²` head per configured patch size (`head_mode="per_p"`, default).
+The decoder is pretraining-only and discarded after MAE, so the extra head
+parameters do not affect the deployed encoder. For an unseen `p` it falls back
+to the nearest configured head with `p_head >= p` and bilinear point-sampling
+(`align_corners=False`, no antialias), and refuses to upsample
+(`p > max(patch_sizes)`). The bilinear fallback is
+point-sampling, which matches the discrete `p×p` MAE target; area/antialiased
+downsampling would low-pass the prediction and mismatch that target.
+`head_mode="canonical"` is the legacy single-head ablation.
+
+**Border and token budget.** Patches tile `floor(H/p) × floor(W/p)`, following
+FlexiViT (`references/flexivit/paper.md:75`); a border smaller than `p` is
+discarded rather than padded. The optional `max_tokens` filter restricts the
+random `flexi_random` sampler to `p` values whose token count fits the budget.
+Explicit `patch_sizes=` overrides the budget for inference/evaluation. The
+filter is a systems guard, not a claim that uniform `p` is wrong for accuracy;
+FlexiViT's distribution ablation found little accuracy difference
+(`references/flexivit/paper.md:619`).
+
 **Scale conditioning.** `log(p)` and, when supplied, `log(µm/px)` are embedded
 with Fourier features and a small MLP. The default `scale_conditioning="add"`
-adds the embedding to encoder and decoder tokens; `"adaln"` modulates the
-LayerNorms instead, which is stronger because an additive constant before a
-LayerNorm is partly normalized away.
+adds the embedding to encoder patch tokens and to the decoder's target channel
+embedding. `"adaln"` modulates the LayerNorms instead. The pre-LN warning is
+weaker than it sounds: LayerNorm removes only the mean/all-ones component of an
+additive vector, and the unnormalized residual stream still carries it. `adaln`
+is zero-initialized, so it starts as a no-op and needs training to activate;
+`add` has an immediate effect. Keep `add` as the default until a real
+multi-instrument scale-sensitivity measurement says otherwise.
 
 ## 4. Trained descriptor
 
@@ -184,12 +208,16 @@ PMA is a multi-head attention block over `rFF(Z)` with optional post-SAB,
 attention block; it does not claim to be the fully canonical PMA.
 
 In `ChannelFusionMAE.forward` the descriptor is computed from the encoder's
-**content tokens only** (`tok_out`, not the memory tokens), appended as one
-extra per-sample token to the decoder KV, and trained by the reconstruction
-loss. That makes it a real readout rather than an inference-only artefact.
-`encode(pool="attention")` returns the same descriptor;
-`encode(pool="mean")` is the content-only mean ablation. `pool="memory"` does
-not exist.
+**patch tokens** (`tok_out`, not the memory tokens), appended as one extra
+per-sample token to the decoder KV, and trained by the reconstruction loss.
+Those tokens carry the fusion identity skip, so the descriptor can encode panel
+composition as well as content. That is intentional for MAE reconstruction: a
+fully dropped channel still needs a panel summary. It is not a claim that the
+descriptor is content-only. `encode(pool="attention")` returns the same
+descriptor; `encode(pool="mean")` is the mean-pool ablation;
+`pool="memory"` does not exist. Use
+`examples/descriptor_identity_probe.py` to measure identity leakage before
+considering a content/identity split.
 
 `n_queries > 1` builds a small post-SAB over the query outputs and averages
 back to `[B, D]`; it is an optional research ablation, not the default

@@ -216,7 +216,7 @@ def draw_glossary(ax):
             ("$K_t$", "masked ch-patches (targets)"),
             ("$P$", "canonical patch size"),
             ("$p_b$", "runtime patch size"),
-            ("$c$", "canonical head grid size"),
+            ("$c$", "fallback head grid size"),
         ]),
         (108.5, [
             ("$z_c$", "channel identity (bias + skip)"),
@@ -354,13 +354,13 @@ def build() -> plt.Figure:
           lw=1.5, crossed=True)
     ax.text(83.0, 12.1, "$[\\,B,\\; D\\,]$", ha="center", va="center",
             fontsize=9.0, fontweight="bold", color=INK)
-    ax.text(83.0, 8.6, "trained content-only descriptor", ha="center", va="center",
+    ax.text(83.0, 8.6, "trained descriptor (patch tokens)", ha="center", va="center",
             fontsize=5.8, color=MUTED)
 
     # ---- decoder -> shared head -> output -> loss ------------------------- #
     box(ax, 138.0, 32.0, 21.0, 5.5, "Reconstruction head",
-        "shared Linear $D{\\to}c^2$ on canonical $c\\times c$\n"
-        "bilinear resize $c\\to p_b$", edge=DECODER, title_size=6.8,
+        "one Linear $D{\\to}p^2$ per configured $p$\n"
+        "nearest-head bilinear fallback for unseen $p$", edge=DECODER, title_size=6.8,
         sub_size=5.2)
     arrow(ax, (148.5, YMID - 7.5), (148.5, 37.5), color=DECODER, lw=1.5)
     otop, obot = draw_output(ax, 138.0, 30.5)

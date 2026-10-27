@@ -29,8 +29,8 @@ f({E_1 .. E_C}) -> [N, D] per sample, then -> [D] descriptor,
 
 without concatenation blow-up, with channel identity preserved, and with **no
 padding tokens**. `C` appears only in the tokenizer input length `ΣC·N`; the
-fused output is `[B, N, D]` (`N = (H/p)·(W/p)` is set by the current patch
-size) and the pooled descriptor is `[B, D]`.
+fused output is `[B, N, D]` (`N = floor(H/p)·floor(W/p)` is set by the current
+patch size) and the pooled descriptor is `[B, D]`.
 
 ## Architecture
 
@@ -43,7 +43,7 @@ per-channel tied Conv2d(1 -> D) patch embed, PI-resized to the current p
        + optional scale embedding
     -> padding-free transformer encoder over [present locations, D]
        with fixed-count memory tokens and 2-D axial RoPE on q/k
-    -> trained content-only PMA descriptor [B, D]   (appended to decoder KV)
+    -> trained PMA descriptor over encoder patch tokens [B, D]  (appended to KV)
     -> channel-aware shared decoder: target-identity + fractional target-position
        queries, target self-attention, cross-attention to encoder representation
 ```
@@ -56,8 +56,10 @@ per-channel tied Conv2d(1 -> D) patch embed, PI-resized to the current p
   `p0`-patch that is bilinearly resized to `p` keeps its token exactly,
   `⟨B x, P ω⟩ = ⟨x, ω⟩`, so token magnitude does not drift with patch size and
   no separate intensity gain is needed. For `p < p0` the resize is
-  rank-deficient and PI-resize is the least-squares fit instead. Every `p` must divide `H` and `W`: patches tile the
-  image, as in FlexiViT. There is no positional embedding at this stage.
+  rank-deficient and PI-resize is the least-squares fit instead. Patches tile
+  `floor(H/p) × floor(W/p)`; a border smaller than `p` is cropped/ignored, as
+  in FlexiViT's patchification contract. There is no positional embedding at
+  this stage.
 * **Channel identity: routing bias + output skip.** `ChannelEmbedding` is a
   learned `num_channel_ids × D` table, one row per channel id, never shared
   across channels. It is deliberately **not** added to the patch token before
@@ -101,21 +103,36 @@ per-channel tied Conv2d(1 -> D) patch embed, PI-resized to the current p
   the old fixed-grid scheme: post-fusion table plus decoder target table, with
   no encoder RoPE. It cannot change patch size within a run.
 * **Scale conditioning.** `scale_conditioning="add"` (default) adds a Fourier
-  embedding of `log(p)` and, when available, `log(µm/px)` to encoder and decoder
-  tokens. `"adaln"` modulates the LayerNorms instead; `"none"` disables it.
+  embedding of `log(p)` and, when available, `log(µm/px)` to the encoder tokens
+  (before the pre-LN branch; the residual stream carries it) and to the
+  decoder's target channel embedding. `"adaln"` modulates the LayerNorms
+  instead; `"none"` disables it. `add` is not erased by pre-LN: the additive
+  vector remains in the unnormalized residual stream, and only its
+  all-ones/mean component is removed from the normalized branch.
 * **Encoder and descriptor.** Standard pre-norm Q/K/V/O transformer blocks run
   over the flattened real tokens with fixed-count memory tokens. The `[B, D]`
-  descriptor is a PMA-style pool over the encoder's *content* tokens (not the
-  memory tokens), is trained through the MAE loss, and is appended as one token
-  per sample to the decoder KV.
+  descriptor is a PMA-style pool over the encoder's *patch* tokens (not the
+  memory tokens); it therefore carries the identity skip, which the decoder can
+  use as a panel-composition summary. It is trained through the MAE loss and
+  appended as one token per sample to the decoder KV.
 * **Decoder.** One decoder is shared across all channels. Each target query is
   `mask token + target spatial PE + target channel embedding`; queries
   self-attend within each sample, then cross-attend to the encoder
   representation + memory + descriptor. A fully dropped channel has no encoder
   evidence, only its identity query, so identity acts as a **target
-  specification** as well as an input feature. The reconstruction head predicts
-  on a canonical output grid and bilinearly resizes to the target patch size;
-  FlexiViT does not define MAE output-head resampling.
+  specification** as well as an input feature. The reconstruction head keeps a
+  separate linear `dim -> p²` head for every configured patch size
+  (`head_mode="per_p"`, default); the decoder is pretraining-only and discarded
+  after MAE, so this is a pretraining parameter cost only. An unseen `p` falls
+  back to the nearest configured head with `p_head >= p` + bilinear
+  point-sampling, and never upsamples.
+  `head_mode="canonical"` is the legacy single-head ablation. FlexiViT does not
+  define MAE output-head resampling; the per-`p` head avoids resampling for all
+  configured sizes.
+* **Token budget.** `max_tokens` (optional) filters the random `flexi_random`
+  sampler to patch sizes with `floor(H/p)·floor(W/p) <= max_tokens`. Explicit
+  `patch_sizes=` overrides the budget for inference/evaluation. This caps the
+  `p=8`-dominated step time without changing the configured model.
 * **Masking.** DCP (ChA-MAEViT Eq. 1): patch-only, channel-only, or combined
   regions, with the region probabilities separate from `patch_ratio`. HCS is
   the channel-subset sampler used by the channel region (and is available as
@@ -161,6 +178,8 @@ model = ChannelFusionMAE(
     fusion="attention",               # or "identity_gated" (ablation)
     loss="mae",                       # or "cha_maevit" (ablation)
     patch_sizes=(4, 8, 16),           # FlexiViT; patch_size is canonical p0
+    max_tokens=1024,                  # optional training sampler cap
+    head_mode="per_p",                # or "canonical" (legacy ablation)
     scale_conditioning="add",         # or "adaln" / "none"
     pixel_size=0.5,                   # optional µm/px; log p is always used
     # pos_embed="learned",            # legacy fixed-grid PE ablation
@@ -279,8 +298,10 @@ Covered by `tests/`:
   vec(x)` equals `F.interpolate(x)`, PI-resize preserves `⟨B x, P ω⟩ =
   ⟨x, ω⟩` for upsampling and keeps token RMS bounded across `p` (no intensity
   scalar), per-batch and per-sample patch sizes change `n_patches` and
-  the reconstruction head dimension, and additive/AdaLN scale conditioning is
-  wired into both ends
+  the per-p reconstruction heads are exact (no resize) and the canonical
+  fallback refuses to upsample, `max_tokens` filters the random sampler,
+  non-divisible `H/W` uses the floor grid, and additive/AdaLN scale
+  conditioning is wired into both ends
 - encoder input length = number of present locations, with token count
   = visible channel-patches (`test_encoder_input_length_is_present_locations`)
 - DCP Eq. 1 regions and HCS counts (`test_masking.py`); channels dropped by DCP
@@ -302,6 +323,9 @@ identity-gated fusion at `C = 60`.
 
 * `examples/train_mae.py` trains on a synthetic variable-channel dataset; it
   does not assert an overfit threshold.
+* The default `head_mode="per_p"` changes decoder state-dict keys from
+  `decoder.head.head.*` to `decoder.head.heads.<p>.*`. Load an older
+  checkpoint with `head_mode="canonical"`, or remap the output head.
 * Attention uses `F.scaled_dot_product_attention` over real, grouped tokens. No
   custom fused kernel is required or implemented.
 * The model's data path is torch-only; the visualization extras are separate.
@@ -348,8 +372,12 @@ channel tokens"; the descriptor is trained rather than inference-only; the
 default loss is patch-normalized MSE with ChA-MAEViT as an ablation;
 `IdentityGatedSum` replaces the misleading `HypernetworkWeightedSum` name;
 position now follows the FLEXIVIT.md target (encoder RoPE + decoder fractional PE,
-no fusion table), with the legacy table retained as an ablation; channel
-identity is decoupled from the patch token (routing bias + output skip) so the
+no fusion table), with the legacy table retained as an ablation; the decoder
+uses per-patch-size output heads by default, with a nearest-head bilinear
+fallback for unseen `p` and the canonical single head retained as an ablation;
+tokens use FlexiViT's floor/crop border
+contract rather than rejecting non-divisible tiles; channel identity is
+decoupled from the patch token (routing bias + output skip) so the
 identity/content balance is patch-size invariant, a placement deviation from
 ChannelViT's additive token that keeps its finding that per-channel identity is
 load-bearing; and the acceptance claims are limited to what the tests cover. Rationale, trade-offs,

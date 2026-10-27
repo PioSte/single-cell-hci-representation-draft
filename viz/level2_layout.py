@@ -14,7 +14,7 @@ Shows:
 4. fused ``[B, N, D]`` grid after channel fusion
 5. encoder module ``[B·M, D]`` memory (gold) + ``[K_f, D]`` visible tokens
 6. decoder target queries ``[K_t, D]`` -> predicted pixels ``[K_t, P²]``
-7. inference branch: trained content-only descriptor ``[B, D]``, pooled from
+7. inference branch: trained descriptor ``[B, D]``, pooled from encoder patch
    ``tok_out`` only and appended to the decoder KV
 8. the ghost ``[B, C_max, N, D]`` tensor (dashed, struck) that is never
    materialised, plus role / channel legends and a faithful note.
@@ -302,12 +302,12 @@ def draw_decoder_targets(ax):
     ax.text(px + pw / 2, y0 - 1.1, "predictions", ha="center", va="center",
             fontsize=7.8, fontweight="bold", color=INK)
     ax.text(px + pw / 2, y0 - 2.5,
-            "head: canonical $c^2$ $\\to$ bilinear resize $p_b^2$",
+            "head: per-$p$ linear $\\to p_b^2$",
             ha="center", va="center", fontsize=5.9, color=VIOLET)
 
 
 def draw_inference_pooled(ax):
-    """Inference branch: trained content-only descriptor [B, D] below the encoder."""
+    """Inference branch: trained descriptor [B, D] below the encoder."""
     x, w, h, pitch = 63.0, 8.0, 2.0, 2.5
     B = 4
     y0 = 5.6

@@ -20,8 +20,12 @@ patch size within a run.
 
 Patch size is selectable per step or per sample.  The patch kernel is
 PI-resized from a canonical patch size, masking and target extraction use the
-dynamic patch counts, and the decoder head predicts on a canonical output grid
-and resizes to the target patch size.
+dynamic patch counts, and the decoder keeps one linear reconstruction head per
+configured patch size (with a canonical bilinear fallback for unseen sizes).
+Patches tile ``floor(H/p) x floor(W/p)``; a border smaller than ``p`` is
+discarded rather than rejected.  ``max_tokens`` optionally restricts the random
+training sampler to patch sizes whose token count fits the budget; an explicit
+``patch_sizes=`` argument overrides that guard.
 
 Scale conditioning embeds ``log(p)`` and, when available, ``log(µm/px)`` with
 Fourier features and a small MLP.  ``scale_conditioning="add"`` (default) adds
@@ -92,12 +96,18 @@ def _as_hw(size):
 
 
 def _n_patches_for(im: torch.Tensor, p: int) -> int:
+    """Number of patches for one sample.
+
+    Matches FlexiViT's ``floor(H/p) * floor(W/p)`` contract: the border smaller
+    than ``p`` is ignored, not padded and not treated as an error.
+    """
     _, _, H, W = im.shape
-    if H % p or W % p:
+    n = (H // p) * (W // p)
+    if n < 1:
         raise ValueError(
-            f"image {(H, W)} is not divisible by patch size {p}"
+            f"image {(H, W)} leaves no tokens at patch size {p}"
         )
-    return (H // p) * (W // p)
+    return n
 
 
 class ChannelFusionMAE(nn.Module):
@@ -137,6 +147,8 @@ class ChannelFusionMAE(nn.Module):
         fractional_pe_mode: str = "sincos",
         fractional_pe_base: float = 10000.0,
         head_patch_size: int | None = None,
+        head_mode: str = "per_p",
+        max_tokens: int | None = None,
     ) -> None:
         super().__init__()
         if loss not in _LOSSES:
@@ -148,6 +160,12 @@ class ChannelFusionMAE(nn.Module):
                 f"unknown scale_conditioning '{scale_conditioning}'; "
                 "expected 'none', 'add' or 'adaln'"
             )
+        if head_mode not in ("per_p", "canonical"):
+            raise ValueError(
+                f"unknown head_mode '{head_mode}'; expected 'per_p' or 'canonical'"
+            )
+        if max_tokens is not None and int(max_tokens) < 1:
+            raise ValueError(f"max_tokens must be >= 1 or None, got {max_tokens}")
 
         # ---- patch-size / positional-scheme resolution ------------------ #
         if patch_size is None:
@@ -162,6 +180,7 @@ class ChannelFusionMAE(nn.Module):
             patch_sizes = (self.patch_size,)
         self.patch_sizes = tuple(sorted({int(p) for p in patch_sizes} | {self.patch_size}))
         self.flexi_random = flexi_random
+        self.max_tokens = None if max_tokens is None else int(max_tokens)
 
         self.legacy_pos_embed = pos_embed in _LEGACY_POS
         if pos_embed is not None and not self.legacy_pos_embed and pos_embed not in (
@@ -275,6 +294,8 @@ class ChannelFusionMAE(nn.Module):
             fractional_pe_mode=fractional_pe_mode,
             fractional_pe_base=fractional_pe_base,
             adaln=scale_conditioning == "adaln",
+            patch_sizes=self.patch_sizes,
+            head_mode=head_mode,
         )
         self.masker = DCPVisibilitySampler(
             base_n_patches,
@@ -301,9 +322,20 @@ class ChannelFusionMAE(nn.Module):
             )
 
     # ------------------------------------------------------------------ #
+    def _tokens_for(self, im: torch.Tensor, p: int) -> int:
+        H, W = im.shape[-2:]
+        return (H // p) * (W // p)
+
+    def _within_budget(self, images, p: int) -> bool:
+        if self.max_tokens is None:
+            return True
+        return all(self._tokens_for(im, p) <= self.max_tokens for im in images)
+
     def _resolve_patch_sizes(self, images, patch_sizes, generator=None):
         n = len(images)
         if patch_sizes is not None:
+            # An explicit patch size is an intentional override; max_tokens is
+            # a guard on the random training sampler, not an inference cap.
             if isinstance(patch_sizes, int):
                 ps = [int(patch_sizes)] * n
             else:
@@ -315,18 +347,24 @@ class ChannelFusionMAE(nn.Module):
         elif self.legacy_pos_embed:
             ps = [self.patch_size] * n
         elif len(self.patch_sizes) > 1 and self.flexi_random and self.training:
+            candidates = [p for p in self.patch_sizes if self._within_budget(images, p)]
+            if not candidates:
+                raise ValueError(
+                    "max_tokens excludes every configured patch size; "
+                    f"max_tokens={self.max_tokens}, patch_sizes={self.patch_sizes}"
+                )
             gen_device = (
                 generator.device if generator is not None else torch.device("cpu")
             )
             choice = int(
                 torch.randint(
-                    len(self.patch_sizes),
+                    len(candidates),
                     (1,),
                     device=gen_device,
                     generator=generator,
                 ).item()
             )
-            ps = [self.patch_sizes[choice]] * n
+            ps = [candidates[choice]] * n
         else:
             ps = [self.patch_size] * n
         if self.legacy_pos_embed and any(p != self.patch_size for p in ps):

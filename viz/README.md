@@ -27,10 +27,10 @@ They share one design system so they read as one authored set:
 | **L3** | `level3_tokenizer.py` | PI-resized tied patch embed; channel identity carried separately (fusion routing bias + output skip); no tokenizer/fusion PE (encoder RoPE, decoder fractional PE) | ChannelViT Fig 1 / ChAda-ViT Fig 2 |
 | **L4** | `level4_fusion.py` | fusion internals: single learned query, Q/K/V projections to `D_attn=3D`, no spatial table | Panopticon Fig. 1 / Perceiver-IO Fig 5 inset |
 | **L5** | `level5_masking.py` | DCP Eq. 1 (patch / channel / combined) + unified HCS channel sampler; token omission | ChAda-ViT Fig 2 MASK row |
-| **L6** | `level6_objective.py` | MAE objective: trained content-only descriptor, RoPE/scale-conditioned encoder, target self-attention, canonical-head resize, default reconstruction loss | Panopticon teacher–student |
+| **L6** | `level6_objective.py` | MAE objective: trained descriptor over encoder patch tokens, RoPE/scale-conditioned encoder, target self-attention, per-`p` reconstruction heads, default reconstruction loss | Panopticon teacher–student |
 | **L7** | `level7_invariance.py` | measured invariance & cost (runs the real model) | ChAda-ViT scaling panels |
 | **L8** | `level8_segment_ops.py` | the padding-free grouped-attention primitive | Perceiver-IO Fig 5 |
-| **L9** | `level9_flexivit.py` | FlexiViT: one canonical kernel PI-resized to runtime `p`, patch-size sources, no PE-table resizing, canonical reconstruction head | FlexiViT Fig 1 / Sec. 3 |
+| **L9** | `level9_flexivit.py` | FlexiViT: one canonical kernel PI-resized to runtime `p`, patch-size sources, no PE-table resizing, per-`p` reconstruction heads | FlexiViT Fig 1 / Sec. 3 |
 
 Run any level (writes into the git-ignored `viz/out/`):
 

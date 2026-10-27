@@ -33,7 +33,9 @@ class ChannelTiedPatchEmbed(nn.Module):
 
     ``patch_size`` is the canonical size whose kernel is stored in ``self.proj``.
     Calling with another ``patch_sizes`` value PI-resizes that kernel on the
-    fly.  No positional embedding is attached.
+    fly.  No positional embedding is attached.  Patches tile
+    ``floor(H/p) x floor(W/p)``; a border smaller than ``p`` is discarded,
+    following FlexiViT's patchification contract.
     """
 
     def __init__(
@@ -45,11 +47,6 @@ class ChannelTiedPatchEmbed(nn.Module):
     ) -> None:
         super().__init__()
         self.image_h, self.image_w = _hw(image_size)
-        if self.image_h % patch_size or self.image_w % patch_size:
-            raise ValueError(
-                "image_size must be divisible by patch_size; got "
-                f"image_size={(self.image_h, self.image_w)}, patch_size={patch_size}"
-            )
         self.image_size = image_size
         self.patch_size = int(patch_size)
         self.patch_sizes = tuple(sorted(set(int(p) for p in (patch_sizes or [patch_size]))))
@@ -113,10 +110,8 @@ class ChannelTiedPatchEmbed(nn.Module):
         for b, (im, ids, p) in enumerate(zip(images, channel_ids, ps)):
             C, _, H, W = im.shape
             p = int(p)
-            if H % p or W % p:
-                raise ValueError(
-                    f"sample {b}: image {(H, W)} is not divisible by patch size {p}"
-                )
+            # FlexiViT's contract: floor(H/p) * floor(W/p) patches; a border
+            # smaller than p is ignored rather than padded or rejected.
             gh, gw = H // p, W // p
             N = gh * gw
             if N < 1:

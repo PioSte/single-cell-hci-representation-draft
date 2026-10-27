@@ -32,8 +32,11 @@ RoPE, or accept that raw-index RoPE also encodes sampling density.
 4. **FlexiViT per batch** — `patch_sizes=(...)` and `flexi_random=True` pick one
    `p` per training step; `forward(..., patch_sizes=p)` overrides it.  The
    canonical patch kernel is PI-resized, `n_patches`, masking, target
-   extraction, RoPE and fractional PE are derived per step, and the shared
-   reconstruction head predicts on a canonical grid and resizes to `p`.
+   extraction, RoPE and fractional PE are derived per step, and the decoder
+   keeps one linear `dim -> p²` reconstruction head per configured patch size
+   (`head_mode="per_p"`).  An unseen `p` uses the nearest configured head with
+   `p_head >= p` + bilinear point-sampling and never upsamples.  `max_tokens` optionally filters the
+   random sampler; explicit `patch_sizes=` overrides it.
 5. **Per-sample variable `p` / `H, W`** — `forward(..., patch_sizes=[p_b])`
    passes per-sample sizes.  Tokenization, fusion grouping, RoPE, fractional
    PE and masking use per-sample grid metadata; predictions are padded to
@@ -192,14 +195,16 @@ patch-embedding weights (`references/flexivit/paper.md:105`, `:168`, `:171`,
 | Component | Resample with `p`? |
 |---|---|
 | Patch-embedding kernel `p×p` | **Yes** — PI-resize; bilinear is a simpler baseline |
-| Decoder reconstruction head | **Not defined by FlexiViT** — use a canonical output grid, a conv/MLP conditioned on `p`, or carefully resample the output basis |
+| Decoder reconstruction head | **Not defined by FlexiViT** — this repo uses per-`p` linear heads; an unseen `p` uses the nearest larger head with bilinear point-sampling, and `head_mode="canonical"` is the ablation |
 | Encoder RoPE | **No table / no resampling** — use normalized coordinates for layout-only PE |
 | Decoder fractional PE | **No table / no resampling** |
 | Decoder PE table | **No table** (there isn’t one) |
 | Channel identity | **Not added to the patch token** — routing bias + pooled skip (see §3.1) |
 
-FlexiViT assumes patches tile the image. For arbitrary `H, W`, use
-padding/cropping or dynamic `p` selection and mask padded cells.
+FlexiViT assumes patches tile the image. For arbitrary `H, W`, this repo uses
+FlexiViT's own floor contract: keep `floor(H/p)·floor(W/p)` patches and discard
+the border smaller than `p`. Padding plus a validity mask remains an optional
+future path, not the default.
 
 **Intensity is handled by the resize operator, not by a scalar.** The reason
 FlexiViT prefers PI-resize is exactly the token-norm change that plain resize
@@ -214,8 +219,14 @@ is bounded across `p` by `test_pi_resized_kernel_keeps_token_scale_bounded`.
 The decoder reconstruction head is the open part. An MAE-style head maps
 `d -> p²·C`; changing `p` changes both the output basis and the pixel target.
 Resampling that linear weight is possible but is not the same operation as
-PI-resizing an input patch kernel. Prefer a fixed canonical token grid,
-unpatchify + resize, or a convolution/MLP decoder conditioned on `p`.
+PI-resizing an input patch kernel. This repo keeps one linear head per
+configured `p`; the decoder is discarded after MAE, so the extra head parameters
+cost nothing at deployment. An unseen `p` uses the nearest larger per-`p` head
+with bilinear point-sampling; `head_mode="canonical"` is the single-head
+ablation. Bilinear here is point-sampling
+(`align_corners=False`, no antialias), which matches the discrete `p×p` target;
+area/antialiased downsampling would low-pass it. Do not PI-resize the decoder
+head: PI-resize is an input-kernel operation, not an output-head resampler.
 
 ### 3.1 Channel identity must not ride on the patch token
 
@@ -289,8 +300,11 @@ Injection options:
   both ends so the decoder does not reconstruct scale-normalized content
   without knowing the physical size.
 - **Stronger: AdaLN / FiLM.** Use `e_scale` to modulate `gamma, beta` in the
-  encoder/decoder LayerNorms. This avoids the risk that a per-token constant
-  added before LayerNorm is largely normalized away.
+  encoder/decoder LayerNorms. This is a stronger conditioner, but the additive
+  path is not erased by pre-LN: LayerNorm removes only the mean/all-ones
+  component of an additive vector, and the unnormalized residual stream still
+  carries it. `adaln` is zero-initialized and starts as a no-op. Keep `add` as
+  the default until a real scale-sensitivity measurement says otherwise.
 - **Alternative: prepend a dedicated scale token** that attends normally. Use
   this if the model should be able to query scale rather than only be biased
   by it.
@@ -351,11 +365,13 @@ patch tokens.
   offsets; absolute fractional PE provides the additive anchor. Prefer the
   latter for MAE mask tokens, but keep the distinction accurate.
 - **Don’t resample the decoder head naively.** FlexiViT defines input patch
-  resampling, not MAE output-head resampling.
+  resampling, not MAE output-head resampling. Prefer per-`p` heads; if you use
+  a nearest-head fallback, guard against upsampling.
 - **Don’t feed only `log p` when physical µm/pixel matters.** Use `log p`,
   `log(µm/px)`, or both.
-- **Don’t add a constant scale vector before LayerNorm and expect strong
-  conditioning.** Use AdaLN/FiLM if scale is important.
+- **Don’t assume pre-LN erases an additive scale vector.** It removes only the
+  mean component; the residual stream carries the vector. Use AdaLN/FiLM if you
+  need stronger conditioning, not because `add` is provably lost.
 - **Don’t add the channel identity to the patch token before the fusion
   LayerNorm.** A fixed-scale vector summed into a variable-scale token makes the
   identity/content ratio a function of `p`; use a routing bias + output skip
@@ -380,17 +396,18 @@ Implementation map for the target architecture:
   ablation.
 - `src/fuse_channels/flexi.py` — `pi_resize_patch_embed`; `ChannelTiedPatchEmbed`
   keeps one canonical `Conv2d` kernel and PI-resizes it per patch size.
-- `src/fuse_channels/patch_embed.py` — per-sample patch sizes, grid metadata,
-  and row/column coordinates on `ChannelSet`.
+- `src/fuse_channels/patch_embed.py` — per-sample patch sizes, floor/crop
+  border handling, grid metadata, and row/column coordinates on `ChannelSet`.
 - `src/fuse_channels/container.py` — `grid_h`, `grid_w`,
   `n_patches_per_sample`, `patch_row`, `patch_col`, `patch_size`, `pixel_size`.
-- `src/fuse_channels/decoder.py` — fractional target PE, optional AdaLN, and a
-  shared canonical-grid reconstruction head resized to the target patch size.
+- `src/fuse_channels/decoder.py` — fractional target PE, optional AdaLN, and
+  per-`p` reconstruction heads with a nearest-head bilinear fallback for unseen
+  sizes.
 - `src/fuse_channels/masking.py` — `DCPVisibilitySampler` accepts a scalar or
   per-sample patch count at call time.
-- `src/fuse_channels/mae.py` — resolves patch sizes, builds scale features,
-  routes RoPE/conditioning through the encoder and decoder, and pads mixed-p
-  targets with a validity mask.
+- `src/fuse_channels/mae.py` — resolves patch sizes (with optional
+  `max_tokens`), builds scale features, routes RoPE/conditioning through the
+  encoder and decoder, and pads mixed-p targets with a validity mask.
 
 ## 8. References
 

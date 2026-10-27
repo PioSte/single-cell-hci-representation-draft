@@ -270,8 +270,8 @@ def build() -> plt.Figure:
 
     # decoder -> head -> predictions (routed clear of the labels).
     box(ax, 120.0, 64.0, 26.0, 11.0, "Head",
-        "$\\mathrm{Linear}(D, c^2)$\n"
-        "$\\rightarrow$ bilinear resize $\\rightarrow$ $[K_t, p^2]$",
+        "$\\mathrm{Linear}(D, p^2)$ per configured $p$\n"
+        "$\\rightarrow$ $[K_t, p^2]$ (nearest-head fallback)",
         edge=DECODER, title_size=7.6, sub_size=6.0)
     arrow(ax, (118.0, 65.5), (120.0, 65.5), color=DECODER, lw=1.5)
     # show the resize step on the short head->predictions arrow
@@ -325,7 +325,7 @@ def build() -> plt.Figure:
             ("memory tokens", MEMORY, "cross"),
             ("objective / omitted rows", LOSS, "omit"),
             ("fused tokens", FUSED, "cross"),
-            ("content descriptor", POOL, "cross"),
+            ("patch-token descriptor", POOL, "cross"),
         ],
         title="module roles", pitch=1.9, sw=1.4, fontsize=6.0,
     )

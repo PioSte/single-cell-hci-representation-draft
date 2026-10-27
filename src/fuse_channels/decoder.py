@@ -14,10 +14,12 @@ PE from ``FLEXIVIT.md``: a function of ``(row, col, grid_h, grid_w)`` with no
 grid-sized table, defined for any patch size.  ``"learned"`` and ``"sincos"``
 remain as legacy fixed-grid tables/lookup maps.
 
-The reconstruction head is a single shared linear head on a canonical output
-grid, bilinearly resized to the target patch size.  FlexiViT does not define
-MAE output-head resampling; using a canonical output grid keeps the head shared
-instead of learning a separate head per patch size.
+The reconstruction head keeps one linear ``dim -> p*p`` head per configured
+patch size (``head_mode="per_p"``).  The decoder is pretraining-only and
+discarded after MAE, so the extra head parameters do not affect deployment.
+For an unseen ``p`` it falls back to the nearest configured head with
+``p_head >= p`` and bilinear point-sampling, and refuses to upsample.  FlexiViT does not define MAE
+output-head resampling; per-p heads avoid resampling for configured sizes.
 """
 
 from __future__ import annotations
@@ -130,27 +132,90 @@ class DecoderBlock(nn.Module):
 
 
 class PatchReconstructionHead(nn.Module):
-    """Shared linear head on a canonical patch grid, resized to the target ``p``.
+    """Reconstruction head: per-patch-size linear heads, with a nearest-head fallback.
 
-    The head produces ``canonical_patch_size**2`` pixels.  For a different
-    target patch size the predicted patch is bilinearly resized.  This is a
-    deliberate choice: FlexiViT specifies input patch-embedding resampling and
-    does not define how to resample an MAE output head.
+    ``head_mode="per_p"`` (default) keeps one ``nn.Linear(dim, p*p)`` per
+    configured patch size.  The decoder is pretraining-only and discarded after
+    MAE, so this costs pretraining parameters only and removes the shared-head
+    interpolation mismatch.  ``head_mode="canonical"`` keeps the old single
+    ``dim -> canonical_patch_size**2`` head, resized bilinearly to the target
+    ``p``, as an ablation/fallback.
+
+    For an unseen ``p`` the nearest configured head with ``p_head >= p`` is used
+    as the fallback (the canonical head when no larger per-p head exists).
+    The fallback never upsamples: ``p > max(patch_sizes)`` raises.  The
+    bilinear op is point-sampling (``align_corners=False``, no antialias), which
+    is the right operator for a discrete ``p x p`` MAE target.  ``area`` or
+    antialiased downsampling would low-pass the prediction and mismatch the
+    point-sampled target.
     """
 
-    def __init__(self, dim: int, canonical_patch_size: int) -> None:
+    def __init__(
+        self,
+        dim: int,
+        canonical_patch_size: int,
+        patch_sizes=None,
+        mode: str = "per_p",
+    ) -> None:
         super().__init__()
+        if mode not in ("per_p", "canonical"):
+            raise ValueError(
+                f"unknown reconstruction head mode '{mode}'; "
+                "expected 'per_p' or 'canonical'"
+            )
         self.canonical_patch_size = int(canonical_patch_size)
-        self.head = nn.Linear(dim, self.canonical_patch_size**2)
+        self.mode = mode
+        if patch_sizes is None:
+            patch_sizes = (self.canonical_patch_size,)
+        self.patch_sizes = tuple(
+            sorted({int(p) for p in patch_sizes} | {self.canonical_patch_size})
+        )
+        for p in self.patch_sizes:
+            if p < 1:
+                raise ValueError(f"patch sizes must be positive, got {p}")
+        if mode == "canonical":
+            self.heads = None
+            self.head = nn.Linear(dim, self.canonical_patch_size**2)
+        else:
+            self.heads = nn.ModuleDict(
+                {str(p): nn.Linear(dim, p * p) for p in self.patch_sizes}
+            )
+            self.head = None
 
     @property
     def weight(self):
-        """Compatibility alias for the underlying linear head weight."""
-        return self.head.weight
+        """Compatibility alias for the canonical linear head weight."""
+        return self._canonical_head().weight
 
     @property
     def bias(self):
-        return self.head.bias
+        return self._canonical_head().bias
+
+    def _canonical_head(self) -> nn.Linear:
+        if self.heads is None:
+            return self.head
+        return self.heads[str(self.canonical_patch_size)]
+
+    def _head_for(self, patch_size: int) -> tuple[nn.Linear, bool, int]:
+        """Return ``(head, needs_resize, source_p)`` for one target size."""
+        p = int(patch_size)
+        if self.heads is None:
+            if p > self.canonical_patch_size:
+                raise ValueError(
+                    "canonical reconstruction head cannot upsample: "
+                    f"target p={p} > canonical_patch_size={self.canonical_patch_size}"
+                )
+            return self.head, p != self.canonical_patch_size, self.canonical_patch_size
+        if str(p) in self.heads:
+            return self.heads[str(p)], False, p
+        larger = [hp for hp in self.patch_sizes if hp >= p]
+        if not larger:
+            raise ValueError(
+                "per-p reconstruction head has no head for target "
+                f"p={p} and cannot upsample; configured p={self.patch_sizes}"
+            )
+        source = min(larger)
+        return self.heads[str(source)], True, source
 
     def forward(self, x: torch.Tensor, patch_sizes) -> torch.Tensor:
         """Return ``[K, p**2]`` for uniform ``p`` or padded ``[K, max(p**2)]``.
@@ -158,27 +223,41 @@ class PatchReconstructionHead(nn.Module):
         In the mixed case the caller also needs a validity mask; :meth:`mask`
         provides it.
         """
-        pred = self.head(x)
+        if patch_sizes is None:
+            patch_sizes = self.canonical_patch_size
         if isinstance(patch_sizes, int):
-            return self._resize(pred, patch_sizes)
+            head, resize, source = self._head_for(patch_sizes)
+            pred = head(x)
+            return self._resize(pred, patch_sizes, source) if resize else pred
         ps = torch.as_tensor(patch_sizes, device=x.device, dtype=torch.long)
         if ps.numel() == 0:
-            return pred
+            head, _, _ = self._head_for(self.canonical_patch_size)
+            return head(x)
         uniq = torch.unique(ps)
         if uniq.numel() == 1:
-            return self._resize(pred, int(uniq.item()))
+            return self(x, int(uniq.item()))
         max_p = int(ps.max().item())
-        out = pred.new_zeros(pred.shape[0], max_p * max_p)
+        out = x.new_zeros(x.shape[0], max_p * max_p)
         for p in uniq.tolist():
             idx = (ps == p).nonzero(as_tuple=True)[0]
-            out[idx, : p * p] = self._resize(pred[idx], p)
+            head, resize, source = self._head_for(p)
+            pred = head(x[idx])
+            out[idx, : p * p] = (
+                self._resize(pred, p, source) if resize else pred
+            )
         return out
 
-    def _resize(self, pred: torch.Tensor, patch_size: int) -> torch.Tensor:
+    def _resize(
+        self, pred: torch.Tensor, patch_size: int, source_patch_size: int
+    ) -> torch.Tensor:
         p = int(patch_size)
-        c = self.canonical_patch_size
+        c = int(source_patch_size)
         if p == c:
             return pred
+        if p > c:
+            raise ValueError(
+                f"cannot resize p={c} prediction up to p={p}"
+            )
         x = pred.reshape(-1, 1, c, c)
         x = F.interpolate(x, size=(p, p), mode="bilinear", align_corners=False)
         return x.reshape(pred.shape[0], p * p)
@@ -222,6 +301,8 @@ class ChannelAwareDecoder(nn.Module):
         fractional_pe_mode: str = "sincos",
         fractional_pe_base: float = 10000.0,
         adaln: bool = False,
+        patch_sizes=None,
+        head_mode: str = "per_p",
     ) -> None:
         super().__init__()
         self.mask_token = nn.Parameter(torch.zeros(dim))
@@ -268,7 +349,13 @@ class ChannelAwareDecoder(nn.Module):
             raise ValueError(
                 "canonical_patch_size or patch_dim is required for the reconstruction head"
             )
-        self.head = PatchReconstructionHead(dim, self.canonical_patch_size)
+        self.head_mode = head_mode
+        self.head = PatchReconstructionHead(
+            dim,
+            self.canonical_patch_size,
+            patch_sizes=patch_sizes,
+            mode=head_mode,
+        )
 
     def _target_pe(self, target_patch, target_row=None, target_col=None,
                    target_grid_h=None, target_grid_w=None):

@@ -10,7 +10,7 @@ channel-id offset.
 
 from __future__ import annotations
 
-from typing import List, Sequence, Tuple
+from typing import List, Optional, Sequence, Tuple, Union
 
 import torch
 from torch.utils.data import Dataset
@@ -25,11 +25,22 @@ class SyntheticChannelDataset(Dataset):
         c_max: int = 8,
         n_channel_ids: int = 32,
         seed: int = 0,
+        pixel_size: Optional[Union[float, Sequence[float]]] = None,
+        pixel_size_range: Optional[Sequence[float]] = None,
+        return_pixel_size: bool = False,
     ) -> None:
         super().__init__()
         self.image_size = image_size
         self.n_channel_ids = n_channel_ids
+        self.return_pixel_size = bool(return_pixel_size)
         g = torch.Generator().manual_seed(seed)
+        self.pixel_sizes = self._resolve_pixel_sizes(
+            n_samples, pixel_size, pixel_size_range, g
+        )
+        if self.return_pixel_size and self.pixel_sizes is None:
+            raise ValueError(
+                "return_pixel_size=True requires pixel_size or pixel_size_range"
+            )
 
         # shared latent basis over channels x pixels
         self.items: List[Tuple[torch.Tensor, torch.Tensor]] = []
@@ -50,16 +61,58 @@ class SyntheticChannelDataset(Dataset):
             img = lat + off
             self.items.append((img, channel_ids))
 
+    @staticmethod
+    def _resolve_pixel_sizes(
+        n_samples: int,
+        pixel_size,
+        pixel_size_range=None,
+        generator: Optional[torch.Generator] = None,
+    ) -> Optional[List[float]]:
+        if pixel_size is not None and pixel_size_range is not None:
+            raise ValueError("pass pixel_size or pixel_size_range, not both")
+        if pixel_size_range is not None:
+            lo, hi = (float(v) for v in pixel_size_range)
+            if lo <= 0 or hi < lo:
+                raise ValueError(
+                    f"pixel_size_range must be positive and ordered, got {pixel_size_range}"
+                )
+            return torch.empty(n_samples).uniform_(
+                lo, hi, generator=generator
+            ).tolist()
+        if pixel_size is None:
+            return None
+        if isinstance(pixel_size, (int, float)):
+            return [float(pixel_size)] * n_samples
+        values = [float(v) for v in pixel_size]
+        if len(values) != n_samples:
+            raise ValueError(
+                f"pixel_size must be a scalar or {n_samples} values, got {len(values)}"
+            )
+        return values
+
     def __len__(self) -> int:
         return len(self.items)
 
     def __getitem__(self, idx: int):
         img, channel_ids = self.items[idx]
+        if self.return_pixel_size:
+            if self.pixel_sizes is None:
+                raise ValueError(
+                    "return_pixel_size=True requires a pixel_size argument"
+                )
+            return img.clone(), channel_ids.clone(), self.pixel_sizes[idx]
         return img.clone(), channel_ids.clone()
 
 
-def collate_fn(batch: Sequence[Tuple[torch.Tensor, torch.Tensor]]):
-    """Return a padding-free batch: a list of images and a list of ids."""
+def collate_fn(batch):
+    """Return a padding-free batch.
+
+    Supports both the legacy ``(image, channel_ids)`` items and
+    ``(image, channel_ids, pixel_size)`` items.  The third value is returned as
+    a list of per-sample µm/px scalars when present.
+    """
     images = [b[0] for b in batch]
     ids = [b[1] for b in batch]
+    if batch and len(batch[0]) == 3:
+        return images, ids, [b[2] for b in batch]
     return images, ids

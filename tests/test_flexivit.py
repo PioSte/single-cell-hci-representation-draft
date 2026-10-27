@@ -353,3 +353,151 @@ def test_fractional_decoder_pe_is_load_bearing_for_mask_tokens():
         out = model(images, ids, visible=visible, patch_sizes=8)
     per_patch = out["pred"].reshape(4, -1)
     assert not torch.allclose(per_patch[0], per_patch[1])
+
+
+# --------------------------------------------------------------------------- #
+# reconstruction head: per-p heads, fallback, and token budget
+# --------------------------------------------------------------------------- #
+def test_per_p_head_is_exact_and_does_not_resize():
+    model = _model(patch_sizes=(4, 8), head_mode="per_p")
+    model.eval()
+    x = torch.randn(3, 32, generator=torch.Generator().manual_seed(0))
+    head = model.decoder.head
+    assert set(head.heads.keys()) == {"4", "8"}
+    assert torch.equal(head(x, 4), head.heads["4"](x))
+    assert torch.equal(head(x, 8), head.heads["8"](x))
+
+    images, ids = _batch()
+    for p in (4, 8):
+        with torch.no_grad():
+            out = model(
+                images, ids,
+                generator=torch.Generator().manual_seed(p), patch_sizes=p,
+            )
+        assert out["pred"].shape[-1] == p * p
+        assert torch.isfinite(out["loss"])
+
+
+def test_per_p_head_rejects_unseen_upsampling():
+    model = _model(
+        patch_sizes=(4, 8),
+        head_patch_size=4,
+        head_mode="per_p",
+    )
+    images, ids = _batch()
+    with pytest.raises(ValueError, match="cannot upsample"):
+        model(
+            images, ids,
+            generator=torch.Generator().manual_seed(0), patch_sizes=16,
+        )
+
+
+def test_canonical_head_mode_is_still_available():
+    model = _model(patch_sizes=(4, 8), head_mode="canonical")
+    model.eval()
+    images, ids = _batch()
+    for p in (4, 8):
+        with torch.no_grad():
+            out = model(
+                images, ids,
+                generator=torch.Generator().manual_seed(p), patch_sizes=p,
+            )
+        assert out["pred"].shape[-1] == p * p
+        assert torch.isfinite(out["loss"])
+
+
+def test_flexi_random_respects_max_tokens():
+    model = _model(
+        patch_sizes=(4, 8, 16),
+        max_tokens=4,
+        flexi_random=True,
+    )
+    model.train()
+    images, ids = _batch(image_size=16)
+    seen = set()
+    for i in range(40):
+        out = model(images, ids, generator=torch.Generator().manual_seed(i))
+        p = out["patch_sizes"][0]
+        seen.add(p)
+        assert (16 // p) * (16 // p) <= 4
+    assert seen <= {8, 16}
+    assert out["loss"].backward() is None
+
+
+def test_max_tokens_excludes_every_patch_size():
+    model = _model(
+        patch_sizes=(4, 8),
+        max_tokens=1,
+        flexi_random=True,
+    )
+    model.train()
+    images, ids = _batch(image_size=16)
+    with pytest.raises(ValueError, match="max_tokens excludes every"):
+        model(images, ids, generator=torch.Generator().manual_seed(0))
+
+
+def test_non_divisible_border_is_cropped_not_rejected():
+    model = ChannelFusionMAE(
+        image_size=15,
+        patch_size=4,
+        patch_sizes=(4,),
+        dim=32,
+        encoder_depth=1,
+        decoder_depth=1,
+        n_heads=4,
+        n_memory=2,
+        num_channel_ids=8,
+        flexi_random=False,
+    )
+    g = torch.Generator().manual_seed(0)
+    images = [torch.randn(2, 1, 15, 15, generator=g)]
+    ids = [torch.tensor([0, 1])]
+    cs = model.tokenizer(images, ids, patch_sizes=4)
+    assert cs.grid_h.tolist() == [3]
+    assert cs.grid_w.tolist() == [3]
+    assert cs.n_patches_per_sample.tolist() == [9]
+
+    out = model(
+        images, ids, generator=torch.Generator().manual_seed(0), patch_sizes=4
+    )
+    assert out["grid_h"].tolist() == [3]
+    assert out["n_patches_per_sample"].tolist() == [9]
+    assert out["pred"].shape[-1] == 16
+    assert torch.isfinite(out["loss"])
+    out["loss"].backward()
+
+
+def test_max_tokens_explicit_patch_size_is_an_override():
+    model = _model(patch_sizes=(4, 8), max_tokens=1, flexi_random=True)
+    model.eval()
+    images, ids = _batch(image_size=16)
+    with torch.no_grad():
+        out = model(
+            images, ids,
+            generator=torch.Generator().manual_seed(0), patch_sizes=4,
+        )
+    assert out["patch_sizes"] == [4, 4]
+    assert out["pred"].shape[-1] == 16
+
+
+def test_canonical_head_rejects_unseen_upsampling():
+    model = _model(
+        patch_sizes=(4, 8),
+        head_patch_size=4,
+        head_mode="canonical",
+    )
+    images, ids = _batch()
+    with pytest.raises(ValueError, match="cannot upsample"):
+        model(
+            images, ids,
+            generator=torch.Generator().manual_seed(0), patch_sizes=16,
+        )
+
+
+def test_unseen_p_uses_nearest_larger_head_without_upsampling():
+    model = _model(patch_sizes=(4, 8, 16), head_mode="per_p")
+    head = model.decoder.head
+    x = torch.randn(2, 32, generator=torch.Generator().manual_seed(0))
+    out = head(x, 6)
+    assert out.shape == (2, 36)
+    assert torch.isfinite(out).all()

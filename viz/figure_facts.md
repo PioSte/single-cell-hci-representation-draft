@@ -11,7 +11,7 @@ All shapes below are read from the code, not invented. Notation:
 | `H, W` | image side (square) | `image_size` |
 | `P` | canonical patch size (kernel stored at `P×P`) | `patch_size` |
 | `p_b` | runtime patch size for sample `b` | `patch_sizes[b]` |
-| `N_b` | patches per channel for sample `b`, `= (H/p_b)²` | `n_patches_per_sample[b]` |
+| `N_b` | patches per channel for sample `b`, `= floor(H/p_b)·floor(W/p_b)` | `n_patches_per_sample[b]` |
 | `N` | batch-maximum patch count, `= max_b N_b` | `ChannelSet.n_patches` |
 | `c` | canonical reconstruction-head grid, `= head_patch_size or max(patch_sizes)` | `PatchReconstructionHead.canonical_patch_size` |
 | `D` | token/embedding dim | `dim` |
@@ -64,8 +64,9 @@ axis** in the fused tensor. `n_queries` exists only on the descriptor pooler
   - otherwise, if more than one `patch_sizes` is configured and
     `flexi_random=True` in training → one `p` sampled per step/batch;
   - otherwise → canonical `P`.
-- Each sample derives `N_b = (H/p_b)·(W/p_b)`, `grid_h = H/p_b`,
-  `grid_w = W/p_b`; the masker uses `[C_b, N_b]`, targets use `p_b`, and
+- Each sample derives `N_b = floor(H/p_b)·floor(W/p_b)`,
+  `grid_h = H//p_b`, `grid_w = W//p_b`; the border smaller than `p_b` is
+  cropped. The masker uses `[C_b, N_b]`, targets use `p_b`, and
   `ChannelSet.n_patches = max_b N_b`.
 - No positional table is resized: encoder `2-D axial RoPE` uses normalized
   `(row,col)`, decoder uses factorized fractional PE from `(r,c,g_h,g_w)`,
@@ -73,10 +74,12 @@ axis** in the fused tensor. `n_queries` exists only on the descriptor pooler
 - `scale_conditioning="add"` (default) embeds `[log p, log µm/px, has_µ]` with
   Fourier features + MLP and adds it to encoder tokens and to the decoder
   target channel embedding before `target_proj`.
-- The reconstruction head is on a **canonical** grid
-  `c = head_patch_size or max(patch_sizes)`: `Linear(D, c²)` then **bilinear**
-  resize `c→p_b`. With mixed per-sample `p`, predictions are padded to
-  `max_b p_b²` and accompanied by a validity mask.
+- The reconstruction head keeps one `Linear(D, p²)` per configured `p`
+  (`head_mode="per_p"`, default). An unseen `p` uses the nearest configured
+  head with `p_head >= p` and bilinear point-sampling; `head_mode="canonical"`
+  keeps the single `Linear(D, c²)` head with `c = head_patch_size or
+  max(patch_sizes)` as the ablation. With mixed per-sample `p`, predictions are
+  padded to `max_b p_b²` and accompanied by a validity mask.
 
 ## Masking — `masking.py` (L5)
 
@@ -211,9 +214,9 @@ attention mask. It is **not** in the model path.
      (`mem_out + tok_out + desc`) using the general grouped primitive
      `grouped_attention`;
   3. MLP.
-- `norm` then a shared canonical-grid head: `Linear(D, c²)` with
-  `c = head_patch_size or max(patch_sizes)`, bilinearly resized to the target
-  patch size → `[Kt, p²]` (padded with a mask for mixed per-sample p).
+- `norm` then the per-`p` head: `Linear(D, p²)` for configured `p`; an unseen
+  `p` uses the nearest larger head + bilinear point-sampling → `[Kt, p²]`
+  (padded with a mask for mixed per-sample p).
 - Target `= extract_patches(images)[gidx, :, tgt_patch]` → `[Kt, p²]`
   (padded/validity-masked in the mixed-p case).
 

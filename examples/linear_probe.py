@@ -170,6 +170,18 @@ def main() -> None:
         help="FlexiViT patch sizes available during pretraining "
         "(evaluation uses the canonical --patch-size)",
     )
+    p.add_argument(
+        "--max-tokens",
+        type=int,
+        default=None,
+        help="training sampler keeps p with (H//p)*(W//p) <= max_tokens",
+    )
+    p.add_argument(
+        "--head-mode",
+        choices=("per_p", "canonical"),
+        default="per_p",
+        help="decoder reconstruction head; canonical is the legacy ablation",
+    )
     p.add_argument("--c-max", type=int, default=8)
     p.add_argument("--channel-ids", type=int, default=32)
     p.add_argument(
@@ -241,6 +253,8 @@ def main() -> None:
         image_size=args.image_size,
         patch_size=args.patch_size,
         patch_sizes=args.patch_sizes,
+        max_tokens=args.max_tokens,
+        head_mode=args.head_mode,
         dim=args.dim,
         encoder_depth=args.depth,
         decoder_depth=1,

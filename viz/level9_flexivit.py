@@ -11,7 +11,8 @@ factorized fractional absolute PE from ``(r, c, g_h, g_w)``, and
 
 Panel A: the canonical kernel, the PI-resize operator and the runtime conv.
 Panel B: where ``p`` comes from, what is *not* resized, and scale conditioning.
-Panel C: the variable-patch-size contract (input PI-resize vs output bilinear).
+Panel C: the variable-patch-size contract (input PI-resize; per-`p` output
+heads with a nearest-head bilinear fallback).
 
 Usage::
 
@@ -228,8 +229,8 @@ def build() -> plt.Figure:
          r"$[K_t,p_b^2]$; mixed $p$ padded to $\max_b p_b^2$ + validity mask",
          ("mask only", MUTED)),
         ("reconstruction head",
-         r"shared $\mathrm{Linear}(D,c^2)$, $c=\mathtt{head\_patch\_size}$ or $\max p$",
-         (r"bilinear $c{\to}p_b$", DECODER)),
+         r"one $\mathrm{Linear}(D,p^2)$ per configured $p$",
+         (r"nearest-head fallback $p_{\mathrm{head}}{\geq}p$", DECODER)),
         ("fusion / encoder / decoder PE",
          "no grid-sized table to resize",
          ("none", MUTED)),
@@ -302,8 +303,8 @@ def build() -> plt.Figure:
         r"$\to$ int, per-sample list, or $\mathtt{None}$ (canonical $P$)",
         r"$\mathtt{ChannelTiedPatchEmbed._project}(x,p)$:  "
         r"$\mathtt{pi\_resize\_patch\_embed}(\cdot,p)$ then $\mathtt{F.conv2d}$",
-        r"$\mathtt{PatchReconstructionHead}(D,c)$:  $\mathrm{Linear}(D,c^2)$ "
-        r"then bilinear resize $c{\to}p_b$",
+        r"$\mathtt{PatchReconstructionHead}(D,\{p\})$:  one "
+        r"$\mathrm{Linear}(D,p^2)$ per configured $p$; nearest-head fallback",
     ]
     hy = 17.0
     for line in hooks:
