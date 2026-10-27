@@ -1,0 +1,2 @@
+- consider if mask sampling needs to be adjusted due to FlexiViT
+- Is image L8 the explanation of the "group by" operation in L2 image? Is the L8 mechanism used only once? Is the image faithfull to the code?
