@@ -9,12 +9,15 @@ All shapes below are read from the code, not invented. Notation:
 | `C_b` | channel count of sample `b` (variable, order-free) | `images[b].shape[0]` |
 | `ΣC` | total channels across the batch | `sum(C_b)` |
 | `H, W` | image side (square) | `image_size` |
-| `P` | patch size | `patch_size` |
-| `N` | patches per channel, `= (H/P)²` | `ChannelTiedPatchEmbed.n_patches` |
+| `P` | canonical patch size (kernel stored at `P×P`) | `patch_size` |
+| `p_b` | runtime patch size for sample `b` | `patch_sizes[b]` |
+| `N_b` | patches per channel for sample `b`, `= (H/p_b)²` | `n_patches_per_sample[b]` |
+| `N` | batch-maximum patch count, `= max_b N_b` | `ChannelSet.n_patches` |
+| `c` | canonical reconstruction-head grid, `= head_patch_size or max(patch_sizes)` | `PatchReconstructionHead.canonical_patch_size` |
 | `D` | token/embedding dim | `dim` |
 | `M` | fixed memory/register tokens per sample | `n_memory` |
 | `T` | real channel-patch tokens in a flattened token set (`T = V` after masking) | `cs.tokens.shape[0]` |
-| `V` | number of **visible** channel-patch tokens (`≤ ΣC·N`) | `keep.sum()` |
+| `V` | number of **visible** channel-patch tokens (`≤ Σ_b C_b·N_b`) | `keep.sum()` |
 | `Kf` | number of present `(b,n)` locations (`≤ B·N`) | `present.sum()` |
 | `Kt` | number of masked channel-patches (decoder targets) | `~visible` nonzero |
 | `C_u` | number of unique channel instances in the batch | `unique(channel_group_id)` |
@@ -151,8 +154,9 @@ attention mask. It is **not** in the model path.
   explicit Q/K/V/O projections + MLP, with
   `grouped_projected_self_attention` (bucketed equal-length groups) per
   sample. 2-D axial RoPE rotates q/k from normalized `(row, col)` coordinates;
-  memory tokens get zero rotation. Optional AdaLN scale conditioning modulates
-  the LayerNorms. Final `LayerNorm`.
+  memory tokens get zero rotation. Default `scale_conditioning="add"` adds a
+  Fourier embedding of `[log p, log µm/px, has_µ]` to the encoder tokens;
+  `"adaln"` instead modulates the LayerNorms. Final `LayerNorm`.
 - Returns `mem_out [B·M, D]`, `tok_out [Kf, D]`.
 - Final decoder KV is `enc_all = cat([mem_out, tok_out, desc])` →
   `[B·M + Kf + B, D]`, with matching per-sample group ids.
@@ -163,9 +167,11 @@ attention mask. It is **not** in the model path.
   `tgt_patch`, `tgt_channel_embed [Kt, D]` indexed by the **global** channel
   instance (`channel_id` → `ChannelEmbedding`).
 - `q = mask_token [D] + fractional_pe(row, col, grid_h, grid_w)
-  + target_proj(tgt_channel_embed)` → `[Kt, D]`. The same channel-embedding
-  table serves two roles: input identity (added to tokens) and target
-  specification (decoder query).
+  + target_proj(tgt_channel_embed + scale_emb)` → `[Kt, D]`. The same
+  channel-embedding table serves two roles: input identity (added to tokens)
+  and target specification (decoder query). With the default
+  `scale_conditioning="add"`, the per-sample scale embedding is folded into the
+  target channel embedding; with `"adaln"` it conditions the decoder blocks.
 - Each `DecoderBlock`:
   1. **target self-attention** over the queries of each sample
      (`grouped_projected_self_attention`, bucketed);
@@ -173,9 +179,11 @@ attention mask. It is **not** in the model path.
      (`mem_out + tok_out + desc`) using the general grouped primitive
      `grouped_attention`;
   3. MLP.
-- `norm` then a shared canonical-grid head; predictions are resized to the
-  target patch size → `[Kt, p²]` (padded with a mask for mixed per-sample p).
-- Target `= extract_patches(images)[gidx, :, tgt_patch]` → `[Kt, P²]`.
+- `norm` then a shared canonical-grid head: `Linear(D, c²)` with
+  `c = head_patch_size or max(patch_sizes)`, bilinearly resized to the target
+  patch size → `[Kt, p²]` (padded with a mask for mixed per-sample p).
+- Target `= extract_patches(images)[gidx, :, tgt_patch]` → `[Kt, p²]`
+  (padded/validity-masked in the mixed-p case).
 
 ## Loss — `losses.py` (L6)
 
@@ -197,7 +205,8 @@ attention mask. It is **not** in the model path.
 
 - The only place `C` appears is the input length `ΣC·N`; fusion **sums it away**
   at each `(b,n)` to `[B, N, D]`. Output shape/size is independent of `C`.
-- `[B, C_max, N, D]` is **never materialised** — draw it only as a ghost.
+- `[B, C_max, N, D]` is **never allocated/built** (never materialised) — draw it
+  only as a dashed ghost.
 - Masking / missing channels are handled by **omitting rows**, not zeroing or
   attention masks.
 - The `[B, D]` descriptor is trained, comes from content tokens only, and is

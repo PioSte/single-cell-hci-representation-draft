@@ -1,11 +1,15 @@
 """L3 -- patch embed + additive identity tokenizer detail.
 
-Shows the channel-tied patch embedding (one shared Conv2d projection for all
-channels) plus the additive channel embedding `z_c`. Emphasizes:
-- Spatial position is added post-fusion by `ChannelFusion` / `IdentityGatedSum`.
+Shows the channel-tied patch embedding (one PI-resized Conv2d kernel shared by
+all channels) plus the additive channel embedding `z_c`.  Emphasizes:
+
+- Tokenizer and fusion add **no** spatial table; the encoder supplies 2-D axial
+  RoPE on normalized `(row, col)`, and the decoder a fractional absolute PE.
+- The Conv2d kernel is stored at a canonical `P` and **PI-resized** to each
+  sample's patch size `p_b`; each sample has `N_b = (H/p_b)^2` patches.
 - `z_c` is indexed by the dataset-level `channel_id`, not the panel position.
-- DCP-omitted tokens are absent dashed rows.
-- The output is one concatenated ragged token list `[V, D]` (`V <= sum C * N`).
+- DCP-omitted tokens are rejected at flatten, *before* `+ z_c`, as absent rows.
+- The output is one concatenated ragged token list `[V, D]` (`V <= sum C * N_b`).
 
 Usage::
 
@@ -27,7 +31,7 @@ from figure_style import (  # noqa: E402
     GREEN, RED, INK, MUTED, CHANNEL_COLORS,
     TOKENIZER, LOSS,
     tint, rrect, box, arrow, token_rows, install_rcparams,
-    legend, channel_legend, padded_ghost, sq_bracket, save_figure,
+    legend, channel_legend, padded_ghost, sq_bracket_mirror, save_figure,
 )
 
 OUT = Path(__file__).resolve().parent / "out"
@@ -57,9 +61,13 @@ def draw_patch_stack(ax, x, y0, w, h, pitch, n, color, omitted_idx=None):
 
 
 def draw_identity_card(ax, x, y, w, h, color, label):
-    """A small identity embedding card z_c (per-channel colour)."""
+    """A small identity embedding card z_c (per-channel colour).
+
+    z_c is a data vector flowing through the diagram, so the card is crossed
+    like every other data cell; only module boxes stay plain.
+    """
     rrect(ax, x, y, w, h, edge=color, face=tint(color, 0.75), lw=1.5,
-          rounding=0.4)
+          rounding=0.4, crossed=True)
     ax.text(x + w / 2, y + h / 2, label, ha="center", va="center",
             fontsize=8.0, fontweight="bold", color=INK, zorder=4)
 
@@ -90,17 +98,18 @@ def build() -> plt.Figure:
     ax.text(6.5, 77.5, "Tokenizer: channel-tied patch embed + additive channel embedding",
             ha="left", va="center", fontsize=12.2, fontweight="bold", color=INK)
     ax.text(2, 73.8,
-            "Two channels share one projection W, but each adds its own channel "
-            "embedding z_c; the spatial PE is added after fusion.",
+            "Two channels share one PI-resized projection W, but each adds its "
+            "own channel embedding z_c; the tokenizer and fusion add no spatial table.",
             ha="left", va="center", fontsize=7.4, color=MUTED, style="italic")
     ax.text(2, 70.9,
-            "Spatial PE is added after fusion  |  DCP-omitted rows are absent from the list",
+            "No spatial table in tokenizer or fusion  |  encoder = 2-D axial RoPE  "
+            "|  decoder = fractional abs PE  |  DCP-omitted rows are absent",
             ha="left", va="center", fontsize=7.2, color=RED, style="italic",
             fontweight="bold")
     ax.text(2, 67.9,
-            "Shapes:  $[1,H,W]$  \u2192  Conv2d  \u2192  $[N,D]$  "
-            "$+[D]$ ($z_c$)  \u2192  ragged "
-            "$[V,D]$,  $V \\leq \\Sigma C \\cdot N$     (D = token embedding dim)",
+            "Shapes:  $[1,H,W]$  \u2192  Conv2d($P \\to p_b$, PI-resized)  \u2192  "
+            "$[N_b, D]$  $+[D]$ ($z_c$)  \u2192  ragged "
+            "$[V,D]$,  $V \\leq \\Sigma C \\cdot N_b$",
             ha="left", va="center", fontsize=6.8, color=INK)
 
     # ---- Shared geometry: both lanes on one grid -------------------------- #
@@ -132,12 +141,12 @@ def build() -> plt.Figure:
         arrow(ax, (tile_x + tile_s, yc), (conv_x, yc), color=color)
         arrow(ax, (conv_x + conv_w, yc), (stack_x, yc), color=color)
 
-        # patch stack [N, D]
+        # patch stack [N_b, D]
         st_y0 = yc - stack_htot / 2
         top = draw_patch_stack(ax, stack_x, st_y0, stack_w, stack_h,
                                stack_pitch, n_patches, color,
                                omitted_idx=(omit_idx if lane == 1 else None))
-        ax.text(stack_x + stack_w / 2, top + 1.9, "$[N, D]$", ha="center",
+        ax.text(stack_x + stack_w / 2, top + 1.9, "$[N_b, D]$", ha="center",
                 va="center", fontsize=6.8, color=MUTED)
 
         # + identity z_c  (per-channel colour)
@@ -146,41 +155,44 @@ def build() -> plt.Figure:
                 va="center", fontsize=9.5, fontweight="bold", color=INK)
         draw_identity_card(ax, z_x, yc - z_h / 2, z_w, z_h, color,
                            f"$z_{{c_{lane}}}$")
-        ax.text(z_x - 0.5, yc - 3.9,
+        ax.text(z_x - 0.5, yc - 4.6,
                 f"channel id  \u00b7  $[D]$", ha="center", va="center",
                 fontsize=6.0, color=MUTED)
 
-        # -> per-channel tokens: still N rows, still [N, D]
+        # -> per-channel tokens: still N_b rows, still [N_b, D]
         arrow(ax, (z_x + z_w, yc), (out_x, yc), color=color)
         o_y0 = yc - stack_htot / 2
         top = draw_patch_stack(ax, out_x, o_y0, stack_w, stack_h,
                                stack_pitch, n_patches, color,
                                omitted_idx=(omit_idx if lane == 1 else None))
-        ax.text(out_x + stack_w / 2, top + 1.9, "$[N, D]$",
+        ax.text(out_x + stack_w / 2, top + 1.9, "$[N_b, D]$",
                 ha="center", va="center", fontsize=6.8, color=MUTED)
 
     # ---- Merged ragged output object -------------------------------------- #
-    # The two per-channel [N, D] blocks concatenate into ONE ragged list
-    # ChannelSet.tokens [V, D] (V <= sum C * N) after masking.
-    br_x = out_x + stack_w + 2.0
+    # The two per-channel [N_b, D] blocks concatenate into ONE ragged list
+    # ChannelSet.tokens [V, D] (V <= sum C * N_b) with omitted rows dropped.
+    br_x = out_x + stack_w + 1.4
     y_lo = lane_yc[1] - stack_htot / 2
     y_hi = lane_yc[0] + stack_htot / 2
-    sq_bracket(ax, br_x, y_lo, y_hi, color=INK, lw=1.3, tick=0.9)
+    # Bracket sits to the RIGHT of the output stacks, so its ticks must point
+    # LEFT (mirror) to embrace the stack rather than away from it.
+    sq_bracket_mirror(ax, br_x, y_lo, y_hi, color=INK, lw=1.3, tick=0.9)
     ax.text(br_x + 1.4, (y_lo + y_hi) / 2 + 1.6, "$[V, D]$", ha="left",
             va="center", fontsize=8.6, fontweight="bold", color=INK)
     ax.text(br_x + 1.4, (y_lo + y_hi) / 2 - 1.2, "ragged tokens", ha="left",
             va="center", fontsize=6.4, color=MUTED)
     ax.text(br_x + 1.4, (y_lo + y_hi) / 2 - 3.6,
-            "$V \\leq \\Sigma C \\cdot N$", ha="left", va="center",
+            "$V \\leq \\Sigma C \\cdot N_b$", ha="left", va="center",
             fontsize=6.2, color=MUTED)
 
-    # annotate the omitted row on the (upper) projected stack of channel 1
+    # annotate the omitted row on the (upper) projected stack of channel 1:
+    # it is dropped at flatten, before it can receive + z_c
     row_y = lane_yc[1] - stack_htot / 2 + omit_idx * stack_pitch + stack_h / 2
-    ax.plot([stack_x + stack_w, stack_x + stack_w + 1.1],
-            [row_y, row_y - 0.6], color=RED, lw=1.0, zorder=7)
-    ax.text(stack_x + stack_w + 1.3, row_y - 1.7, "omitted", ha="left",
+    ax.plot([stack_x + stack_w, stack_x + stack_w + 1.0], [row_y, row_y - 1.3],
+            color=RED, lw=1.0, zorder=7)
+    ax.text(stack_x + stack_w + 1.2, row_y - 1.7, "omitted", ha="left",
             va="center", fontsize=6.1, color=RED, style="italic",
-            fontweight="bold")
+            fontweight="bold", zorder=7)
 
     # annotate the omitted row on the merged output stack too (to the left of
     # the stack so it stays clear of the [V, D] bracket)
@@ -190,23 +202,25 @@ def build() -> plt.Figure:
             va="center", fontsize=6.1, color=RED, style="italic",
             fontweight="bold")
 
-    # ---- Shared Conv2d module (one kernel for every channel) -------------- #
+    # ---- Shared Conv2d module (one canonical kernel, PI-resized per sample) #
     rrect(ax, conv_x, 22.0, conv_w, 40.0, edge=TOKENIZER, face=tint(TOKENIZER, 0.86),
           lw=1.5, rounding=0.7, z=3)
     cx = conv_x + conv_w / 2
-    ax.text(cx, 60.0, "Conv2d", ha="center", va="center", fontsize=8.6,
+    ax.text(cx, 60.2, "Conv2d", ha="center", va="center", fontsize=8.6,
             fontweight="bold", color=INK, zorder=4)
-    ax.text(cx, 56.6, "1 \u2192 D", ha="center", va="center", fontsize=6.8,
+    ax.text(cx, 56.9, "1 \u2192 D", ha="center", va="center", fontsize=6.8,
             color=INK, zorder=4)
-    ax.text(cx, 54.2, "kernel P", ha="center", va="center", fontsize=6.6,
-            color=MUTED, zorder=4)
-    ax.text(cx, 51.8, "stride P", ha="center", va="center", fontsize=6.6,
-            color=MUTED, zorder=4)
-    ax.plot([cx - 2.8, cx + 2.8], [49.0, 49.0], color=TOKENIZER, lw=1.0,
+    ax.text(cx, 54.4, "canonical kernel P", ha="center", va="center",
+            fontsize=6.6, color=MUTED, zorder=4)
+    ax.text(cx, 52.1, "stride $p_b$ (per sample)", ha="center", va="center",
+            fontsize=6.6, color=MUTED, zorder=4)
+    ax.plot([cx - 2.8, cx + 2.8], [49.5, 49.5], color=TOKENIZER, lw=1.0,
             linestyle=(0, (3, 2)), zorder=4)
-    ax.text(cx, 45.4, "shared W", ha="center", va="center", fontsize=7.6,
+    ax.text(cx, 46.6, "PI-resize  $P \\to p_b$", ha="center", va="center",
+            fontsize=6.8, fontweight="bold", color=TOKENIZER, zorder=4)
+    ax.text(cx, 42.8, "shared W", ha="center", va="center", fontsize=7.6,
             fontweight="bold", color=TOKENIZER, zorder=4)
-    ax.text(cx, 40.0, "one kernel for\nevery channel", ha="center", va="center",
+    ax.text(cx, 38.4, "one kernel for\nevery channel", ha="center", va="center",
             fontsize=6.3, color=MUTED, zorder=4, linespacing=1.5)
     ax.text(cx, 33.6, "(tied across\nchannels)", ha="center", va="center",
             fontsize=6.1, color=MUTED, zorder=4, linespacing=1.5)
@@ -239,7 +253,7 @@ def build() -> plt.Figure:
             fontsize=6.4, fontweight="bold", color=INK, zorder=4)
     ax.text(35.0, 42.9, "(additive)", ha="center", va="center",
             fontsize=6.4, fontweight="bold", color=INK, zorder=4)
-    ax.text(35.0, 40.2, "proj(patch)\n$+$ $z_c$",
+    ax.text(35.0, 40.2, "proj(patch; $p_b$)\n$+$ $z_c$",
             ha="center", va="center", fontsize=5.9, color=MUTED, zorder=4,
             linespacing=1.5)
 
@@ -260,17 +274,43 @@ def build() -> plt.Figure:
 
     ax.text(strip_x + 12.5, strip_y + 11.2,
             "Masked channel-patch tokens are removed from the ragged list "
-            "$[V, D]$,  $V \\leq \\Sigma C \\cdot N$.", ha="left", va="center",
-            fontsize=6.4, color=INK, zorder=4)
+            "$[V, D]$.", ha="left", va="center", fontsize=6.4, color=INK,
+            zorder=4)
     ax.text(strip_x + 12.5, strip_y + 8.4,
-            "Rows absent from $[V, D]$ \u00b7 only visible tokens are passed on.",
-            ha="left", va="center", fontsize=6.4, color=MUTED, zorder=4)
+            "Omission happens at flatten, before $+z_c$: masked rows never "
+            "receive $z_c$.", ha="left", va="center", fontsize=6.4,
+            color=INK, zorder=4)
     ax.text(strip_x + 12.5, strip_y + 5.6,
-            "$N = (H/P)^2$ patches per channel  \u00b7  $D$ = token dim.",
-            ha="left", va="center", fontsize=6.4, color=MUTED, zorder=4)
+            "$V \\leq \\Sigma C \\cdot N_b$  \u00b7  omitted rows are absent, "
+            "never zeroed.", ha="left", va="center", fontsize=6.4,
+            color=MUTED, zorder=4)
 
-    # dashed ghost of the padded tensor that is never materialised
-    padded_ghost(ax, strip_x + strip_w - 24.0, strip_y + 3.0, 20.0, 11.0, z=3)
+    # ---- symbols / glossary (bottom strip, right centre) ------------------ #
+    nx, ny, nw, nh = 58.0, 3.0, 64.0, 13.0
+    rrect(ax, nx, ny, nw, nh, edge=MUTED, face="#FFFFFF", lw=1.0, dashed=True,
+          rounding=0.5, z=3)
+    ax.text(nx + 1.5, ny + nh - 1.9, "symbols / glossary", ha="left",
+            va="center", fontsize=6.6, fontweight="bold", color=INK, zorder=4)
+    notes = [
+        "$B$=samples, $C_b$=channels/sample, $\\Sigma C=\\sum_b C_b$, "
+        "$C_{\\max}=\\max_b C_b$",
+        "$N_b=(H/p_b)^2$, $N=\\max_b N_b$, $D$=token dim, "
+        "$V$=visible channel-patch tokens",
+        "$P$=canonical kernel, $p_b$=per-sample patch; "
+        "PI-resize = pseudoinverse $P\\to p_b$",
+        "$c$=channel id, $z_c$=additive channel embedding; "
+        "DCP omission = drop rows (never zero)",
+    ]
+    note_y = ny + nh - 4.2
+    for note in notes:
+        ax.text(nx + 1.5, note_y, note, ha="left", va="center",
+                fontsize=5.8, color=MUTED, zorder=4)
+        note_y -= 2.2
+
+    # dashed ghost of the padded tensor that is never allocated/built
+    # dashed ghost: the padded tensor is never allocated nor built
+    padded_ghost(ax, strip_x + strip_w - 24.0, strip_y + 2.5, 22.0, 10.5,
+                 note="never allocated / built", z=3)
 
     # ---- Right column ----------------------------------------------------- #
     # Key design points
@@ -281,23 +321,26 @@ def build() -> plt.Figure:
             ha="center", va="center", fontsize=8.6, fontweight="bold", color=INK)
 
     bullets = [
-        "\u2022 One shared Conv2d W for every channel (tied)",
-        "\u2022 spatial pos is added after channel fusion",
+        "\u2022 One shared Conv2d kernel W; PI-resized $P \\to p_b$ per sample",
+        "\u2022 No spatial table here: encoder = 2-D axial RoPE",
+        "\u2022 Decoder = fractional absolute PE (no grid table)",
         "\u2022 $z_c$ = Embedding(channel_id), not panel position",
         "\u2022 DCP omission \u2192 row absent from the list",
-        "\u2022 $C$ lives only in the ragged length $V \\leq \\Sigma C \\cdot N$",
+        "\u2022 $C$ lives only in the ragged length $V \\leq \\Sigma C \\cdot N_b$",
     ]
-    bullet_y = leg_y + leg_h - 6.5
+    bullet_y = leg_y + leg_h - 6.0
     for bullet in bullets:
         ax.text(leg_x + 1.8, bullet_y, bullet, ha="left", va="center",
                 fontsize=6.5, color=INK)
-        bullet_y -= 3.2
+        bullet_y -= 3.1
 
-    # Legends: roles actually drawn (tokenizer/z_c + omitted row) + channels
+    # Legends: module roles stay plain; z_c is a data vector so its swatch is
+    # crossed; omitted rows are dashed/uncrossed; channels are crossed too.
     legend(ax, 112.0, 49.0,
-           [("tokenizer / $z_c$", TOKENIZER, "fill"),
+           [("tokenizer (module)", TOKENIZER, "fill"),
+            ("$z_c$ embedding", TOKENIZER, "cross"),
             ("omitted row", LOSS, "omit")],
-           title="module roles", pitch=2.4, sw=1.4, fontsize=6.2)
+           title="module roles / data", pitch=2.4, sw=1.4, fontsize=6.2)
     channel_legend(ax, 131.0, 49.0, n=2, title="channel identity",
                    pitch=2.4, sw=1.4, fontsize=6.2)
 
@@ -308,9 +351,9 @@ def build() -> plt.Figure:
             fontsize=8.0, fontweight="bold", color=INK)
     ax.text(112.0, 34.4, "one concatenated ChannelSet.tokens list",
             ha="left", va="center", fontsize=6.3, color=INK)
-    ax.text(112.0, 31.9, "$[V, D]$,  $V \\leq \\Sigma C \\cdot N$ after masking",
+    ax.text(112.0, 31.9, "$[V, D]$,  $V \\leq \\Sigma C \\cdot N_b$ after masking",
             ha="left", va="center", fontsize=6.3, color=INK)
-    ax.text(112.0, 29.4, "masked rows are absent",
+    ax.text(112.0, 29.4, "masked rows absent (dropped before $+z_c$)",
             ha="left", va="center", fontsize=6.3, color=MUTED)
 
     return fig

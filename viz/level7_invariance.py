@@ -1,16 +1,17 @@
 """Level 7 -- Invariance & cost (measured values from a real model).
 
-Unlike the other levels this runs the **actual** model and plots measured evidence
-for three properties of the shipped path:
+Unlike the other levels this runs the **actual** model and plots measured
+evidence for three properties of the default path:
 
 1. Cardinality invariance — output size is independent of ``C``.
 2. Permutation invariance — shuffling channel order does not change the result.
-3. Cost — per-location analytic FLOPs of the two shipped fusions:
-   single-query PMA (``ChannelFusion``) and ``IdentityGatedSum`` are both
-   ``O(C)``.
+3. Cost — per-location analytic FLOPs of the default fusion (single-query PMA,
+   ``ChannelFusion``) and the ``O(C)`` ``IdentityGatedSum`` **ablation**; both
+   scale as ``O(C)``.
 
-This keeps the total runtime modest (< 60s) by using a tiny model (16x16, 4 spatial
-patches, 1-layer encoder/decoder) and only a handful of cardinality samples.
+This keeps the total runtime modest (< 60s) by using a tiny model (16x16, 4
+spatial patches, 1-layer encoder/decoder) and only a handful of cardinality
+samples.
 
 Usage::
 
@@ -35,11 +36,12 @@ import torch
 # Add viz/ to path for figure_style import
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from figure_style import (
-    FUSED,
+from figure_style import (  # noqa: E402
     FUSION,
     INK,
     MUTED,
+    POOL,
+    VIOLET,
     install_rcparams,
     save_figure,
 )
@@ -50,6 +52,7 @@ from fuse_channels.mae import ChannelFusionMAE
 OUT = Path(__file__).resolve().parent / "out"
 
 EPS = float(torch.finfo(torch.float32).eps)  # 1.19e-07
+TOL = 1e-6
 
 
 def set_seed(seed: int = 42):
@@ -114,11 +117,12 @@ def measure_permutation_invariance(
 
 
 def analytic_cost(Cs, D):
-    """Per-location analytic multiply-adds of the two shipped fusions.
+    """Per-location analytic multiply-adds of the default fusion + ablation.
 
-    * single-query PMA (``ChannelFusion``): scores + weighted sum ``2·C·D``,
-      plus the per-location output projection ``D²`` → ``2·C·D + D²``;
-    * ``IdentityGatedSum``: one per-channel ``D→D`` MLP + ``D→1`` head
+    * default single-query PMA (``ChannelFusion``): scores + weighted sum
+      ``2·C·D``, plus the per-location output projection ``D²``
+      → ``2·C·D + D²``;
+    * ``IdentityGatedSum`` ablation: one per-channel ``D→D`` MLP + ``D→1`` head
       (``D² + D``) and a ``D→D`` value projection (``D²``) → ``C·(2·D² + D)``.
 
     Both scale as ``O(C)`` in the channel count.
@@ -134,8 +138,8 @@ def analytic_cost(Cs, D):
 # Plotting helpers
 # --------------------------------------------------------------------------- #
 def header(ax, letter, text):
-    """Panel header as a left-aligned axes title."""
-    ax.set_title(f"{letter}   {text}", loc="left", fontsize=11.5,
+    """Panel header in the L5/L8 ``panel_header`` style (bold, left-aligned)."""
+    ax.set_title(f"{letter}   {text}", loc="left", fontsize=12.2,
                  fontweight="bold", color=INK)
 
 
@@ -147,16 +151,25 @@ def tidy(ax):
 # --------------------------------------------------------------------------- #
 # Figure
 # --------------------------------------------------------------------------- #
-def build_figure(card_results, perm_results, Cs_cost, cost_attn, cost_gated):
+def build_figure(card_results, perm_results, Cs_cost, cost_attn, cost_gated,
+                 n_patches, B):
     """Build the 3-panel figure (A/B on top, cost spanning the bottom)."""
-    fig = plt.figure(figsize=(13.5, 9.2))
-    gs = fig.add_gridspec(2, 2, hspace=0.42, wspace=0.24,
-                          left=0.07, right=0.98, top=0.92, bottom=0.10)
+    fig = plt.figure(figsize=(13.5, 9.9))
+    gs = fig.add_gridspec(2, 2, hspace=0.40, wspace=0.24,
+                          left=0.07, right=0.98, top=0.90, bottom=0.115)
 
-    # ---- Panel A: cardinality invariance --------------------------------- #
+    # ---- L7 badge (same style as L5/L8 panel_header) -------------------- #
+    fig.text(0.07, 0.958, "L7", ha="left", va="center", fontsize=15,
+             fontweight="bold", color=INK)
+    fig.text(0.07 + 4.5 / 140.0, 0.958,
+             "Invariance & cost — measured on the real model",
+             ha="left", va="center", fontsize=12.2, fontweight="bold",
+             color=INK)
+
+    # ---- Panel A: cardinality invariance -------------------------------- #
     ax_a = fig.add_subplot(gs[0, 0])
-    header(ax_a, "A", "Cardinality invariance \u2014 descriptor shape "
-                     "constant in $C$")
+    header(ax_a, "A", "Cardinality invariance — descriptor shape "
+                      "constant in $C$")
 
     Cs = [r["C"] for r in card_results]
     n_in = [r["n_in"] for r in card_results]
@@ -164,14 +177,15 @@ def build_figure(card_results, perm_results, Cs_cost, cost_attn, cost_gated):
     x = np.arange(len(Cs))
 
     ax_a.plot(x, n_in, "o-", color=MUTED, linewidth=2.0, markersize=7,
-              label="input ragged list  $[\\Sigma C{\\cdot}N,\\ D]$  (elements)")
-    ax_a.axhline(D, color=FUSED, ls="-", lw=2.6,
-                 label=f"descriptor  $[B,\\ D]$  = {D} elements  (constant)")
+              label="ragged input list  $[\\Sigma C{\\cdot}N,\\ D]$  elements")
+    ax_a.axhline(D, color=POOL, ls="-", lw=2.6,
+                 label=f"descriptor  $[B,\\ D]$  "
+                       f"($B{{\\cdot}}D={D}$ at $B{{=}}1$, constant)")
 
     ax_a.set_yscale("log")
     ax_a.set_ylim(10, max(n_in) * 4)
     ax_a.set_xticks(x)
-    ax_a.set_xticklabels([f"{C}\n[1, {D}]" for C in Cs], fontsize=9)
+    ax_a.set_xticklabels([str(C) for C in Cs], fontsize=9.5)
     ax_a.set_xlabel("Channel count $C$", fontsize=10, fontweight="bold")
     ax_a.set_ylabel("input token elements  $\\Sigma C{\\cdot}N{\\cdot}D$  "
                     "(log)", fontsize=10, fontweight="bold")
@@ -179,17 +193,17 @@ def build_figure(card_results, perm_results, Cs_cost, cost_attn, cost_gated):
     tidy(ax_a)
     ax_a.legend(loc="upper left", frameon=True, fontsize=8.3)
 
-    ax_a.text(0.98, 0.015,
-              "descriptor $[B, D]$; here $[1, D]$ because $B=1$\n"
-              "shape is constant for all $C$",
+    ax_a.text(0.98, 0.02,
+              f"model: $B={B}$, $N={n_patches}$ patches/channel, $D={D}$\n"
+              f"descriptor $[B, D] = [{B}, {D}]$, constant for all $C$",
               transform=ax_a.transAxes, ha="right", va="bottom",
               fontsize=8.6, color=INK, fontweight="bold",
               bbox=dict(boxstyle="round,pad=0.4", facecolor="white",
-                        edgecolor=FUSED, linewidth=1.5))
+                        edgecolor=POOL, linewidth=1.5))
 
     # ---- Panel B: permutation invariance -------------------------------- #
     ax_b = fig.add_subplot(gs[0, 1])
-    header(ax_b, "B", "Permutation invariance \u2014 channel order is irrelevant")
+    header(ax_b, "B", "Permutation invariance — channel order is irrelevant")
 
     bCs = sorted({r["C"] for r in perm_results})
     rng = np.random.default_rng(0)
@@ -197,15 +211,17 @@ def build_figure(card_results, perm_results, Cs_cost, cost_attn, cost_gated):
         vals = [r["diff"] for r in perm_results if r["C"] == C]
         jit = rng.uniform(-0.16, 0.16, size=len(vals))
         ax_b.scatter(i + jit, vals, s=46, color=FUSION, alpha=0.9,
-                     edgecolor="white", linewidth=0.6, zorder=4)
-    ax_b.axhline(EPS, color=MUTED, ls="--", lw=1.3,
-                 label=f"float32 eps = {EPS:.1e} (round-off floor)")
-    ax_b.axhline(1e-6, color=INK, ls=":", lw=1.7,
-                 label="chosen tolerance  $10^{-6}$")
+                     edgecolor="white", linewidth=0.6, zorder=4,
+                     label=("one point per shuffle, max|$\\Delta$|"
+                            if i == 0 else None))
+    eps_line = ax_b.axhline(EPS, color=MUTED, ls="--", lw=1.3,
+                            label=f"float32 machine $\\epsilon$ = {EPS:.1e}")
+    tol_line = ax_b.axhline(TOL, color=INK, ls=":", lw=1.7,
+                            label="chosen tolerance  $10^{-6}$")
 
     perm_max = max(r["diff"] for r in perm_results)
     ax_b.set_yscale("log")
-    ax_b.set_ylim(1e-9, 1e-5)
+    ax_b.set_ylim(5e-9, 3e-6)
     ax_b.set_xlim(-0.5, len(bCs) - 0.5)
     ax_b.set_xticks(range(len(bCs)))
     ax_b.set_xticklabels([f"{C}" for C in bCs])
@@ -214,42 +230,62 @@ def build_figure(card_results, perm_results, Cs_cost, cost_attn, cost_gated):
                     fontsize=10, fontweight="bold")
     ax_b.grid(axis="y", alpha=0.3, linestyle="--", which="both")
     tidy(ax_b)
-    ax_b.legend(loc="lower right", frameon=True, fontsize=8.3)
-    ax_b.text(0.98, 0.97,
-              f"max|$\\Delta$| = {perm_max:.1e}\n"
+    handles, labels = ax_b.get_legend_handles_labels()
+    ax_b.legend(handles, labels, loc="lower right", frameon=True, fontsize=8.3)
+    ax_b.text(0.98, 0.975,
+              f"max|$\\Delta$| = {perm_max:.1e}  "
+              f"(> $\\epsilon$: accumulator round-off)\n"
               f"$\\leq$ chosen $10^{{-6}}$ tolerance",
-              transform=ax_b.transAxes, ha="right", va="top", fontsize=9,
+              transform=ax_b.transAxes, ha="right", va="top", fontsize=8.2,
               color=INK,
               bbox=dict(boxstyle="round,pad=0.4", facecolor="white",
                         edgecolor=FUSION, linewidth=1.5))
 
     # ---- Panel C: cost (spans the bottom row) --------------------------- #
     ax_c = fig.add_subplot(gs[1, :])
-    header(ax_c, "C", "Cost per location \u2014 both shipped fusions are "
-                      "$O(C)$")
+    header(ax_c, "C", "Cost per location — default PMA vs $O(C)$ ablation")
 
-    ax_c.loglog(Cs_cost, cost_attn, "-", color=FUSED, linewidth=2.8,
-                label="ChannelFusion single-query PMA  ($2CD + D^2$, $O(C)$)")
-    ax_c.loglog(Cs_cost, cost_gated, "-", color=FUSION, linewidth=2.8,
-                label="IdentityGatedSum  ($C(2D^2 + D)$, $O(C)$)")
+    ax_c.loglog(Cs_cost, cost_attn, "-", color=FUSION, linewidth=2.8,
+                label="default PMA: ChannelFusion single-query  "
+                      "($2CD + D^2$, $O(C)$)")
+    ax_c.loglog(Cs_cost, cost_gated, "--", color=VIOLET, linewidth=2.8,
+                label="ablation: IdentityGatedSum  "
+                      "($C(2D^2 + D)$, $O(C)$)")
 
-    ax_c.set_xlabel("Channel count $C$", fontsize=10, fontweight="bold")
+    ax_c.set_xlabel("Channel count $C$ (log scale)", fontsize=10,
+                    fontweight="bold")
     ax_c.set_ylabel("analytic multiply-adds per location",
                     fontsize=10, fontweight="bold")
+    ax_c.set_xlim(1, 60)
     ax_c.set_ylim(5e2, 2e6)
+    ax_c.set_xticks([1, 3, 10, 30, 60])
+    ax_c.set_xticklabels(["1", "3", "10", "30", "60"])
     ax_c.grid(alpha=0.3, linestyle="--", which="both")
     tidy(ax_c)
     ax_c.legend(loc="upper left", frameon=True, fontsize=9.0)
 
     ax_c.text(0.97, 0.97,
-              f"analytic cost at $D$={D}:\n"
-              f"PMA  $2CD + D^2$\n"
-              f"IdentityGatedSum  $C(2D^2 + D)$\n"
+              f"analytic cost at $D={D}$:\n"
+              f"default PMA  $2CD + D^2$\n"
+              f"ablation  $C(2D^2 + D)$\n"
               "both scale as $O(C)$",
               transform=ax_c.transAxes, ha="right", va="top", fontsize=9.0,
               color=INK,
               bbox=dict(boxstyle="round,pad=0.45", facecolor="white",
-                        edgecolor=FUSED, linewidth=1.4))
+                        edgecolor=VIOLET, linewidth=1.4))
+
+    # ---- glossary footer ------------------------------------------------- #
+    fig.text(0.07, 0.052,
+             "symbols / glossary:  $C$ channel count (order-free);  "
+             "$D$ token/embedding dim ($=32$);  "
+             "$N$ spatial patches/channel ($=4$);  $B$ batch size ($=1$);",
+             ha="left", va="center", fontsize=8.4, color=INK)
+    fig.text(0.07, 0.022,
+             "$\\mathrm{PMA}$ single-query pooled multi-head attention;  "
+             "$O(C)$ cost grows linearly with channel count;  "
+             "$\\epsilon$ float32 machine epsilon "
+             "($\\approx 1.2\\times10^{-7}$).",
+             ha="left", va="center", fontsize=8.4, color=INK)
 
     return fig
 
@@ -293,7 +329,8 @@ def main() -> None:
     cost_attn, cost_gated = analytic_cost(Cs_cost, D)
 
     # Build and save figure
-    fig = build_figure(card_results, perm_results, Cs_cost, cost_attn, cost_gated)
+    fig = build_figure(card_results, perm_results, Cs_cost, cost_attn,
+                       cost_gated, n_patches=model.n_patches, B=1)
     save_figure(fig, OUT, args.stem, args.formats)
     plt.close(fig)
 

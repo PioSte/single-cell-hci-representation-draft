@@ -39,7 +39,7 @@ import matplotlib.pyplot as plt
 
 from figure_style import (  # noqa: E402
     BLUE, GREEN, ORANGE, FUSED, LOSS, INK, MUTED,
-    tint, rrect, box, arrow, sq_bracket, panel_header, legend,
+    tint, rrect, box, arrow, sq_bracket_mirror, panel_header, legend,
     install_rcparams, save_figure,
 )
 
@@ -86,13 +86,17 @@ def draw_token_column(ax, x, specs, face=0.80):
     """A vertical [T, D] token column; returns the top y of the stack."""
     for i, (c, _group) in enumerate(specs):
         rrect(ax, x, Y0 + i * PITCH, W_TOK, H_TOK, edge=c,
-              face=tint(c, face), lw=1.2)
+              face=tint(c, face), lw=1.2, crossed=True)
     return Y0 + (len(specs) - 1) * PITCH + H_TOK
 
 
 def bracket_and_shape(ax, x, top):
-    """[T, D] bracket + label to the right of a token column."""
-    sq_bracket(ax, x + W_TOK + 0.9, Y0, top)
+    """[T, D] bracket + label to the right of a token column.
+
+    The bracket sits to the **right** of the stack, so its ticks are mirrored
+    to point back toward the tokens it embraces.
+    """
+    sq_bracket_mirror(ax, x + W_TOK + 0.9, Y0, top)
     ax.text(x + W_TOK + 1.6, (Y0 + top) / 2, "$[T, D]$",
             ha="left", va="center", fontsize=8.5, color=INK)
 
@@ -140,30 +144,43 @@ def draw_sorted_tokens(ax, x):
 
 
 def draw_batched_groups(ax, x):
-    """Batched SDPA: equal-length groups batched into one call each."""
+    """Batched SDPA: equal-length groups batched into one call each.
+
+    The L=3 bucket keeps stage-2's vertical order for g0/g2 (g2 orange above
+    g0 blue); the L=2 bucket sits below with its heading immediately above it.
+    """
     cell, cpitch = 2.8, 3.2
 
     def row(y, n, c):
         for i in range(n):
             rrect(ax, x + i * cpitch, y, cell, cell, edge=c,
-                  face=tint(c, 0.75), lw=1.1, rounding=0.3)
+                  face=tint(c, 0.75), lw=1.1, rounding=0.3, crossed=True)
+        return x + (n - 1) * cpitch + cell
 
-    # --- L = 3, batch M = 2 (groups g0 blue and g2 orange) ---------------- #
-    blue_y, orange_y = Y0 + 14.0, Y0 + 10.5
+    # --- L = 3, batch M = 2 (groups g2 orange, then g0 blue) --------------- #
+    orange_y, blue_y = Y0 + 14.0, Y0 + 10.5
+    right3 = row(orange_y, 3, ORANGE)
     row(blue_y, 3, BLUE)
-    row(orange_y, 3, ORANGE)
-    ax.text(x + 3.0, Y0 + 20.4, "length $L{=}3$", ha="center", va="center",
+    ax.text(x + 4.6, Y0 + 20.0, "length $L{=}3$", ha="center", va="center",
             fontsize=7.5, fontweight="bold", color=INK)
-    ax.text(x + 3.0, Y0 + 18.7, "batch $M{=}2$: $g_0 + g_2$", ha="center",
+    ax.text(x + 4.6, Y0 + 18.3, "batch $M{=}2$: $g_2 + g_0$", ha="center",
             va="center", fontsize=6.2, color=MUTED)
+    ax.text(right3 + 0.7, orange_y + cell / 2, "$g_2$", ha="left",
+            va="center", fontsize=6.4, color=ORANGE, fontweight="bold")
+    ax.text(right3 + 0.7, blue_y + cell / 2, "$g_0$", ha="left",
+            va="center", fontsize=6.4, color=BLUE, fontweight="bold")
 
     # --- L = 2, batch M = 1 (group g1 green) ------------------------------- #
     green_y = Y0 + 3.0
-    row(green_y, 2, GREEN)
-    ax.text(x + 3.0, Y0 + 9.0, "length $L{=}2$", ha="center", va="center",
+    right2 = row(green_y, 2, GREEN)
+    # Keep the L=2 heading tight above its row so it reads as the label for
+    # this bucket, not as a continuation of the L=3 batch above it.
+    ax.text(x + 3.0, Y0 + 8.2, "length $L{=}2$", ha="center", va="center",
             fontsize=7.5, fontweight="bold", color=INK)
-    ax.text(x + 3.0, Y0 + 7.3, "batch $M{=}1$: $g_1$", ha="center",
+    ax.text(x + 3.0, Y0 + 6.5, "batch $M{=}1$: $g_1$", ha="center",
             va="center", fontsize=6.2, color=MUTED)
+    ax.text(right2 + 0.7, green_y + cell / 2, "$g_1$", ha="left",
+            va="center", fontsize=6.4, color=GREEN, fontweight="bold")
 
 
 def draw_output_tokens(ax, x):
@@ -206,8 +223,11 @@ def build() -> plt.Figure:
     # Stage 3: batched SDPA by equal length
     ax.text(64.5, head_y, "③ batched SDPA", ha="center", va="center",
             fontsize=8.0, fontweight="bold", color=INK)
-    ax.text(64.5, sub_y, "one call per length $L$, batch $M$", ha="center",
-            va="center", fontsize=6.8, color=MUTED)
+    ax.text(64.5, sub_y,
+            "bucketed primitives: one call per length $L$, batch $M$",
+            ha="center", va="center", fontsize=6.2, color=MUTED)
+    ax.text(64.5, sub_y - 1.7, "general cross-attn: loops per group",
+            ha="center", va="center", fontsize=6.2, color=MUTED)
     draw_batched_groups(ax, 58.0)
 
     # Stage 4: scatter back
@@ -220,14 +240,15 @@ def build() -> plt.Figure:
     # ---- inter-stage arrows (same y so the flow reads straight) ----------- #
     arrow(ax, (group_right + 0.6, ARROW_Y), (33.0, ARROW_Y))
     arrow(ax, (54.5, ARROW_Y), (57.0, ARROW_Y))
-    arrow(ax, (68.0, ARROW_Y), (83.0, ARROW_Y))
+    arrow(ax, (71.0, ARROW_Y), (83.0, ARROW_Y))
 
     # ---- right-hand side notes -------------------------------------------- #
-    box(ax, 104.0, Y0 + 17.0, 33.0, 9.5,
+    box(ax, 104.0, Y0 + 16.2, 33.0, 10.4,
         "Grouped SDPA primitives",
         "projected self-attn (bucketed)\n"
-        "general cross-attn (per-group loop) · pooling K $=$ V",
-        edge=FUSED, title_size=8.8, sub_size=6.1)
+        "general cross-attn (per-group loop)\n"
+        "channel-fusion pooling K=V; descriptor pooler projected",
+        edge=FUSED, title_size=8.8, sub_size=5.9)
 
     rrect(ax, 104.0, Y0 + 4.0, 33.0, 11.0, edge=LOSS, face=tint(LOSS, 0.92),
           lw=1.5, rounding=0.6)
@@ -242,20 +263,59 @@ def build() -> plt.Figure:
     ax.text(120.5, Y0 + 5.1, "fusion: groups = (sample, patch)", ha="center",
             va="center", fontsize=5.9, color=MUTED, style="italic")
 
-    # ---- legends (group ids are NOT channel identity) --------------------- #
+    # ---- glossary (compact notation + RoPE scope) ------------------------- #
+    rrect(ax, 104.0, 31.2, 33.0, 16.6, edge=MUTED, face="#FAFAFA",
+          lw=1.0, rounding=0.5)
+    ax.text(105.2, 46.6, "symbols / glossary", ha="left", va="center",
+            fontsize=7.0, fontweight="bold", color=INK)
+    glossary = [
+        "$T$ total real tokens ($=V$ elsewhere);  $D$ token dim",
+        "group $g_i$ = one independent attention set",
+        "$L$ group length;  $M$ batch of equal-length groups",
+        "encoder/decoder/pooler: 1 group per sample",
+        "fusion: 1 group per $(sample, patch)$ location",
+        "SDPA scaled dot-product attention;  $K/V$ keys/values",
+        "$\\mathtt{group\\_id}$ per-token id;  $\\mathtt{order}$ stable argsort",
+        "group colours = group IDs, not channel identity",
+        "default encoder: 2-D axial RoPE on q/k before grouping",
+        "(the primitive itself is unchanged)",
+    ]
+    gy = 44.5
+    for line in glossary:
+        ax.text(105.2, gy, line, ha="left", va="center",
+                fontsize=5.2, color=MUTED)
+        gy -= 1.35
+
+    # ---- legends (group colours are NOT channel identity) ----------------- #
     legend(ax, 2.0, 43.0,
-           [("$g_0$", BLUE, "fill"), ("$g_1$", GREEN, "fill"),
-            ("$g_2$", ORANGE, "fill")],
-           title="group IDs (not channels)", pitch=2.3, fontsize=6.6)
+           [("$g_0$", BLUE, "cross"), ("$g_1$", GREEN, "cross"),
+            ("$g_2$", ORANGE, "cross")],
+           title="group IDs (not channel identity)", pitch=2.3, fontsize=6.6)
     legend(ax, 52.0, 43.0,
            [("SDPA primitive", FUSED, "fill"),
             ("hard constraint", LOSS, "fill")],
            title="roles", pitch=2.3, fontsize=6.6)
 
+    # answer "what are the groups?" right beside the stage-1 group legend
+    note_x, note_y = 22.0, 42.6
+    ax.text(note_x, note_y, "what is a group?", ha="left", va="center",
+            fontsize=6.4, fontweight="bold", color=INK)
+    note_lines = [
+        "group = one independent attention set;",
+        "here $g_0, g_1, g_2$ are toy groups (not channels).",
+        "encoder/decoder/pooler: one group per sample;",
+        "fusion: one group per $(sample, patch)$ location.",
+    ]
+    ny = note_y - 2.1
+    for line in note_lines:
+        ax.text(note_x, ny, line, ha="left", va="center", fontsize=6.0,
+                color=MUTED)
+        ny -= 1.95
+
     # ---- footer note ------------------------------------------------------ #
     ax.text(2.0, 31.3,
-            "Grouped attention over ragged tokens: one group at a time, "
-            "$O(T)$ memory.",
+            "Grouped attention over ragged tokens: one equal-length batch at a time, "
+            "$O(T \\cdot D)$ working memory.",
             ha="left", va="center", fontsize=7.0, color=MUTED, style="italic")
 
     return fig

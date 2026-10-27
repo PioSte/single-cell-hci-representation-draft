@@ -1,15 +1,19 @@
 """L5 -- Dynamic Channel-Patch (DCP) masking as token omission.
 
-Shows the three DCP regions of ChA-MAEViT Eq. 1 -- patch (fixed count per
-channel via randperm), channel (whole channels via HCS: the number of
-*visible* channels is ``m ~ U{min_visible_channels..C}``, then a uniform
+Shows the three DCP regions of ChA-MAEViT Eq. 1 -- patch (a fixed count
+``floor(N_b * patch_ratio)`` masked per channel via randperm), channel (whole
+channels via HCS = Hierarchical Channel Sampling: the number of *visible*
+channels is ``m ~ U{min(min_visible_channels, C)..C}``, then a uniform
 ``m``-subset), and their union -- the safety guards (never mask every token,
-keep >= min(min_visible_channels, C) channels with content, resample rather
-than ever reveal a whole channel row), and the ragged token list before/after.
+keep >= min(min_visible_channels, C) channels with content, optional
+``max_masked_channels_frac`` cap, resample rather than ever reveal a whole
+channel row), and the ragged token list before/after.  The combined region
+requires ``p_patch + p_channel < 1``; at the defaults ``p_patch = p_channel =
+0.5`` the union is never sampled.
 
 Masked tokens are **omitted**: the dashed rows do not exist in the ragged
 ``[V, D]`` token list.  Omitted rows are absent from that list, and no ``-inf``
-attention mask is built.  The ``[C_b, N]`` boolean mask decides which rows
+attention mask is built.  The ``[C_b, N_b]`` boolean mask decides which rows
 exist.
 
 Usage::
@@ -33,7 +37,7 @@ import matplotlib.pyplot as plt
 from figure_style import (  # noqa: E402
     BLUE, GREEN, ORANGE, RED, INK, MUTED, CHANNEL_COLORS,
     TOKENIZER, LOSS, GHOST,
-    tint, rrect, arrow, edge_label, sq_bracket, panel_header,
+    tint, rrect, arrow, edge_label, sq_bracket_mirror, panel_header,
     install_rcparams, save_figure,
     legend, channel_legend, channel_color,
 )
@@ -58,7 +62,7 @@ def dim_bracket(ax, x0, x1, y, label, color=MUTED, tick=0.8, lw=1.0,
     if below:
         ax.plot([x0, x0], [y, y - tick], color=color, lw=lw, zorder=3)
         ax.plot([x1, x1], [y, y - tick], color=color, lw=lw, zorder=3)
-        ax.text((x0 + x1) / 2, y - tick - 0.9, label,
+        ax.text((x0 + x1) / 2, y - tick - 0.4, label,
                 ha="center", va="top", fontsize=6.8, color=color)
     else:
         ax.plot([x0, x0], [y, y + tick], color=color, lw=lw, zorder=3)
@@ -82,16 +86,19 @@ def draw_mask_grid(ax, x0, y0, C, N, mask, title, subtitle=""):
             visible = mask[c][n]
             edge = channel_color(c)
             # visible: tinted face, solid border.  masked: white face, dashed.
+            # visible (data) cells are crossed; masked cells stay dashed
+            # channel-coloured outlines so the omission still reads clearly.
             rrect(ax, x0 + n * PITCH, y0 - c * PITCH, CELL, CELL,
                   edge=edge,
                   face=("#FFFFFF" if not visible else tint(edge, 0.78)),
                   lw=1.5,
                   dashed=(not visible),
-                  rounding=0.3)
+                  rounding=0.3,
+                  crossed=visible)
 
     cx = x0 + (N - 1) * PITCH / 2 + CELL / 2
     top = y0 + CELL
-    ax.text(cx, top + 1.6, "$N$ patches",
+    ax.text(cx, top + 1.6, "$N_b$ patches",
             ha="center", va="bottom", fontsize=6.8, color=MUTED)
     ax.text(x0 - 1.8, y0 - (C - 1) * PITCH / 2 + CELL / 2, "$C_b$",
             ha="right", va="center", fontsize=6.8, color=MUTED)
@@ -122,14 +129,16 @@ def draw_ragged_tokens(ax, x0, y0, specs, label="", width=9.0):
               face=("#FFFFFF" if not visible else tint(color, 0.8)),
               lw=1.2,
               dashed=(not visible),
-              rounding=0.3)
+              rounding=0.3,
+              crossed=visible)
         if not visible:
             ax.text(x0 + width / 2, yy + h / 2, "omitted",
                     ha="center", va="center", fontsize=6.0,
                     color=LOSS, style="italic")
 
     top = y0 + (len(specs) - 1) * pitch + h
-    sq_bracket(ax, x0 + width + 0.8, y0, top)
+    # Bracket sits to the right of the stack, so mirror its ticks left.
+    sq_bracket_mirror(ax, x0 + width + 0.8, y0, top)
     if label:
         ax.text(x0 + width + 1.4, (y0 + top) / 2, label,
                 ha="left", va="center", fontsize=7.0, color=INK)
@@ -154,10 +163,27 @@ def build() -> plt.Figure:
     # ---- title ------------------------------------------------------------ #
     panel_header(ax, 2, 82, "L5", "Dynamic Channel-Patch masking (token omission)")
 
+    # ---- notation (top-right, above the guards panel) --------------------- #
+    nx = 76.0
+    ax.text(nx, 79.2, "symbols / glossary", ha="left", va="center",
+            fontsize=7.4, fontweight="bold", color=INK)
+    for i, line in enumerate([
+        "$D$ token dim  ·  $V$ visible tokens",
+        "$N$ / $N_b$ patches per channel (batch / sample $b$)",
+        "$C_b$ channels of sample $b$  ·  $r_p$ = patch_ratio",
+        "HCS = Hierarchical Channel Sampling",
+    ]):
+        ax.text(nx, 77.0 - i * 2.0, line, ha="left", va="center",
+                fontsize=6.5, color=MUTED)
+
     # ---- three regions section -------------------------------------------- #
     ax.text(2.0, 73.5,
             "DCP Eq. 1: patch, channel, or combined (= union) — one region per batch by default ($s \\sim \\mathcal{U}(0,1)$):",
             ha="left", va="center", fontsize=8.6, fontweight="bold", color=INK)
+    ax.text(2.0, 70.8,
+            "Defaults $p_{patch}=p_{channel}=0.5$: $s<1$ selects patch/channel; "
+            "combined needs $p_{patch}+p_{channel}<1$ (e.g. both $0$).",
+            ha="left", va="center", fontsize=7.0, color=LOSS, style="italic")
 
     # Channel mode: whole channels masked -> constant down the channel rows.
     mask_channel = [[True] * GRID_N for _ in range(GRID_C)]
@@ -167,8 +193,8 @@ def build() -> plt.Figure:
     x_ch = 4.0
     bot_ch = draw_mask_grid(ax, x_ch, GRID_Y0, GRID_C, GRID_N, mask_channel,
                             "Channel mode",
-                            "HCS: mask constant down each row\n"
-                            "$m$ visible channels, $m \\sim \\mathcal{U}\\{min\\_visible\\_channels,\\ldots,C\\}$\n"
+                            "HCS = Hierarchical Channel Sampling\n"
+                            "$m$ visible, $m \\sim \\mathcal{U}\\{\\min(min\\_visible\\_channels,C)..C\\}$\n"
                             "then a uniform $m$-subset")
 
     # Patch mode: independent spatial mask per channel.
@@ -185,10 +211,11 @@ def build() -> plt.Figure:
     bot_pt = draw_mask_grid(ax, x_pt, GRID_Y0, GRID_C, GRID_N, mask_patch,
                             "Patch mode",
                             "independent spatial mask\nper channel")
-    ax.text(x_pt + GRID_N * PITCH / 2 - 0.3, bot_pt - 2.8,
-            "$\\lfloor N \\cdot r_p \\rfloor$ per channel via randperm",
+    ax.text(x_pt + GRID_N * PITCH / 2 - 0.3, bot_pt - 2.0,
+            "$r_p$ = patch_ratio = 0.75 (default)\n"
+            "$\\lfloor N_b \\cdot r_p \\rfloor$ masked per channel via randperm",
             ha="center", va="center", fontsize=6.8, color=ORANGE,
-            style="italic")
+            style="italic", linespacing=1.4)
 
     # Combined region: patch mask OR channel mask (Eq. 1's union).
     mask_combined = [
@@ -200,13 +227,15 @@ def build() -> plt.Figure:
                             "Combined (union)",
                             "patch mask $\\cup$\nchannel mask")
     ax.text(x_cb + GRID_N * PITCH / 2 - 0.3, bot_cb - 2.8,
-            "masked channel-patches\nare decoder targets",
+            "masked channel-patches are decoder targets\n"
+            "combined requires $p_{patch}+p_{channel}<1$\n"
+            "not selected at defaults ($0.5+0.5=1$)",
             ha="center", va="center", fontsize=6.8, color=RED,
-            style="italic")
+            style="italic", linespacing=1.4)
 
     # ---- guards section (LOSS red: safety / never-zero warnings) ---------- #
     GUARD_X0 = 75.0
-    g_top, g_bot = 70.5, 42.0
+    g_top, g_bot = 70.0, 41.5
     rrect(ax, GUARD_X0, g_bot, PANEL_RIGHT - GUARD_X0, g_top - g_bot,
           edge=LOSS, face=tint(LOSS, 0.94), lw=1.3, dashed=False, rounding=0.7)
     gx = (GUARD_X0 + PANEL_RIGHT) / 2
@@ -219,7 +248,7 @@ def build() -> plt.Figure:
     ax.text(gx, g_top - 16.0,
             "\u2022 Keep \u2265 min(min_visible_channels, C)",
             ha="center", va="center", fontsize=7.4, color=INK)
-    ax.text(gx, g_top - 19.1, "channels with some content",
+    ax.text(gx, g_top - 19.1, "channels; cap max_masked_channels_frac",
             ha="center", va="center", fontsize=6.4, color=MUTED, style="italic")
     ax.text(gx, g_top - 23.4, "\u2022 Resample \u2264 10\u00d7; never reveal",
             ha="center", va="center", fontsize=6.8, color=INK)
@@ -231,15 +260,17 @@ def build() -> plt.Figure:
     stack_top = y_tokens + 7 * 3.5 + 2.7  # top row of an 8-row stack
 
     ax.text(2.0, 40.0,
-            "Token omission (masking \u2192 omitted rows):",
+            "Token omission (rows top\u2192bottom = channel $0 \\to C_b{-}1$, matching the grids):",
             ha="left", va="center", fontsize=8.8, fontweight="bold", color=INK)
 
     # Before masking: all tokens present.
+    # Channel 0 is the TOP row (matching the grids), so list order is reversed
+    # relative to the draw order (index 0 = bottom).
     specs_before = [
-        (CHANNEL_COLORS[0], True), (CHANNEL_COLORS[0], True),
-        (CHANNEL_COLORS[1], True), (CHANNEL_COLORS[1], True),
-        (CHANNEL_COLORS[2], True), (CHANNEL_COLORS[2], True),
         (CHANNEL_COLORS[3], True), (CHANNEL_COLORS[3], True),
+        (CHANNEL_COLORS[2], True), (CHANNEL_COLORS[2], True),
+        (CHANNEL_COLORS[1], True), (CHANNEL_COLORS[1], True),
+        (CHANNEL_COLORS[0], True), (CHANNEL_COLORS[0], True),
     ]
     x_before, width = 3.0, 9.0
     draw_ragged_tokens(ax, x_before, y_tokens, specs_before,
@@ -251,10 +282,10 @@ def build() -> plt.Figure:
 
     # After masking: some tokens omitted (dashed white, never zeroed).
     specs_after = [
-        (CHANNEL_COLORS[0], True), (CHANNEL_COLORS[0], True),
-        (CHANNEL_COLORS[1], False), (CHANNEL_COLORS[1], False),
-        (CHANNEL_COLORS[2], True), (CHANNEL_COLORS[2], False),
         (CHANNEL_COLORS[3], True), (CHANNEL_COLORS[3], True),
+        (CHANNEL_COLORS[2], False), (CHANNEL_COLORS[2], True),
+        (CHANNEL_COLORS[1], False), (CHANNEL_COLORS[1], False),
+        (CHANNEL_COLORS[0], True), (CHANNEL_COLORS[0], True),
     ]
     x_after = 28.0
     draw_ragged_tokens(ax, x_after, y_tokens, specs_after,
@@ -265,8 +296,8 @@ def build() -> plt.Figure:
                 below=True)
 
     # Arrow between the two stacks (above the shape label, clear of it).
-    arrow(ax, (13.5, 25.0), (27.0, 25.0), color=TOKENIZER, lw=2.0)
-    edge_label(ax, 20.25, 27.2, "apply mask", color=TOKENIZER)
+    arrow(ax, (13.5, 25.0), (27.0, 25.0), color=INK, lw=2.0)
+    edge_label(ax, 20.25, 27.2, "apply mask", color=INK)
 
     # ---- shipped implementation panel (omission only) --------------------- #
     e_top, e_bot = stack_top, y_tokens
@@ -284,7 +315,7 @@ def build() -> plt.Figure:
             "\u2022 omitted rows are absent; visible rows only are passed on",
             ha="left", va="center", fontsize=7.0, color=LOSS)
     ax.text(bx, e_top - 16.6,
-            "\u2022 the $[C_b, N]$ boolean mask",
+            "\u2022 the $[C_b, N_b]$ boolean mask",
             ha="left", va="center", fontsize=7.0, color=INK)
     ax.text(bx + 1.6, e_top - 20.0,
             "decides which rows exist",
@@ -294,20 +325,22 @@ def build() -> plt.Figure:
            fontsize=6.8, sw=1.5)
 
     # ---- legends (right-hand column) -------------------------------------- #
-    y_leg = legend(ax, LEG_X, 31.5,
-                   [("visible (kept)", BLUE, "fill"),
-                    ("masked (omitted)", LOSS, "omit")],
-                   title="token rows", pitch=2.6, sw=1.5, fontsize=6.6,
-                   title_size=7.0)
-    ax.text(LEG_X, y_leg - 1.4, "dashed row = omitted",
-            ha="left", va="center", fontsize=6.2, color=MUTED, style="italic")
+    legend(ax, LEG_X, 31.5,
+           [("visible: tinted solid fill", channel_color(0), "cross"),
+            ("masked: dashed channel outline", channel_color(0), "omit")],
+           title="channel-patch rows", pitch=2.6, sw=1.5, fontsize=6.6,
+           title_size=7.0)
     channel_legend(ax, LEG_X, 21.5, n=GRID_C, title="channel identity",
                    pitch=2.5, sw=1.5, fontsize=6.6, title_size=7.0)
 
     # ---- footnote --------------------------------------------------------- #
+    ax.text(2.0, 2.4,
+            "Code mode fallbacks (patch \u2194 channel \u2194 none for tiny $C$/$N$) and "
+            "last_modes record the region actually applied.",
+            ha="left", va="bottom", fontsize=7.2, color=MUTED, style="italic")
     ax.text(2.0, 0.8,
-            "DCP = Dynamic Channel-Patch masking. The $[C_b, N]$ boolean mask determines which tokens exist; "
-            "the ragged list is the only token container.",
+            "DCP = Dynamic Channel-Patch masking. The $[C_b, N_b]$ boolean mask determines which tokens exist; "
+            "masked tokens are omitted, never zeroed; the ragged list is the only token container.",
             ha="left", va="bottom", fontsize=7.2, color=MUTED, style="italic")
 
     return fig

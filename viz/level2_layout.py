@@ -3,7 +3,7 @@
 The hero figure: a left-to-right diagram of literal, axis-labelled array stacks
 in the Perceiver-IO Fig 2 / Perceiver Fig 1 idiom, showing where the variable
 channel count ``C`` appears (input ragged list length only) and how it is
-summed away by fusion to produce a fixed-size ``[B, N, D]`` joint embedding.
+summed away by fusion to produce a fixed-size ``[B, N, D]`` fused embedding.
 
 Shows:
 
@@ -106,8 +106,10 @@ def draw_input_images(ax):
     axis_text(ax, x + cw / 2, top + 1.6, "$1{\\times}H{\\times}W$", size=7.5)
     ax.text(x + cw / 2, y0 - 1.1, "input set", ha="center", va="center",
             fontsize=7.8, fontweight="bold", color=INK)
-    ax.text(x + cw / 2, y0 - 2.7, "$P{\\times}P$ patches $\\to N$", ha="center",
+    ax.text(x + cw / 2, y0 - 2.7, "$P{\\times}P$ patches $\\to N_b$", ha="center",
             va="center", fontsize=6.2, color=MUTED)
+    ax.text(x + cw / 2, y0 - 4.2, "tied kernel PI-resized to $p_b$",
+            ha="center", va="center", fontsize=6.0, color=GREEN)
 
 
 def _token_column(ax, x, w, h, pitch, n_rows, specs):
@@ -147,9 +149,15 @@ def draw_ragged_tokens(ax):
     axis_text(ax, x + w / 2, top + 1.6, "$D$", size=7.5)
     ax.text(x + w / 2, y0 - 1.1, "ragged tokens $[V,D]$", ha="center",
             va="center", fontsize=7.8, fontweight="bold", color=INK)
-    ax.text(x + w / 2, y0 - 2.7, "visible rows ($V\\leq\\Sigma C{\\cdot}N$) "
-            "$\\cdot$ schematic 3ch $\\times$ 3p", ha="center",
-            va="center", fontsize=6.0, color=MUTED, style="italic")
+    ax.text(x + w / 2, y0 - 2.6,
+            "full list $[\\sum_b C_b{\\cdot}N_b,D]$ $\\to$ DCP omits rows",
+            ha="center", va="center", fontsize=6.0, color=MUTED,
+            style="italic")
+    ax.text(x + w / 2, y0 - 4.0,
+            "visible $[V,D]$, $V\\leq\\sum_b C_b N_b$ "
+            "$\\cdot$ schematic 3ch $\\times$ 3p",
+            ha="center", va="center", fontsize=6.0, color=MUTED,
+            style="italic")
 
 
 def draw_omitted_callout(ax):
@@ -199,14 +207,14 @@ def draw_fused_grid(ax):
                             face=tint(FUSED, 0.76), lw=1.1, rounding=0.25, z=3)
 
     h_bracket(ax, x0, right, top + 0.6, color=MUTED, down=True)
-    axis_text(ax, (x0 + right) / 2, top + 1.6, "$N$", size=7.5)
+    axis_text(ax, (x0 + right) / 2, top + 1.6, "$N=\\max_b N_b$", size=7.0)
     sq_bracket(ax, x0 - 0.7, y0, top, color=MUTED, lw=1.1, tick=0.55)
     # Label sits low on the bracket so the incoming orange fusion arrow at
     # YMID does not run through it.
     axis_text(ax, x0 - 1.7, y0 + 0.22 * (top - y0), "$B$", rotation=90)
     axis_text(ax, right + 0.9, top - 0.5, "$D$", ha="left", size=7.5)
-    ax.text(right + 0.9, top - 2.0, "1 query\n$+$ post PE", ha="left",
-            fontsize=5.6, color=MUTED, linespacing=1.3)
+    ax.text(right + 0.9, top - 1.7, "no fusion PE", ha="left",
+            fontsize=5.6, color=FUSION)
     ax.text((x0 + right) / 2, y0 - 1.1, "fused $[B,N,D]$", ha="center",
             va="center", fontsize=7.8, fontweight="bold", color=INK)
 
@@ -220,32 +228,36 @@ def draw_encoder_memory(ax):
 
     for i in range(n_mem):
         rrect(ax, x, y0 + i * pitch, w, h, edge=MEMORY, face=tint(MEMORY, 0.80),
-              lw=1.2, rounding=0.3, z=3)
+              lw=1.2, rounding=0.3, z=3, crossed=True)
     for i in range(n_vis):
         rrect(ax, x, y0 + (n_mem + i) * pitch, w, h, edge=FUSED,
-              face=tint(FUSED, 0.80), lw=1.2, rounding=0.3, z=3)
+              face=tint(FUSED, 0.80), lw=1.2, rounding=0.3, z=3, crossed=True)
     top = y0 + (n - 1) * pitch + h
 
     # ENCODER-tinted dashed module frame so the role colour reads.
     rrect(ax, x - 0.4, y0 - 0.6, w + 0.9, (top - y0) + 1.2, edge=ENCODER,
           face="none", lw=1.4, dashed=True, rounding=0.6, z=2)
 
-    h_bracket(ax, x, x + w, top + 1.3, color=MUTED, down=True)
-    axis_text(ax, x + w / 2, top + 2.2, "$D$", size=7.5)
+    h_bracket(ax, x, x + w, top + 0.7, color=MUTED, down=True)
+    axis_text(ax, x + w + 0.7, top + 0.7, "$D$", ha="left", size=7.5)
 
     # module title / role sits above the frame, clear of the flow arrows
-    ax.text(x + w / 2, top + 4.6, "encoder $\\cdot$ TransformerEncoder",
+    ax.text(x + w / 2, top + 4.5, "encoder $\\cdot$ TransformerEncoder",
             ha="center", va="center", fontsize=7.8, fontweight="bold",
             color=INK)
-    ax.text(x + w / 2, top + 3.35, "$+M$ memory tokens $\\cdot\\ \\times L$ blocks",
-            ha="center", va="center", fontsize=6.3, color=ENCODER)
+    ax.text(x + w / 2, top + 3.0,
+            "$+M$ memory tokens $\\cdot\\ \\times L$ blocks $\\cdot$ "
+            "2-D axial RoPE (norm. $r,c$; memory $=$ 0 rot)",
+            ha="center", va="center", fontsize=5.9, color=ENCODER)
+    ax.text(x + w / 2, top + 1.9,
+            "scale cond.: Fourier$(\\log p_b,\\ \\log\\,\\mu m/px,\\ has_\\mu)$ "
+            "added to encoder tokens",
+            ha="center", va="center", fontsize=5.9, color=MUTED)
 
     mem_top = y0 + (n_mem - 1) * pitch + h
     sq_bracket(ax, x - 1.0, y0, mem_top, color=MEMORY, lw=1.1, tick=0.55)
     axis_text(ax, x - 2.1, (y0 + mem_top) / 2, "$B{\\cdot}M$", color=MEMORY,
               rotation=90, size=7.0)
-    ax.text(x + w + 1.2, (y0 + mem_top) / 2, "$M$", ha="left", va="center",
-            fontsize=6.8, color=MEMORY)
 
     vis_y0 = y0 + n_mem * pitch
     sq_bracket(ax, x - 1.0, vis_y0, top, color=FUSED, lw=1.1, tick=0.55)
@@ -263,7 +275,7 @@ def draw_decoder_targets(ax):
     # -- target queries ----------------------------------------------------- #
     for i in range(n):
         rrect(ax, x, y0 + i * pitch, w, h, edge=VIOLET, face=tint(VIOLET, 0.82),
-              lw=1.2, rounding=0.3, z=3)
+              lw=1.2, rounding=0.3, z=3, crossed=True)
     sq_bracket(ax, x - 0.7, y0, top, color=MUTED, lw=1.1, tick=0.55)
     # row-axis label sits low on the bracket, clear of the incoming dec arrow
     axis_text(ax, x - 1.7, y0 + 0.22 * (top - y0), "$K_t$", rotation=90)
@@ -271,6 +283,9 @@ def draw_decoder_targets(ax):
     axis_text(ax, x + w / 2, top + 1.6, "$D$", size=7.5)
     ax.text(x + w / 2, y0 - 1.1, "targets", ha="center", va="center",
             fontsize=7.8, fontweight="bold", color=INK)
+    ax.text(x + w / 2, y0 - 2.5,
+            "mask token $+$ fractional PE $+$ channel embed",
+            ha="center", va="center", fontsize=5.9, color=VIOLET)
 
     # -- arrow queries -> predictions --------------------------------------- #
     px, pw = 90.5, 7.0
@@ -279,13 +294,16 @@ def draw_decoder_targets(ax):
     # -- predictions -------------------------------------------------------- #
     for i in range(n):
         rrect(ax, px, y0 + i * pitch, pw, h, edge=VIOLET,
-              face=tint(VIOLET, 0.82), lw=1.2, rounding=0.3, z=3)
+              face=tint(VIOLET, 0.82), lw=1.2, rounding=0.3, z=3, crossed=True)
     sq_bracket_mirror(ax, px + pw + 0.7, y0, top, color=MUTED, lw=1.1, tick=0.55)
     axis_text(ax, px + pw + 1.9, (y0 + top) / 2, "$K_t$", rotation=90)
     h_bracket(ax, px, px + pw, top + 0.6, color=MUTED, down=True)
-    axis_text(ax, px + pw / 2, top + 1.6, "$P^2$", size=7.5)
+    axis_text(ax, px + pw / 2, top + 1.6, "$p_b^2$", size=7.5)
     ax.text(px + pw / 2, y0 - 1.1, "predictions", ha="center", va="center",
             fontsize=7.8, fontweight="bold", color=INK)
+    ax.text(px + pw / 2, y0 - 2.5,
+            "head: canonical $c^2$ $\\to$ bilinear resize $p_b^2$",
+            ha="center", va="center", fontsize=5.9, color=VIOLET)
 
 
 def draw_inference_pooled(ax):
@@ -295,7 +313,7 @@ def draw_inference_pooled(ax):
     y0 = 5.6
     for i in range(B):
         rrect(ax, x, y0 + i * pitch, w, h, edge=POOL, face=tint(POOL, 0.78),
-              lw=1.1, rounding=0.25, z=3)
+              lw=1.1, rounding=0.25, z=3, crossed=True)
     top = y0 + (B - 1) * pitch + h
 
     sq_bracket(ax, x - 0.7, y0, top, color=MUTED, lw=1.1, tick=0.55)
@@ -311,10 +329,10 @@ def draw_inference_pooled(ax):
     enc_y0 = YMID - ((3 + 4 - 1) * enc_pitch + enc_h) / 2.0
     vis_y0 = enc_y0 + 3 * enc_pitch
     # Start inside the bottom blue content row (not at the memory boundary).
-    start = (enc_x + enc_w, vis_y0 + 1.45)
+    start = (enc_x + enc_w, vis_y0 + 1.0)
     end = (x + w + 0.35, top - 1.0)
     arrow(ax, start, end, color=POOL, lw=1.4, dashed=True, rad=0.30)
-    ax.text(77.0, 20.0, "pooler(tok_out)\ncontent only", ha="left",
+    ax.text(75.5, 20.8, "pooler(tok_out)\ncontent only", ha="left",
             va="center", fontsize=6.0, color=POOL, style="italic",
             linespacing=1.25)
 
@@ -327,10 +345,52 @@ def draw_inference_pooled(ax):
 
 
 def draw_ghost_padded(ax):
-    """The ghost [B, C_max, N, D] tensor that is never materialised."""
+    """The ghost [B, C_max, N, D] tensor that is never allocated/built."""
     padded_ghost(ax, 2.2, 2.2, 12.8, 7.6,
                  shape="$[B,\\,C_{\\max},\\,N,\\,D]$",
-                 note="never materialised", color=MUTED, z=1)
+                 note="", color=MUTED, z=1)
+    # Explicit definition: this is a dashed *padded* tensor, not a real buffer.
+    ax.text(3.0, 3.9,
+            "ghost: a padded $[B,C_{\\max},N,D]$\n"
+            "tensor, never allocated or built",
+            ha="left", va="center", fontsize=5.5, color=MUTED, style="italic",
+            linespacing=1.35, zorder=6,
+            bbox=dict(boxstyle="round,pad=0.22", facecolor="white",
+                      edgecolor="none", alpha=0.92))
+
+
+def draw_glossary(ax):
+    """Compact symbol glossary for every axis label used in the figure."""
+    ax.text(73.5, 17.2, "symbols / glossary", ha="left", va="center",
+            fontsize=6.6, fontweight="bold", color=INK)
+    left = [
+        ("$B$", "batch size"),
+        ("$C_b$", "channels in sample $b$"),
+        ("$\\Sigma C$", "total channels in batch"),
+        ("$N_b$", "patches / channel, sample $b$"),
+        ("$N$", "$\\max_b N_b$ (fused grid)"),
+        ("$D$", "token / embedding dim"),
+        ("$M$", "memory tokens per sample"),
+        ("$V$", "visible tokens ($\\leq\\sum_b C_b N_b$)"),
+    ]
+    right = [
+        ("$K_f$", "present $(b,n)$ locations"),
+        ("$K_t$", "decoder targets (masked)"),
+        ("$P$ / $p_b$", "canonical / runtime patch"),
+        ("$c,\\,z_c$", "channel idx / additive embed"),
+        ("PMA", "single-query attention pool"),
+        ("RoPE", "2-D axial rotary PE"),
+        ("PI-resize", "FlexiViT kernel resize to $p_b$"),
+        ("DCP", "row-omitting mask sampler"),
+    ]
+    pitch = 1.55
+    for col_x, entries in ((73.5, left), (88.0, right)):
+        for i, (sym, meaning) in enumerate(entries):
+            y = 15.8 - i * pitch
+            ax.text(col_x, y, sym, ha="left", va="center", fontsize=5.2,
+                    color=INK, fontweight="bold")
+            ax.text(col_x + 4.2, y, meaning, ha="left", va="center",
+                    fontsize=5.1, color=MUTED)
 
 
 def draw_legends(ax):
@@ -339,13 +399,13 @@ def draw_legends(ax):
         ax, 27.0, 16.3,
         [("tokenizer patch embed", GREEN, "fill"),
          ("channel fusion", FUSION, "fill"),
-         ("spatial transformer", ENCODER, "fill"),
-         ("memory / register tokens", MEMORY, "fill"),
-         ("fused tokens $[B,N,D]$", FUSED, "fill"),
-         ("descriptor pool $[B,D]$", POOL, "fill"),
+         ("encoder (TransformerEncoder)", ENCODER, "fill"),
+         ("memory / register tokens", MEMORY, "cross"),
+         ("fused tokens $[B,N,D]$", FUSED, "cross"),
+         ("descriptor pool $[B,D]$", POOL, "cross"),
          ("decoder / targets", VIOLET, "fill"),
          ("omitted row (masked)", LOSS, "omit")],
-        title="module roles", pitch=1.62, sw=1.05, fontsize=6.0,
+        title="roles & data tensors", pitch=1.62, sw=1.05, fontsize=6.0,
         title_size=6.6, label_gap=0.95,
     )
     channel_legend(
@@ -354,13 +414,13 @@ def draw_legends(ax):
         pitch=1.62, sw=1.05, fontsize=6.0, title_size=6.6, label_gap=0.95,
     )
 
-    ax.text(48.0, 20.4,
-            "Channel count $C$ lives only in the input length $\\Sigma C{\\cdot}N$.\n"
-            "Fusion pools the visible channel tokens at each $(b,n)$ with one\n"
-            "shared learned query: $O(C{\\cdot}D)+D^2$ per location\n"
-            "(plus the output projection), then adds the post-fusion PE.\n"
-            "Output is fixed-size $[B,N,D]$;\n"
-            "only visible rows are used; no zeroed placeholders.",
+    ax.text(48.0, 20.3,
+            "Channel count $C$ lives only in the input length $\\sum_b C_b{\\cdot}N_b$.\n"
+            "Fusion pools the visible channel tokens at each present $(b,n)$ with\n"
+            "one shared learned query: $O(C{\\cdot}D)+D^2$ per location; no fusion PE.\n"
+            "Only $fused[present]\\to[K_f,D]$ reaches the encoder; the zero-initialised\n"
+            "absent rows in $[B,N,D]$ are dropped, never encoded.\n"
+            "Output is fixed-size $[B,N,D]$, independent of $C$.",
             ha="center", va="center", fontsize=6.0, color=MUTED, style="italic",
             linespacing=1.35,
             bbox=dict(boxstyle="round,pad=0.5", facecolor="white",
@@ -383,7 +443,7 @@ def build() -> plt.Figure:
             fontweight="bold", color=INK)
     ax.text(5.5, 47.8,
             "Tensor layout: literal array stacks with axis labels (Perceiver-IO Fig 2 idiom)",
-            ha="left", va="center", fontsize=11.5, fontweight="bold", color=INK)
+            ha="left", va="center", fontsize=12.2, fontweight="bold", color=INK)
     ax.text(1, 45.0,
             "The output shape is independent of the channel count $C$. "
             "Omitted rows are absent from the ragged list (dashed); the ragged list is the only token container.",
@@ -400,18 +460,26 @@ def build() -> plt.Figure:
     draw_inference_pooled(ax)
     draw_ghost_padded(ax)
     draw_legends(ax)
+    draw_glossary(ax)
 
     # ---- main dataflow arrows (all on the shared centre line) ------------- #
     arrow(ax, (6.9, YMID), (11.1, YMID), lw=1.5, color=GREEN)
     edge_label(ax, 9.0, YMID + 1.4, "embed", size=6.5, color=GREEN)
 
+    # grouping / reindexing operation: same tokens, regrouped by (b, n)
     arrow(ax, (21.0, YMID), (25.1, YMID), lw=1.5)
+    ax.text(22.6, YMID + 2.9,
+            "group by\n$(b,n)$\nlocation\n(same tokens)",
+            ha="center", va="center", fontsize=5.8, color=INK,
+            linespacing=1.25, zorder=7,
+            bbox=dict(boxstyle="round,pad=0.16", facecolor="white",
+                      edgecolor="none", alpha=0.9))
 
     arrow(ax, (35.0, YMID), (42.1, YMID), lw=1.5, color=FUSION)
     edge_label(ax, 38.5, YMID + 1.4, "channel\nfusion", size=6.5, color=FUSION)
 
-    arrow(ax, (56.2, YMID), (62.0, YMID), lw=1.5)
-    edge_label(ax, 58.8, YMID + 1.4, "enc", size=6.5)
+    arrow(ax, (56.2, YMID), (61.0, YMID), lw=1.5)
+    edge_label(ax, 58.6, YMID + 1.4, "enc", size=6.5)
 
     arrow(ax, (72.4, YMID), (77.6, YMID), lw=1.5, color=VIOLET)
     edge_label(ax, 75.0, YMID + 1.4, "dec", size=6.5, color=VIOLET)

@@ -35,8 +35,8 @@ import matplotlib.pyplot as plt
 from figure_style import (  # noqa: E402
     BLUE, GREEN, ORANGE, RED, PURPLE, VIOLET, INK, MUTED, CHANNEL_COLORS,
     TOKENIZER, FUSION, ENCODER, DECODER, MEMORY, LOSS, FUSED, POOL, GHOST,
-    tint, rrect, box, arrow, edge_label, sq_bracket, token_rows, channel_color,
-    install_rcparams, save_figure, role_legend, channel_legend,
+    tint, rrect, box, arrow, edge_label, sq_bracket_mirror, token_rows,
+    channel_color, install_rcparams, save_figure, legend, channel_legend,
 )
 
 OUT = Path(__file__).resolve().parent / "out"
@@ -73,7 +73,7 @@ def draw_channel_patches(ax, x=6.5, y0=47.5, w=9.0):
     token_rows(ax, x, y0, w, H, PITCH, specs)
     vis_bot = y0 + 1 * PITCH
     vis_top = y0 + 4 * PITCH + H
-    sq_bracket(ax, x + w + 1.0, vis_bot, vis_top)
+    sq_bracket_mirror(ax, x + w + 1.0, vis_bot, vis_top)
     ax.text(x + w / 2, vis_top + 3.6, "$[V, D]$ visible",
             ha="center", va="center", fontsize=7.4, color=INK,
             fontweight="bold")
@@ -82,7 +82,7 @@ def draw_channel_patches(ax, x=6.5, y0=47.5, w=9.0):
     # DCP omission sits below the dashed row, fully outside the [V, D] bracket.
     ax.text(x + w / 2, y0 + H / 2 - 3.2,
             "DCP omission\n(from $\\Sigma C\\cdot N$)",
-            ha="center", va="center", fontsize=5.4, color=LOSS,
+            ha="center", va="center", fontsize=6.0, color=LOSS,
             fontweight="bold", linespacing=1.2)
 
 
@@ -90,7 +90,7 @@ def draw_fused_locations(ax, x=23.0, y0=51.3, w=9.0):
     """Encoder input: [Kf, D] channel-agnostic fused location tokens (FUSED)."""
     specs = [(FUSED, False)] * 4
     top = token_rows(ax, x, y0, w, H, PITCH, specs)
-    sq_bracket(ax, x + w + 1.0, y0, top)
+    sq_bracket_mirror(ax, x + w + 0.5, y0, top)
     ax.text(x + w / 2, top + 2.4, "$[K_f, D]$ fused locations",
             ha="center", va="center", fontsize=7.4, color=INK,
             fontweight="bold")
@@ -101,34 +101,40 @@ def draw_memory(ax, x=6.5, y0=35.5, w=9.0):
     """Fixed memory tokens [B·M, D] (MEMORY gold)."""
     specs = [(MEMORY, False), (MEMORY, False)]
     top = token_rows(ax, x, y0, w, H, PITCH, specs)
-    sq_bracket(ax, x + w + 1.0, y0, top)
+    sq_bracket_mirror(ax, x + w + 1.0, y0, top)
     ax.text(x + w / 2, y0 - 2.7, "$[B{\\cdot}M, D]$ memory", ha="center",
             va="center", fontsize=7.4, color=INK, fontweight="bold")
     return top
 
 
 def draw_enc_all(ax, x=54.5, y0=41.0, w=10.0):
-    """Decoder KV: [B·M + Kf + B, D] = memory-out, fused token-out, descriptor."""
+    """Decoder KV: ``enc_all = cat([mem_out, tok_out, desc])``.
+
+    ``token_rows`` draws bottom-up, so the specs are listed bottom-to-top to
+    give the same top-to-bottom order as the code: memory-out on top, then the
+    visible fused ``tok_out``, then the descriptor at the bottom.
+    """
     specs = [
-        (MEMORY, False), (MEMORY, False),
-        (FUSED, False), (FUSED, False), (FUSED, False), (FUSED, False),
-        (POOL, False),
+        (POOL, False),                                                  # desc [B, D]
+        (FUSED, False), (FUSED, False), (FUSED, False), (FUSED, False),  # tok_out [Kf, D]
+        (MEMORY, False), (MEMORY, False),                               # mem_out [B·M, D]
     ]
     top = token_rows(ax, x, y0, w, H, PITCH, specs)
-    sq_bracket(ax, x + w + 1.0, y0, top)
+    sq_bracket_mirror(ax, x + w + 1.0, y0, top)
     ax.text(x + w / 2, top + 2.4, "$[B{\\cdot}M + K_f + B, D]$", ha="center",
             va="center", fontsize=7.2, color=INK, fontweight="bold")
-    # Row-group labels on the left, centred on their actual row bands.
-    ax.text(x - 1.2, y0 + 0.5 * PITCH + H / 2, "mem (M)", ha="right",
-            va="center", fontsize=5.8, color=MEMORY)
-    ax.text(x - 1.2, y0 + 3.5 * PITCH + H / 2, "vis ($K_f$)", ha="right",
-            va="center", fontsize=5.8, color=FUSED)
-    ax.text(x - 1.2, y0 + 6.0 * PITCH + H / 2, "desc (B)", ha="right",
-            va="center", fontsize=5.8, color=POOL)
+    # Row-group labels on the right, centred on their actual row bands.
+    # Top band = memory-out, middle = visible fused tokens, bottom = descriptor.
+    ax.text(x + w + 1.2, y0 + 5.5 * PITCH + H / 2, "mem ($M$)", ha="left",
+            va="center", fontsize=6.1, color=MEMORY, zorder=5)
+    ax.text(x + w + 1.2, y0 + 2.5 * PITCH + H / 2, "vis ($K_f$)", ha="left",
+            va="center", fontsize=6.1, color=FUSED, zorder=5)
+    ax.text(x + w + 1.2, y0 + 0.5 * PITCH + H / 2, "desc ($B$)", ha="left",
+            va="center", fontsize=6.1, color=POOL, zorder=5)
     # Descriptor provenance: the pooler reads content tokens only.
     ax.text(x + w / 2, y0 - 3.0,
             "desc $=$ PMA pooler($\\mathrm{tok}_{out}$), content tokens only",
-            ha="center", va="center", fontsize=5.9, color=POOL, style="italic")
+            ha="center", va="center", fontsize=6.1, color=POOL, style="italic")
     return top
 
 
@@ -140,13 +146,15 @@ def draw_target_queries(ax, x=84.0, y0=51.0, w=12.0):
     """
     specs = [(FUSED, False)] * 3
     top = token_rows(ax, x, y0, w, H, PITCH, specs)
-    sq_bracket(ax, x + w + 1.0, y0, top)
+    sq_bracket_mirror(ax, x + w + 1.0, y0, top)
     ax.text(x + w / 2, top + 2.4, "$[K_t, D]$ queries", ha="center", va="center",
             fontsize=7.6, color=INK, fontweight="bold")
-    # Query recipe (decoder.py): mask_token + fractional_pe(r,c) + target_proj(z_c)
-    ax.text(x + w / 2 - 2.0, y0 - 3.0,
-            r"$q = \mathrm{mask} + \mathrm{fracPE}(r,c) + W z_c$",
-            ha="center", va="center", fontsize=6.8, color=MUTED, style="italic")
+    # Query recipe (decoder.py): mask + fracPE + target_proj(chan_emb + scale_emb)
+    ax.text(x + w / 2, top + 6.0,
+            r"$q = \mathrm{mask} + \mathrm{fracPE}(r,c,g_h,g_w)$" "\n"
+            r"$+\, \mathrm{target\_proj}(\mathrm{chan\_emb} + \mathrm{scale\_emb})$",
+            ha="center", va="center", fontsize=6.2, color=MUTED,
+            style="italic", linespacing=1.3)
     return top
 
 
@@ -154,7 +162,8 @@ def draw_predictions(ax, x=123.0, y0=48.0, w=15.0):
     """Decoder predictions [Kt, P²] -- DECODER violet."""
     specs = [(DECODER, False)] * 3
     top = token_rows(ax, x, y0, w, H, PITCH, specs)
-    ax.text(x + w / 2, top + 2.4, "$[K_t, P^2]$ predictions", ha="center",
+    sq_bracket_mirror(ax, x + w + 1.0, y0, top)
+    ax.text(x + w / 2, top + 2.4, "$[K_t, p^2]$ predictions", ha="center",
             va="center", fontsize=6.9, color=INK, fontweight="bold")
     return top
 
@@ -170,7 +179,8 @@ def draw_targets(ax, x=123.0, y0=31.0, w=15.0):
         (channel_color(0), False),
     ]
     top = token_rows(ax, x, y0, w, H, PITCH, specs)
-    ax.text(x + w / 2, top + 1.8, "$[K_t, P^2]$ targets", ha="center",
+    sq_bracket_mirror(ax, x + w + 1.0, y0, top)
+    ax.text(x + w / 2, top + 1.8, "$[K_t, p^2]$ targets", ha="center",
             va="center", fontsize=7.6, color=INK, fontweight="bold")
     return top
 
@@ -209,22 +219,33 @@ def build() -> plt.Figure:
             color=DECODER)
 
     # ---- encoder pathway -------------------------------------------------- #
-    draw_channel_patches(ax, x=6.5, y0=47.5)
-    draw_memory(ax, x=6.5, y0=35.5)
-    draw_fused_locations(ax, x=23.0, y0=51.3)
-    draw_enc_all(ax, x=54.5, y0=41.0)
+    draw_channel_patches(ax, x=5.0, y0=47.5)
+    draw_memory(ax, x=5.0, y0=35.5)
+    draw_fused_locations(ax, x=23.2, y0=51.3)
+    draw_enc_all(ax, x=57.0, y0=41.0)
 
     # Channel fusion: pool the [V, D] ragged list per (b, n) -> [Kf, D] fused.
-    arrow(ax, (17.4, 58.5), (23.0, 58.5), color=FUSION, lw=1.5)
+    # Readable stage label sits in the open corridor between the two stacks,
+    # just below the orange arrow (replaces the old unreadable tiny box).
+    arrow(ax, (15.5, 58.5), (23.2, 58.5), color=FUSION, lw=1.5)
+    ax.text(18.5, 57.7, "Channel fusion\n1 query / $(b,n)$\nno PE",
+            ha="center", va="top", fontsize=5.3, color=FUSION,
+            fontweight="bold", linespacing=1.3, zorder=7,
+            bbox=dict(boxstyle="round,pad=0.1", facecolor="white",
+                      edgecolor=FUSION, linewidth=0.7, alpha=0.95))
 
     # Encoder module (TransformerEncoder) -- ENCODER role colour.
-    box(ax, 36.5, 45.0, 15.0, 20.0, "TransformerEncoder",
-        "grouped self-attn\n$\\times L_e$ blocks", edge=ENCODER, sub_size=6.6)
+    box(ax, 34.0, 44.0, 21.0, 22.0, "TransformerEncoder",
+        "grouped self-attn $\\times L_e$\n"
+        "2-D axial RoPE on norm $(r,c)$\n"
+        "mem 0 rot $\\cdot$ $+M$ memory\n"
+        "add scale Fourier($\\log p$, $\\log\\,\\mu$m/px)",
+        edge=ENCODER, sub_size=6.0)
 
     # Visible fused tokens + memory feed the encoder; encoder -> enc_all.
-    arrow(ax, (33.8, 53.5), (36.5, 53.5), color=FUSED, lw=1.5)
-    arrow(ax, (16.5, 41.0), (36.5, 48.0), color=MEMORY, lw=1.5)
-    arrow(ax, (51.5, 52.0), (54.5, 52.0), color=ENCODER, lw=1.5)
+    arrow(ax, (32.8, 53.5), (34.0, 53.5), color=FUSED, lw=1.5)
+    arrow(ax, (14.0, 42.0), (34.0, 48.0), color=MEMORY, lw=1.5)
+    arrow(ax, (55.0, 53.85), (57.0, 53.85), color=ENCODER, lw=1.5)
 
     # ---- decoder pathway -------------------------------------------------- #
     draw_target_queries(ax, x=84.0, y0=51.0)
@@ -237,31 +258,42 @@ def build() -> plt.Figure:
     arrow(ax, (97.8, 56.0), (101.0, 56.0), color=DECODER, lw=1.5)
 
     # enc_all -> decoder cross-attention bus (keys = values = enc_all).
-    ax.plot([66.0, 98.0], [43.0, 43.0], color=ENCODER, lw=1.2,
+    ax.plot([68.0, 98.0], [43.0, 43.0], color=ENCODER, lw=1.2,
             linestyle="--", zorder=4)
     ax.plot([98.0, 98.0], [43.0, 48.0], color=ENCODER, lw=1.2,
             linestyle="--", zorder=4)
     arrow(ax, (98.0, 48.0), (101.0, 48.0), color=ENCODER, lw=1.2, dashed=True)
-    edge_label(ax, 81.0, 45.3, "keys / values: mem + tokens + desc",
-               color=ENCODER, size=6.2, ha="left")
+    ax.text(76.0, 44.7, "keys / values: mem + tokens + desc",
+            ha="left", va="center", fontsize=6.2, color=ENCODER, zorder=7,
+            bbox=dict(boxstyle="round,pad=0.2", facecolor="white",
+                      edgecolor="none", alpha=0.9))
 
     # decoder -> head -> predictions (routed clear of the labels).
-    box(ax, 123.0, 65.5, 16.0, 8.0, "Head",
-        "$\\mathrm{Linear}(D, P^2)$", edge=DECODER, title_size=7.6,
-        sub_size=6.4)
-    ax.plot([118.0, 120.5], [63.0, 63.0], color=DECODER, lw=1.4, zorder=4)
-    ax.plot([120.5, 120.5], [63.0, 69.5], color=DECODER, lw=1.4, zorder=4)
-    arrow(ax, (120.5, 69.5), (123.0, 69.5), color=DECODER, lw=1.5)
+    box(ax, 120.0, 64.0, 26.0, 11.0, "Head",
+        "$\\mathrm{Linear}(D, c^2)$\n"
+        "$\\rightarrow$ bilinear resize $\\rightarrow$ $[K_t, p^2]$",
+        edge=DECODER, title_size=7.6, sub_size=6.0)
+    arrow(ax, (118.0, 65.5), (120.0, 65.5), color=DECODER, lw=1.5)
+    # show the resize step on the short head->predictions arrow
+    arrow(ax, (130.5, 64.0), (130.5, 62.3), color=DECODER, lw=1.5)
+    ax.text(131.5, 63.15, "resize", ha="left", va="center", fontsize=6.0,
+            color=DECODER, zorder=7,
+            bbox=dict(boxstyle="round,pad=0.15", facecolor="white",
+                      edgecolor="none", alpha=0.9))
 
     draw_predictions(ax, x=123.0, y0=48.0)
-    arrow(ax, (137.5, 65.5), (137.5, 58.5), color=DECODER, lw=1.5)
+    ax.text(130.5, 46.5,
+            "mixed $p$: padded $[K_t, \\max p^2]$ + validity mask",
+            ha="center", va="center", fontsize=6.0, color=MUTED,
+            style="italic")
 
     # ---- targets (raw pixels) -------------------------------------------- #
     draw_targets(ax, x=123.0, y0=31.0)
 
     # Short, light route: targets are the raw pixels of the masked patches.
-    arrow(ax, (80.5, 37.5), (123.0, 37.5), color=GHOST, lw=1.0, dashed=True)
-    ax.text(101.0, 39.8, "target = raw pixels of masked channel-patches",
+    ax.plot([DFRAME_X0], [36.25], marker="o", ms=3.0, color=GHOST, zorder=4)
+    arrow(ax, (DFRAME_X0, 36.25), (123.0, 36.25), color=GHOST, lw=1.0, dashed=True)
+    ax.text(101.0, 39.0, "target = raw pixels of masked channel-patches",
             ha="center", va="center", fontsize=6.8, color=MUTED, style="italic")
 
     # ---- loss ------------------------------------------------------------- #
@@ -270,7 +302,7 @@ def build() -> plt.Figure:
         edge=LOSS, title_size=7.6, sub_size=6.0)
 
     # predictions -> loss (right), targets -> loss (top), merged at the box.
-    ax.plot([138.0, 149.0, 149.0], [53.0, 53.0, 17.5], color=DECODER, lw=1.3,
+    ax.plot([139.0, 149.0, 149.0], [53.0, 53.0, 17.5], color=DECODER, lw=1.3,
             zorder=4)
     arrow(ax, (149.0, 17.5), (142.0, 17.5), color=LOSS, lw=1.5)
     ax.plot([130.5, 130.5], [31.0, 24.5], color=GHOST, lw=1.3, linestyle="--",
@@ -282,16 +314,18 @@ def build() -> plt.Figure:
             color=MUTED)
 
     # ---- role + channel legends (empty lower-left) ------------------------ #
-    role_legend(
+    # Module roles stay plain; data tensors use crossed swatches; omitted rows
+    # keep the dashed-white swatch (never zeroed).
+    legend(
         ax, 3.0, 27.0,
         [
-            ("channel fusion", FUSION),
-            ("spatial encoder", ENCODER),
-            ("channel-aware decoder", DECODER),
-            ("memory tokens", MEMORY),
-            ("objective / omitted rows", LOSS),
-            ("fused joint tokens", FUSED),
-            ("content descriptor", POOL),
+            ("channel fusion", FUSION, "fill"),
+            ("encoder (TransformerEncoder)", ENCODER, "fill"),
+            ("channel-aware decoder", DECODER, "fill"),
+            ("memory tokens", MEMORY, "cross"),
+            ("objective / omitted rows", LOSS, "omit"),
+            ("fused tokens", FUSED, "cross"),
+            ("content descriptor", POOL, "cross"),
         ],
         title="module roles", pitch=1.9, sw=1.4, fontsize=6.0,
     )
@@ -299,6 +333,35 @@ def build() -> plt.Figure:
         ax, 39.0, 25.5, n=len(CHANNEL_COLORS), title="channel identity",
         pitch=2.2, sw=1.4, fontsize=6.2,
     )
+
+    # ---- compact symbol glossary (empty lower-right area) ---------------- #
+    rrect(ax, 82.0, 9.0, 33.0, 17.0, edge=GHOST, face=tint(GHOST, 0.95),
+          lw=1.1, dashed=True, rounding=0.5, z=2)
+    ax.text(83.0, 24.6, "symbols / glossary", ha="left", va="center",
+            fontsize=6.4, fontweight="bold", color=INK, zorder=4)
+    ax.text(83.0, 22.2,
+            "B  batch size\n"
+            "C  channels\n"
+            "$\\Sigma C$ total channels\n"
+            "N  patches / channel\n"
+            "M  memory tokens\n"
+            "V  visible patches\n"
+            "$K_f$ fused locations\n"
+            "$K_t$ masked targets\n"
+            "D  embedding dim",
+            ha="left", va="top", fontsize=6.0, color=INK,
+            linespacing=1.35, zorder=4)
+    ax.text(97.0, 22.2,
+            "p  patch size\n"
+            "c  canonical patch size\n"
+            "PMA pooled descriptor\n"
+            "RoPE 2-D axial rotation\n"
+            "DCP visibility sampler\n"
+            "$L_e$ encoder blocks\n"
+            "$L_d$ decoder blocks\n"
+            "s  scale embedding",
+            ha="left", va="top", fontsize=6.0, color=INK,
+            linespacing=1.35, zorder=4)
 
     # ---- key points ------------------------------------------------------- #
     rrect(ax, FRAME_X0, 2.0, FRAME_X1 - FRAME_X0, 5.0, edge=ENCODER,

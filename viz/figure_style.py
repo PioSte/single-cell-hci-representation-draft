@@ -31,9 +31,9 @@ so the L0-L8 set reads as one authored system:
     DECODER   violet  channel-aware decoder + reconstruction head
     MEMORY    gold    fixed memory / register token rows
     LOSS      red     objective / waste / -inf mask / omitted-row accent
-    FUSED     blue    fixed-size fused / joint tokens [B, N, D]
+    FUSED     blue    fixed-size fused tokens [B, N, D]
     POOL      sky     pooling / descriptor reduction
-    GHOST     muted   geometry, brackets, never-materialised padded tensor
+    GHOST     muted   geometry, brackets, never-allocated padded tensor
 
 Per-channel colours live in ``CHANNEL_COLORS`` and are used ONLY for
 the channel axis (image tiles and channel-patch token rows).
@@ -86,8 +86,13 @@ def tint(color: str, amount: float = 0.84):
 
 
 def rrect(ax, x, y, w, h, edge, face="white", lw=1.1, dashed=False,
-          rounding=0.4, z=3):
-    """Rounded rectangle; the workhorse cell / frame."""
+          rounding=0.4, z=3, crossed=False, cross_alpha=0.55):
+    """Rounded rectangle; the workhorse cell / frame.
+
+    ``crossed=True`` overlays the two diagonals used throughout the level set
+    for **data** cells (tokens, embeddings, arrays).  Building-block/module
+    frames stay uncrossed.
+    """
     ax.add_patch(
         FancyBboxPatch(
             (x, y), w, h,
@@ -96,6 +101,14 @@ def rrect(ax, x, y, w, h, edge, face="white", lw=1.1, dashed=False,
             linestyle="--" if dashed else "solid", zorder=z,
         )
     )
+    if crossed:
+        inset = min(w, h) * 0.18
+        ax.plot([x + inset, x + w - inset], [y + inset, y + h - inset],
+                color=edge, lw=max(0.8, lw * 0.7), alpha=cross_alpha,
+                zorder=z + 1, solid_capstyle="round")
+        ax.plot([x + inset, x + w - inset], [y + h - inset, y + inset],
+                color=edge, lw=max(0.8, lw * 0.7), alpha=cross_alpha * 0.8,
+                zorder=z + 1, solid_capstyle="round")
 
 
 def box(ax, x, y, w, h, title, sub="", edge=BLUE, title_size=8.4, sub_size=6.7):
@@ -130,10 +143,21 @@ def edge_label(ax, x, y, text, color=MUTED, size=6.6, ha="center"):
 
 
 def sq_bracket(ax, x, y0, y1, color=MUTED, lw=1.2, tick=0.8):
-    """Square bracket, for labelling the extent of an array stack."""
+    """Square bracket whose ticks point **right**, toward a stack on its left."""
     ax.plot([x, x], [y0, y1], color=color, lw=lw, zorder=3)
     ax.plot([x, x + tick], [y0, y0], color=color, lw=lw, zorder=3)
     ax.plot([x, x + tick], [y1, y1], color=color, lw=lw, zorder=3)
+
+
+def sq_bracket_mirror(ax, x, y0, y1, color=MUTED, lw=1.2, tick=0.8):
+    """Square bracket whose ticks point **left**, toward a stack on its right.
+
+    Use this for a bracket drawn to the right of a token stack, so the bracket
+    embraces the stack instead of pointing away from it.
+    """
+    ax.plot([x, x], [y0, y1], color=color, lw=lw, zorder=3)
+    ax.plot([x, x - tick], [y0, y0], color=color, lw=lw, zorder=3)
+    ax.plot([x, x - tick], [y1, y1], color=color, lw=lw, zorder=3)
 
 
 def panel_header(ax, x, y, letter, text, color=INK):
@@ -152,9 +176,10 @@ def legend(ax, x, y_top, entries, title=None, sw=1.5, pitch=2.5,
 
     ``entries`` is a list of ``(label, color, style)``; ``style`` is one of
 
-    * ``"fill"``  -- rounded cell filled with ``tint(color)`` (kept object),
+    * ``"fill"``  -- plain rounded cell (module / building block),
+    * ``"cross"`` -- crossed rounded cell (data / token tensor),
     * ``"omit"``  -- dashed white cell (masked / absent row, never zero),
-    * ``"ghost"`` -- dashed pale cell (never-materialised tensor),
+    * ``"ghost"`` -- dashed pale cell (never-allocated tensor),
     * ``"line"``  -- a short solid line swatch (curve / edge),
     * ``"dash"``  -- a short dashed line swatch.
 
@@ -179,6 +204,9 @@ def legend(ax, x, y_top, entries, title=None, sw=1.5, pitch=2.5,
         elif style == "dash":
             ax.plot([x, x + sw], [cy, cy], color=color, lw=2.2, ls="--",
                     zorder=4)
+        elif style == "cross":
+            rrect(ax, x, y - sw, sw, sw, edge=color, face=tint(color, 0.8),
+                  lw=1.1, rounding=0.2, z=4, crossed=True)
         else:  # fill
             rrect(ax, x, y - sw, sw, sw, edge=color, face=tint(color, 0.8),
                   lw=1.1, rounding=0.2, z=4)
@@ -199,15 +227,15 @@ def channel_legend(ax, x, y_top, n=None, title="channel identity",
     """Legend for the channel colour table (image tiles, token rows)."""
     n = n or len(CHANNEL_COLORS)
     entries = [
-        (labels[i] if labels else f"channel {i}", channel_color(i), "fill")
+        (labels[i] if labels else f"channel {i}", channel_color(i), "cross")
         for i in range(n)
     ]
     return legend(ax, x, y_top, entries, title=title, **kw)
 
 
 def padded_ghost(ax, x, y, w, h, shape=r"$[B,\,C_{\max},\,N,\,D]$",
-                 note="never materialised", color=GHOST, strike=True, z=1):
-    """The dashed padded tensor that is never materialised (with a strike)."""
+                 note="never allocated", color=GHOST, strike=True, z=1):
+    """Dashed padded tensor that is never allocated/built (with a strike)."""
     rrect(ax, x, y, w, h, edge=color, face="#FAFAFA", lw=1.3, dashed=True,
           rounding=0.6, z=z)
     if strike:
@@ -226,24 +254,27 @@ def padded_ghost(ax, x, y, w, h, shape=r"$[B,\,C_{\max},\,N,\,D]$",
 # --------------------------------------------------------------------------- #
 # Array-stack helpers
 # --------------------------------------------------------------------------- #
-def token_rows(ax, x, y0, w, h, pitch, specs, rounding=0.4, z=3):
-    """Draw a vertical column of token cells (one row per channel-patch).
+def token_rows(ax, x, y0, w, h, pitch, specs, rounding=0.4, z=3,
+               crossed=True):
+    """Draw a vertical column of **data** token cells (crossed).
 
     ``specs`` is a list of ``(edge_color, omitted)`` tuples.  An *omitted* row is
-    drawn dashed with a white face -- the visual verb for "this token does not
-    exist", never "this token is zero".  Returns the top ``y`` of the stack.
+    drawn dashed with a white face and is **not** crossed -- the visual verb for
+    "this token does not exist", never "this token is zero".  Real rows are
+    crossed to mark data tensors.  Returns the top ``y`` of the stack.
     """
     for i, (edge, omitted) in enumerate(specs):
         yy = y0 + i * pitch
         rrect(ax, x, yy, w, h, edge=edge,
               face=("#FFFFFF" if omitted else tint(edge, 0.8)), lw=1.2,
-              dashed=omitted, rounding=rounding, z=z)
+              dashed=omitted, rounding=rounding, z=z,
+              crossed=crossed and not omitted)
     return y0 + (len(specs) - 1) * pitch + h
 
 
 def grid_cells(ax, x0, y0, nrows, ncols, cw, pitch, edge=BLUE, face=None,
-               lw=1.1, rounding=0.3, z=3):
-    """An ``nrows x ncols`` grid of cells (a tensor's two leading axes).
+               lw=1.1, rounding=0.3, z=3, crossed=True):
+    """An ``nrows x ncols`` grid of **data** cells (crossed by default).
 
     Returns ``(top, right)``.
     """
@@ -251,7 +282,7 @@ def grid_cells(ax, x0, y0, nrows, ncols, cw, pitch, edge=BLUE, face=None,
     for r in range(nrows):
         for c in range(ncols):
             rrect(ax, x0 + c * pitch, y0 + r * pitch, cw, cw, edge=edge,
-                  face=face, lw=lw, rounding=rounding, z=z)
+                  face=face, lw=lw, rounding=rounding, z=z, crossed=crossed)
     return y0 + (nrows - 1) * pitch + cw, x0 + (ncols - 1) * pitch + cw
 
 
