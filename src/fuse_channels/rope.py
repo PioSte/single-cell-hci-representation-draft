@@ -104,10 +104,14 @@ def physical_grid_coords(
 
     ``patch_size`` and ``pixel_size`` may be scalars or per-token tensors.
 
-    ``ref_um=1.0`` means one coordinate unit is one micrometre, so a 32 um
-    window spans ~32 units -- the same range as the grid-fraction default
-    (``ref_extent=32``), which keeps the RoPE frequency scale comparable when
-    switching between the two coordinate systems.
+    ``ref_um=1.0`` means one coordinate unit is one micrometre, i.e. the
+    coordinates *are* micrometres.  This is a free physical unit, not something
+    derived from the crop: a window of ``ref_extent`` micrometres spans
+    ``ref_extent`` units, which is the point where the metric and grid-fraction
+    coordinate systems coincide (useful for testing, and for keeping the RoPE
+    frequency scale comparable).  With cell-sized crops the window extent varies
+    and no such fixed mapping exists -- which is exactly why the metric system
+    is the correct one there.
     """
     if ref_um <= 0:
         raise ValueError(f"ref_um must be positive, got {ref_um}")

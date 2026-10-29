@@ -60,13 +60,20 @@ The scale conditioner receives both `log(p)` and `log(mpp)` because FlexiViT
 knows nothing about physical units; `p` alone cannot distinguish "large patch at
 fine sampling" from "small patch at coarse sampling".
 
-**Positional embeddings can be metric.** With a fixed-size physical window the
-default grid-fraction PE is already metric, because the normalization
-denominator is constant. With cell-sized windows (variable patch count) it is
-not: the phase encodes `distance / window_extent`, so an additive scale
-conditioner cannot recover the physical geometry. Use `pe_space="physical"`
-(encoder RoPE and decoder PE both evaluate `index * p * mpp / ref_um`) for
-cell-sized grids. The loader in `crops.py` produces exactly that layout:
+**The invariant is the patch, not the crop.** What is held constant across
+instruments is the physical footprint of a *single token*, `p · mpp ≈
+target_um`. The physical extent of the whole window, `n_tokens · p · mpp`, is a
+separate quantity and is free to vary: it is cell-sized when the patch count is
+derived from the segmented object, which is the intended behaviour. Scaling the
+number of tokens with the object does not violate the constant-patch-size
+contract.
+
+**Positional embeddings must then be metric.** With a fixed crop extent the
+default grid-fraction PE is already metric, because its normalization
+denominator is constant. With cell-sized crops (variable patch count) it is not:
+the phase encodes `distance / crop_extent`, so an additive scale conditioner
+cannot recover the physical geometry. Use `pe_space="physical"` (encoder RoPE
+and decoder PE both evaluate `index * p * mpp / ref_um`) for cell-sized grids. The loader in `crops.py` produces exactly that layout:
 `plan_patches` reads boxes straight out of the raw planes, so `crop_px` is an
 exact multiple of `p`, nothing is padded, and border cells get a shifted box
 instead of a lost border.

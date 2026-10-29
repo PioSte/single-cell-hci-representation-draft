@@ -102,9 +102,11 @@ Consequences:
   share coordinates; mixing `physical` encoder RoPE with per-axis grid-fraction
   decoder PE is a silent bug.
 - `pe_ref_um` (default `1.0`) fixes how many micrometres one coordinate unit
-  is. With 1 µm/unit a 32 µm window spans ~32 units, matching the
-  `ref_extent=32` grid default, so the RoPE frequency scale is comparable across
-  the two modes. Equivalent mapping: `ref_um = W_um / ref_extent`.
+  is; at the default the coordinates simply are micrometres. It is a free
+  physical unit, **not** derived from the crop: with cell-sized crops the crop
+  extent varies, so no `ref_um = W_um / ref_extent` mapping exists (that
+  identity only holds in the fixed-window case, where it is used as an
+  equivalence test).
 - `grid` coordinates with a variable patch count emit a warning rather than
   silently training with non-comparable position phases.
 
@@ -112,19 +114,40 @@ Consequences:
 
 A cell-sized window (`plan_patches(..., n_tokens="cell")`) makes the patch
 count a function of cell size: `n_tokens = ceil(cell_side_px / p)`, clamped.
-This is legitimate — `p` still absorbs the instrument and `N` encodes cell size
-— but it costs three things, all of which are now handled explicitly:
 
-| cost | handling |
+This is *consistent* with the §0 contract, not in tension with it. The invariant
+is the **per-token** physical extent `p · mpp ≈ target_um`, which is unchanged:
+with constant `p · mpp`,
+
+```
+n_tokens = ceil(cell_side_px / p) ≈ ceil(cell_side_um / target_um)
+```
+
+is essentially instrument-independent and tracks the cell, not the acquisition.
+Only the *crop* extent `n_tokens · p · mpp` varies, and it is meant to: it is
+cell size plus at most one token of slack. So `p` absorbs the instrument, `N`
+absorbs the cell, and tokens stay physically comparable everywhere.
+
+The consequences below follow from the crop extent being variable. They are a
+correctness requirement of cell-sized windows, not a cost of a trade-off that
+could instead be avoided by fixing the crop:
+
+| consequence | handling |
 |---|---|
 | Non-metric position phases | `pe_space="physical"` (§0.1); warning otherwise |
 | Small-cell MAE degeneracy (`N=1` disables patch masking) | `cell_n_tokens(min_n=2)`; `DCPVisibilitySampler` still falls back for `N=1` |
 | Ragged batches | `extract_patches` raises on mixed `N`; `_build_targets` takes the per-sample list path whenever `p` **or** `N` varies |
 | Token-count gradient weighting ∝ cell area | `loss_reduce="sample"` gives each cell one vote |
 
-Fatigue points to watch: the decoder head is per-`p`, so all instruments' `p`
-must be in `patch_sizes`; `max_tokens` only guards the random `flexi_vit`
-sampler, not cell-sized crops.
+Under a *fixed* window none of these bite (the crop extent is constant, so
+grid-fraction PE is already metric and `N` never varies). Cell-sized windows buy
+cell-proportional compute and no excess background; the price is that the four
+items above become prerequisites rather than options.
+
+Watch points: the decoder head is per-`p`, so every instrument's `p` must be in
+`patch_sizes`; `max_tokens` only guards the random FlexiViT sampler, not
+cell-sized crops; `max_n` should come from the upper end of the cell-size
+distribution (in µm / `target_um`), otherwise large cells are clipped.
 
 ## Status in this repo
 
