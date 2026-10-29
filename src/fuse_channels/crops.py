@@ -275,21 +275,31 @@ def cell_n_tokens(
     cell_hw_px: Tuple[int, int],
     patch_size: int,
     min_n: int = 2,
-    max_n: int = 8,
+    max_n: Optional[int] = None,
 ) -> int:
-    """Tokens per side needed to cover a cell: ``ceil(max(h, w) / p)``, clamped.
+    """Tokens per side needed to cover a cell: ``max(min_n, ceil(max(h, w) / p))``.
 
-    ``min_n`` defaults to 2 because a ``1x1`` grid disables the MAE patch
-    region (``floor(1 * patch_ratio) == 0``), so a 1-token cell would be trained
-    with a different objective than every other cell.
+    There is **no upper bound**: nothing in the model caps the patch count
+    (``N = 10_000`` works), and the dense buffers are per-batch, so a larger cell
+    simply costs more. ``max_n`` is an optional *budget*, not a model limit; when
+    given, :func:`plan_patches` reports cells that exceed it instead of silently
+    clipping them.
+
+    ``min_n`` defaults to 2 because a ``1x1`` grid disables the MAE patch region
+    (``floor(1 * patch_ratio) == 0``), so a 1-token cell would be trained with a
+    different objective than every other cell. Unlike ``max_n`` this enlarges the
+    window rather than cropping content, so it is not a lossy truncation.
     """
     if patch_size < 1:
         raise ValueError(f"patch_size must be >= 1, got {patch_size}")
-    if min_n < 1 or max_n < min_n:
-        raise ValueError(f"need 1 <= min_n <= max_n, got {min_n}, {max_n}")
+    if min_n < 1:
+        raise ValueError(f"min_n must be >= 1, got {min_n}")
+    if max_n is not None and max_n < min_n:
+        raise ValueError(f"need max_n >= min_n, got {max_n} < {min_n}")
     h, w = int(cell_hw_px[0]), int(cell_hw_px[1])
     need = max(1, math.ceil(max(h, w) / patch_size))
-    return int(max(min_n, min(need, max_n)))
+    n = max(min_n, need)
+    return int(n if max_n is None else min(n, max_n))
 
 
 def plan_patches(
@@ -308,7 +318,7 @@ def plan_patches(
     allowed: Optional[Sequence[int]] = None,
     n_tokens=None,
     min_n: int = 2,
-    max_n: int = 8,
+    max_n: Optional[int] = None,
     snap: str = "down",
 ) -> Tuple[List[CellCrop], List[dict]]:
     """Plan one token window per non-zero id in ``mask``.
@@ -318,9 +328,12 @@ def plan_patches(
     * pass ``geometry`` -- one fixed window size for every cell;
     * pass ``mpp``/``target_um``/``allowed`` and ``n_tokens`` -- the window is
       derived per image, and ``n_tokens="cell"`` additionally sizes it per
-      cell (``ceil(cell_side / p)`` clamped to ``[min_n, max_n]``), i.e. a
-      variable patch count driven by cell size and the pixel-size-adjusted
-      ``p``.
+      cell (``ceil(cell_side / p)``, at least ``min_n``), i.e. a variable
+      patch count driven by cell size and the pixel-size-adjusted ``p``.
+
+    Patch count is not bounded above by the model. ``max_n`` is an optional
+    budget: a cell needing more than ``max_n`` tokens per side is skipped and
+    reported (never silently clipped), like any other cell that does not fit.
 
     Either way the window is centred on the cell's bounding box when that fits
     and shifted to the image boundary when the extension would cross one, so an
@@ -367,10 +380,22 @@ def plan_patches(
         if geom is None:
             # variable-N mode: size this cell's window from its own extent
             p = patch_size_for_mpp(mpp, target_um, allowed, snap=snap)
-            n = cell_n_tokens(
-                (bbox[1] - bbox[0], bbox[3] - bbox[2]), p, min_n=min_n, max_n=max_n
+            need = cell_n_tokens(
+                (bbox[1] - bbox[0], bbox[3] - bbox[2]), p, min_n=min_n
             )
-            geom = CropGeometry.build(mpp, target_um, allowed, n, snap=snap)
+            if max_n is not None and need > max_n:
+                skipped.append(
+                    {
+                        "image_id": image_id,
+                        "cell_id": int(cid),
+                        "reason": (
+                            f"cell needs {need} tokens/side, exceeds max_n={max_n}; "
+                            "raise max_n or set it to None to process it"
+                        ),
+                    }
+                )
+                continue
+            geom = CropGeometry.build(mpp, target_um, allowed, need, snap=snap)
         box = place_box(bbox, geom.crop_px, (H, W))
         if box is None:
             skipped.append(

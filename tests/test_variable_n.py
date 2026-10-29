@@ -150,6 +150,44 @@ def test_plan_patches_variable_n_gives_each_cell_its_own_grid():
         assert c.valid.shape == (c.geometry.n_patches,)
 
 
+def test_large_cell_is_processed_not_clipped():
+    """No model-side cap on N: a big cell gets its own large grid."""
+    mask = np.zeros((400, 400), dtype=np.int64)
+    mask[150:330, 150:330] = 1  # 180 px cell -> 23 tokens/side at p=8
+    crops, skipped = plan_patches(
+        mask, (400, 400), mpp=1.0, target_um=8.0, allowed=[8], n_tokens="cell"
+    )
+    assert skipped == [] and len(crops) == 1
+    c = crops[0]
+    assert c.geometry.n_tokens == 23
+    assert c.covers_cell
+    assert c.valid.shape == (23 * 23,)
+    assert c.valid.sum() > 0
+
+
+def test_max_n_budget_skips_and_reports_instead_of_clipping():
+    mask = np.zeros((400, 400), dtype=np.int64)
+    mask[150:330, 150:330] = 1
+    crops, skipped = plan_patches(
+        mask, (400, 400), mpp=1.0, target_um=8.0, allowed=[8],
+        n_tokens="cell", max_n=8,
+    )
+    assert crops == []
+    assert len(skipped) == 1
+    assert "max_n=8" in skipped[0]["reason"]
+
+
+def test_model_accepts_a_far_larger_grid_than_its_construction_image_size():
+    model = _model()  # built for image_size=16
+    im = torch.randn(2, 1, 96, 96)
+    out = model(
+        [im], [torch.tensor([0, 1])], patch_sizes=8, pixel_sizes=[0.5],
+        generator=torch.Generator().manual_seed(0),
+    )
+    assert int(out["n_patches_per_sample"][0]) == 144
+    assert torch.isfinite(out["loss"])
+
+
 def test_plan_patches_variable_n_still_clamps_to_the_image():
     mask = np.zeros((96, 96), dtype=np.int64)
     mask[80:94, 80:94] = 1  # interior but the window would cross the border

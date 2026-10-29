@@ -144,10 +144,22 @@ grid-fraction PE is already metric and `N` never varies). Cell-sized windows buy
 cell-proportional compute and no excess background; the price is that the four
 items above become prerequisites rather than options.
 
-Watch points: the decoder head is per-`p`, so every instrument's `p` must be in
-`patch_sizes`; `max_tokens` only guards the random FlexiViT sampler, not
-cell-sized crops; `max_n` should come from the upper end of the cell-size
-distribution (in µm / `target_um`), otherwise large cells are clipped.
+**There is no upper bound on `N`.** Nothing in the model caps the patch count —
+it works at `N = 10_000` and a model *constructed* with `image_size=32` happily
+processes a 320 px crop, because `image_size` only sizes legacy PE tables. A
+larger cell just costs more: encoder attention is `O((C·N)²)` per sample and the
+fusion buffer is `[B, max_b N_b, D]`, so the real limits are memory and time,
+not architecture. Consequently `plan_patches` does **not** clamp: `max_n` is an
+optional budget, and a cell that exceeds it is skipped and reported, never
+silently truncated. `min_n=2` is the opposite kind of bound — it *enlarges* the
+window to keep the MAE patch region usable, so it loses no content.
+
+The genuine caveats that remain are per-`p`, not per-`N`: the decoder head is
+per-`p`, so every instrument's `p` must be in `patch_sizes`; `max_tokens` guards
+only the random FlexiViT sampler, not cell-sized crops; and metric PE does not
+extrapolate in coordinate range, so very large `N` means attention distances
+beyond any trained cell — degrade it by monitoring the `N` distribution, not by
+clipping.
 
 ## Status in this repo
 
