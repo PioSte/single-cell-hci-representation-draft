@@ -423,3 +423,135 @@ def test_crop_reader_to_model_with_variable_n_and_variable_p():
     assert torch.isfinite(out["loss"])
     # the variable-N samples really do have different patch counts
     assert len(set(out["n_patches_per_sample"].tolist())) > 1
+
+
+# --------------------------------------------------------------------------- #
+# loss reduction: per-cell vs per-token
+# --------------------------------------------------------------------------- #
+def test_default_loss_reduction_gives_each_cell_one_vote():
+    assert _model().loss_reduce == "sample"
+    assert _model(loss_reduce="token").loss_reduce == "token"
+
+
+def _reduction_setup():
+    """One 2x2-token cell and one 8x8-token cell: a 16x target-count ratio."""
+    torch.manual_seed(0)
+    model = _model(pe_space="physical", p_patch=1.0, p_channel=0.0)
+    images = [torch.randn(2, 1, 16, 16), torch.randn(2, 1, 64, 64)]
+    ids = [torch.tensor([0, 1]), torch.tensor([0, 1])]
+    out = model(images, ids, patch_sizes=8,
+                generator=torch.Generator().manual_seed(3))
+    _cs, _ps, _ns, visible, _tv, _px = model._prepare(
+        images, ids, None, torch.Generator().manual_seed(3), 8
+    )
+    counts = [int((~v).sum()) for v in visible]
+    gid = torch.cat(
+        [torch.full((c,), b, dtype=torch.long) for b, c in enumerate(counts)]
+    )
+    return model, out, gid, counts
+
+
+def test_token_reduction_weights_by_target_count_sample_does_not():
+    model, out, gid, counts = _reduction_setup()
+    assert counts == [4, 64]  # the large cell has 16x the target rows
+    pred, target = out["pred"], out["target"]
+
+    per_sample = [
+        float(
+            model._loss_on(
+                pred, target, out["target_patch_size"], out["pred_mask"],
+                (gid == g).nonzero(as_tuple=True)[0],
+            ).detach()
+        )
+        for g in (0, 1)
+    ]
+    weights = torch.tensor(counts, dtype=torch.float32)
+    weights = weights / weights.sum()
+    # token reduction IS the count-weighted mean: the big cell takes ~94%
+    assert float(weights[1]) > 0.9
+    torch.testing.assert_close(
+        model._loss_on(pred, target, out["target_patch_size"], out["pred_mask"]),
+        torch.tensor(per_sample) @ weights,
+        rtol=1e-5,
+        atol=1e-6,
+    )
+    # sample reduction is the unweighted mean, i.e. 50/50
+    torch.testing.assert_close(
+        model._sample_mean_loss(pred, target, out["pred_mask"], gid),
+        torch.tensor(per_sample).mean(),
+        rtol=1e-5,
+        atol=1e-6,
+    )
+
+
+@pytest.mark.parametrize("mixed_p", [False, True])
+def test_vectorised_sample_reduction_matches_the_per_sample_loop(mixed_p):
+    """The one-pass reduction must equal the loop it replaced."""
+    model, out, gid, _ = _reduction_setup()
+    pred, target, tp, pm = (
+        out["pred"],
+        out["target"],
+        out["target_patch_size"],
+        out["pred_mask"],
+    )
+    if mixed_p:
+        # mixed-p padding introduces pred_mask; build such a batch explicitly
+        images = [torch.randn(2, 1, 16, 16), torch.randn(2, 1, 64, 64)]
+        ids = [torch.tensor([0, 1]), torch.tensor([0, 1])]
+        model = _model(
+            pe_space="physical", p_patch=1.0, p_channel=0.0, patch_sizes=(8, 16)
+        )
+        out = model(images, ids, patch_sizes=[8, 16],
+                    generator=torch.Generator().manual_seed(3))
+        _cs, _ps, _ns, visible, _tv, _px = model._prepare(
+            images, ids, None, torch.Generator().manual_seed(3), [8, 16]
+        )
+        gid = torch.cat(
+            [torch.full((int((~v).sum()),), b, dtype=torch.long)
+             for b, v in enumerate(visible)]
+        )
+        pred, target, tp, pm = (
+            out["pred"],
+            out["target"],
+            out["target_patch_size"],
+            out["pred_mask"],
+        )
+        assert pm is not None
+
+    groups = torch.unique(gid)
+    loop = pred.new_zeros(())
+    for g in groups.tolist():
+        loop = loop + model._loss_on(
+            pred, target, tp, pm, (gid == g).nonzero(as_tuple=True)[0]
+        )
+    loop = loop / groups.numel()
+    vec = model._sample_mean_loss(pred, target, pm, gid)
+    # exact without padding; float32 summation order otherwise
+    torch.testing.assert_close(vec, loop, rtol=1e-6, atol=1e-6)
+
+
+def test_vectorised_sample_reduction_gradient_matches_the_loop():
+    model, out, gid, _ = _reduction_setup()
+    groups = torch.unique(gid)
+
+    def run(vectorised):
+        pred = out["pred"].detach().clone().requires_grad_(True)
+        if vectorised:
+            loss = model._sample_mean_loss(
+                pred, out["target"], out["pred_mask"], gid
+            )
+        else:
+            loss = pred.new_zeros(())
+            for g in groups.tolist():
+                loss = loss + model._loss_on(
+                    pred, out["target"], out["target_patch_size"],
+                    out["pred_mask"], (gid == g).nonzero(as_tuple=True)[0],
+                )
+            loss = loss / groups.numel()
+        loss.backward()
+        return loss.detach(), pred.grad.detach()
+
+    lv, gv = run(True)
+    ll, gl = run(False)
+    torch.testing.assert_close(lv, ll, rtol=1e-6, atol=1e-6)
+    torch.testing.assert_close(gv, gl, rtol=1e-5, atol=1e-7)

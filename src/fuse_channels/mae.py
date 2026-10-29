@@ -31,6 +31,17 @@ Scale conditioning embeds ``log(p)`` and ``log(pixel_size)`` with
 Fourier features and a small MLP.  ``scale_conditioning="add"`` (default) adds
 the embedding to encoder and decoder tokens; ``"adaln"`` modulates the
 LayerNorms instead; ``"none"`` disables it.
+
+Pixel size is required metadata: it drives the metric positional embeddings and
+the scale conditioner, and ``forward``/``encode`` raise rather than invent a
+default.
+
+The reconstruction loss is reduced per **sample** by default
+(``loss_reduce="sample"``): with cell-sized crops the token count is
+proportional to cell area, so a per-token mean would let large cells dominate
+the gradient and would make each step's weighting depend on the randomised
+masking draw.  One crop = one vote matches the deployment unit.  Use
+``"token"`` if you want per-patch accuracy to weight the objective.
 """
 
 from __future__ import annotations
@@ -154,7 +165,7 @@ class ChannelFusionMAE(nn.Module):
         fractional_pe_base: float = 10000.0,
         pe_space: str = "physical",
         pe_ref_um: float = 1.0,
-        loss_reduce: str = "token",
+        loss_reduce: str = "sample",
         keep_offcell_as_context: bool = True,
         head_patch_size: int | None = None,
         head_mode: str = "per_p",
@@ -780,19 +791,63 @@ class ChannelFusionMAE(nn.Module):
             ) * (idx.numel() / n)
         return total
 
-    def _compute_loss(self, pred, target, tgt_p, pred_mask, tgt_group_id=None):
-        """``loss_reduce="token"`` weights by token count, ``"sample"`` by cell.
+    def _row_loss_terms(self, pred, target, pred_mask):
+        """Per-row squared-error sums and valid-pixel counts for the MAE loss.
 
-        With cell-sized crops the token count is proportional to cell area, so
-        token reduction makes large cells dominate the gradient.  ``"sample"``
-        gives every cell one vote, which is what a per-cell representation
-        wants.
+        Splitting :func:`normalized_patch_mse` into ``(error, count)`` pairs is
+        what makes sample reduction a single vectorised pass instead of one
+        forward per sample.  Per-patch normalisation is computed per row, exactly
+        as :func:`normalized_patch_mse` does.
         """
-        if (
-            self.loss_reduce == "sample"
-            and tgt_group_id is not None
-            and tgt_group_id.numel() > 0
-        ):
+        target = target.float()
+        if pred_mask is None:
+            mean = target.mean(dim=-1, keepdim=True)
+            std = target.std(dim=-1, keepdim=True, unbiased=False)
+            norm_target = (target - mean) / (std + 1e-6)
+            err = (pred - norm_target) ** 2
+            count = torch.full(
+                (pred.shape[0],), pred.shape[-1], dtype=pred.dtype, device=pred.device
+            )
+            return err.sum(dim=-1), count
+        m = pred_mask.to(dtype=target.dtype)
+        count = m.sum(dim=-1)
+        denom = count.clamp_min(1.0).unsqueeze(-1)
+        mean = (target * m).sum(dim=-1, keepdim=True) / denom
+        var = (((target - mean) ** 2) * m).sum(dim=-1, keepdim=True) / denom
+        std = var.clamp_min(0.0).sqrt()
+        norm_target = (target - mean) / (std + 1e-6)
+        return (((pred - norm_target) ** 2) * m).sum(dim=-1), count
+
+    def _sample_mean_loss(self, pred, target, pred_mask, tgt_group_id):
+        """Mean of per-sample losses, one vote per cell, in one pass.
+
+        ``Σ_g (Σ_{i∈g} err_i) / (Σ_{i∈g} count_i) / G`` -- algebraically
+        identical to looping over groups and calling the per-sample loss, but
+        with no Python loop.
+        """
+        row_err, row_count = self._row_loss_terms(pred, target, pred_mask)
+        groups, inverse = torch.unique(tgt_group_id, return_inverse=True)
+        num = pred.new_zeros(groups.numel()).index_add_(0, inverse, row_err)
+        den = pred.new_zeros(groups.numel()).index_add_(0, inverse, row_count)
+        return (num / den.clamp_min(1.0)).mean()
+
+    def _compute_loss(self, pred, target, tgt_p, pred_mask, tgt_group_id=None):
+        """``loss_reduce="sample"`` (default) gives each cell one vote.
+
+        ``"token"`` weights every reconstructed row equally, so a sample's
+        influence is proportional to its target-*pixel* count:
+        ``Σ_i n_i L_i / Σ_i n_i`` with ``n_i = C_i · N_i · masked_frac``.  With
+        cell-sized crops ``N_i ∝ cell area``, so that makes large cells dominate
+        the gradient (and makes each step's weighting depend on the randomised
+        DCP draw).  ``"sample"`` estimates the per-cell mean instead, matching
+        the deployment unit: one crop -> one descriptor.
+        """
+        has_targets = tgt_group_id is not None and tgt_group_id.numel() > 0
+        if self.loss_reduce == "sample" and has_targets:
+            if self.loss_name == "mae":
+                return self._sample_mean_loss(pred, target, pred_mask, tgt_group_id)
+            # The ChA-MAEViT Fourier term is an FFT over the whole batch, so it
+            # is not row-decomposable; keep the exact per-sample loop there.
             groups = torch.unique(tgt_group_id)
             total = pred.new_zeros(())
             for g in groups.tolist():

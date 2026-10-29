@@ -179,7 +179,15 @@ could instead be avoided by fixing the crop:
 | Non-metric position phases | `pe_space="physical"` (§0.1); warning otherwise |
 | Small-cell MAE degeneracy (`N=1` disables patch masking) | `cell_n_tokens(min_n=2)`; `DCPVisibilitySampler` still falls back for `N=1` |
 | Ragged batches | `extract_patches` raises on mixed `N`; `_build_targets` takes the per-sample list path whenever `p` **or** `N` varies |
-| Token-count gradient weighting ∝ cell area | `loss_reduce="sample"` gives each cell one vote |
+| Token-count gradient weighting ∝ cell area | `loss_reduce="sample"` (default) gives each cell one vote |
+
+**Loss reduction.** `loss_reduce="sample"` (default) averages per cell;
+`"token"` weights every reconstructed row equally, so a sample's weight is
+`n_i / Σ n_j` with `n_i = C_i · N_i · masked_frac`. With cell-sized crops
+`N_i ∝ cell area`, so token reduction lets an 8×8-token cell take ~94% of the
+gradient against a 2×2-token cell, and makes each step's weighting depend on the
+randomised DCP draw. Token reduction is still available, and is the natural
+choice if you care about per-patch accuracy rather than per-cell representation.
 
 Under a *fixed* window none of these bite (the crop extent is constant, so
 grid-fraction PE is already metric and `N` never varies). Cell-sized windows buy
