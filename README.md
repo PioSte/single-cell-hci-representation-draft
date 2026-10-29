@@ -32,6 +32,34 @@ padding tokens**. `C` appears only in the tokenizer input length `ΣC·N`; the
 fused output is `[B, N, D]` (`N = floor(H/p)·floor(W/p)` is set by the current
 patch size) and the pooled descriptor is `[B, D]`.
 
+## Variable pixel size: `p` is a pixel count, not a physical size
+
+High-content images come from different instruments, so the **pixel size**
+(`mpp`, micrometres per pixel) and therefore the number of pixels per
+micrometre differs across datasets. A token must cover a comparable *physical*
+extent on every instrument, otherwise the same marker is a different object at
+different sites. The mechanism is: **choose the patch size per sample so that
+the token extent in micrometres stays constant.**
+
+```
+p        patch edge in PIXELS (a model knob; FlexiViT's axis, never a physical size)
+mpp      micrometres per pixel (dataset metadata, varies per instrument)
+p * mpp  physical token extent in micrometres (the quantity held constant)
+
+p_b ≈ round(p_target_um / mpp_b)      snap to the trained `patch_sizes` set
+```
+
+So `p` *absorbs* the pixel-size variation: a 0.5 µm/px image uses `p = 16` for an
+8 µm token, a 1.0 µm/px image uses `p = 8` for the same 8 µm token. This is what
+makes "train once, infer on any instrument seen in training, no finetuning"
+work: one weight set, PI-resized kernels, and a token that means the same
+physical thing everywhere. It is **not** extrapolation — a `p` outside the
+trained set is out of contract (see
+[`FLEXIVIT.md` §0](FLEXIVIT.md#0-patch-size-vs-pixel-size-the-contract)).
+The scale conditioner receives both `log(p)` and `log(mpp)` because FlexiViT
+knows nothing about physical units; `p` alone cannot distinguish "large patch at
+fine sampling" from "small patch at coarse sampling".
+
 ## Architecture
 
 ```

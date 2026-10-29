@@ -15,6 +15,58 @@ indices do **not** satisfy that: adjacent tokens are always one index apart,
 whether the patch is 8 px or 32 px. Use normalized coordinates in the encoder
 RoPE, or accept that raw-index RoPE also encodes sampling density.
 
+## 0. Patch size vs pixel size: the contract
+
+`p` is **not** a pixel size. In FlexiViT, `p` is the patch edge length counted in
+pixels (`references/flexivit/paper.md:75`: `x_i ∈ R^{p×p×c}`, `s = ⌊h/p⌋·⌊w/p⌋`);
+the paper never multiplies it by a physical scale. The three quantities are:
+
+| symbol | meaning | owner |
+|---|---|---|
+| `mpp` | physical size of **one pixel** (µm/px), varies per instrument | dataset metadata → `ChannelSet.pixel_size` |
+| `p` | number of **pixels per patch edge**, a model hyperparameter | `patch_sizes` / FlexiViT |
+| `p · mpp` | physical extent of **one token** (µm) | design synthesis, held ≈ constant |
+
+**Objective.** High-content data is acquired at different pixel sizes. To make a
+token mean the same physical thing on every instrument, hold `p · mpp` constant
+and let `p` absorb the variation:
+
+```
+p_b = round(p_target_um / mpp_b)   then snap to the configured `patch_sizes`
+```
+
+Consequences that are easy to get wrong:
+
+- **`p` must be selected, not sampled arbitrarily.** The configured
+  `patch_sizes` should be the set of `p_b` implied by the `mpp` range in the
+  training data, not a generic compute sweep. Otherwise a valid instrument maps
+  to a `p` the model never saw.
+- **No extrapolation.** FlexiViT explicitly does not claim it
+  (`references/flexivit/paper.md:879`: performance degrades beyond trained patch
+  sizes). Inference should assert `p_b ∈ trained patch_sizes`; the decoder's
+  nearest-`p` head fallback is graceful degradation, not a guarantee.
+- **Anisotropic `mpp` cannot be honoured.** `p` is scalar and the kernel is
+  square. If `mpp_x ≠ mpp_y`, use the geometric mean and accept the
+  aspect-ratio error, or resample the image.
+- **Snap direction matters.** Rounding `p` down keeps the physical token smaller
+  than the target and yields more tokens; rounding up does the opposite. Prefer
+  down, and record the realized `p · mpp` so the resulting extent error is
+  auditable.
+- **`p` is confounded with instrument identity.** In FlexiViT `p` is randomized
+  independently of content; here it is *determined* by `mpp`, so the model can
+  learn `p → dataset` shortcuts. Jitter the physical target extent across a
+  small set within an `mpp` and ablate with `scale_conditioning="none"`.
+- **Rejected baseline:** resample every image to a canonical `mpp` and keep one
+  fixed `p`. This is the standard HCI/pathology approach and is simpler. It is
+  rejected here because it resamples content (destroying native PSF/noise
+  statistics and cost on large multiplexed panels); FlexiViT instead resizes the
+  *kernel* and leaves the pixels untouched. If a single canonical `mpp` covers
+  the instruments acceptably, that baseline is cheaper and should be preferred.
+- **PI-resize is a smooth operator across sampling density, not a physically
+  faithful resampling between instruments.** Tokens at the same physical extent
+  from two devices are comparable in representation space, not equal
+  (`references/flexivit/paper.md:309`, Appendix I).
+
 ## Status in this repo
 
 **Implemented.** The target architecture is now the default model path:

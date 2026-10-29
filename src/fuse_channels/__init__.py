@@ -1,6 +1,20 @@
 """fuse-channels: padding-free channel-set fusion for HCI foundation models."""
 
 from .container import ChannelSet
+from .crops import (
+    CellCrop,
+    CellCropDataset,
+    CropGeometry,
+    TiffStack,
+    collate_crops,
+    patch_size_for_mpp,
+    place_box,
+    plan_patches,
+    read_crop_tensors,
+    token_coverage,
+    token_coverage_torch,
+    write_crop_cache,
+)
 from .decoder import ChannelAwareDecoder, DecoderBlock
 from .encoder import TransformerBlock, TransformerEncoder
 from .fusion import (
@@ -41,6 +55,18 @@ from .rope import (
 
 __all__ = [
     "ChannelSet",
+    "CellCrop",
+    "CellCropDataset",
+    "CropGeometry",
+    "TiffStack",
+    "collate_crops",
+    "patch_size_for_mpp",
+    "place_box",
+    "plan_patches",
+    "read_crop_tensors",
+    "token_coverage",
+    "token_coverage_torch",
+    "write_crop_cache",
     "ChannelFusion",
     "IdentityGatedSum",
     "MultiheadAttentionPooling",

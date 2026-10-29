@@ -22,6 +22,7 @@ viz = [
     "kinemo>=0.19",
 ]
 flash = ["flash-attn>=2.5; platform_system != 'Darwin'"]
+io = ["tifffile>=2024.1"]
 
 [build-system]
 requires = ["hatchling"]

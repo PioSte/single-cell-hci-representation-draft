@@ -12,6 +12,8 @@ An HCI image is a set of per-channel embeddings {E_c ∈ R^D} where:
 
 The goal is a function f({E_1..E_C}) → [N, D] per sample whose size is independent of C, plus a pooled [D] descriptor — no concatenation blow-up, channel-identity-aware, permutation-invariant, with no padding tokens.
 
+Pixel size is a separate, orthogonal axis: `p` is a pixel count, not a physical size. Tokens are kept at a comparable physical extent across instruments by choosing `p_b ≈ p_target_um / mpp_b` from the image's µm/px metadata. See `README.md` §"Variable pixel size" and `FLEXIVIT.md` §0 before changing patch-size, scale-conditioning, or dataloading behaviour.
+
 ## Layout
 
 - `src/fuse_channels/` — library: `ops` (padding-free grouped attention), `container` (`ChannelSet`), `identity` (`ChannelEmbedding`), `patch_embed` (`ChannelTiedPatchEmbed`, `ChannelTokenizer`), `fusion` (`ChannelFusion`, `IdentityGatedSum`, `MultiheadAttentionPooling`), `encoder`, `decoder`, `masking` (DCP Eq. 1 + HCS), `losses`, `mae`, `data`
