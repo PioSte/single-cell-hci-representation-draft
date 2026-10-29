@@ -36,6 +36,7 @@ LayerNorms instead; ``"none"`` disables it.
 from __future__ import annotations
 
 import math
+import warnings
 from typing import Optional, Sequence
 
 import torch
@@ -146,6 +147,10 @@ class ChannelFusionMAE(nn.Module):
         scale_fourier_frequencies: int = 8,
         fractional_pe_mode: str = "sincos",
         fractional_pe_base: float = 10000.0,
+        pe_space: str = "grid",
+        pe_ref_um: float = 1.0,
+        loss_reduce: str = "token",
+        keep_offcell_as_context: bool = True,
         head_patch_size: int | None = None,
         head_mode: str = "per_p",
         max_tokens: int | None = None,
@@ -166,6 +171,14 @@ class ChannelFusionMAE(nn.Module):
             )
         if max_tokens is not None and int(max_tokens) < 1:
             raise ValueError(f"max_tokens must be >= 1 or None, got {max_tokens}")
+        if pe_space not in ("grid", "physical", "auto"):
+            raise ValueError(
+                f"unknown pe_space '{pe_space}'; expected 'grid', 'physical' or 'auto'"
+            )
+        if loss_reduce not in ("token", "sample"):
+            raise ValueError(
+                f"unknown loss_reduce '{loss_reduce}'; expected 'token' or 'sample'"
+            )
 
         # ---- patch-size / positional-scheme resolution ------------------ #
         if patch_size is None:
@@ -227,6 +240,11 @@ class ChannelFusionMAE(nn.Module):
         self.rope_ref_extent = rope_ref_extent
         self.rope_shared_extent = rope_shared_extent
         self.scale_conditioning = scale_conditioning
+        self.pe_space = pe_space
+        self.pe_ref_um = float(pe_ref_um)
+        self.loss_reduce = loss_reduce
+        self.keep_offcell_as_context = bool(keep_offcell_as_context)
+        self._warned_nonmetric = False
 
         self.loss_name = loss
         self._loss_fn = _LOSSES[loss]
@@ -293,6 +311,7 @@ class ChannelFusionMAE(nn.Module):
             canonical_patch_size=canonical_patch_size,
             fractional_pe_mode=fractional_pe_mode,
             fractional_pe_base=fractional_pe_base,
+            pe_ref_um=pe_ref_um,
             adaln=scale_conditioning == "adaln",
             patch_sizes=self.patch_sizes,
             head_mode=head_mode,
@@ -404,15 +423,70 @@ class ChannelFusionMAE(nn.Module):
         )
         return torch.stack([log_p, log_phys, has], dim=-1)
 
-    def _prepare(self, images, channel_ids, visible, generator, patch_sizes):
+    def _prepare(self, images, channel_ids, visible, generator, patch_sizes,
+                 pixel_sizes=None, valid=None):
+        """Resolve sizes, draw the DCP mask, and apply the off-cell token mask.
+
+        ``valid`` is an optional per-sample ``[N_b]`` boolean mask in full-grid
+        row-major order (cell-token mask, *not* an MAE visibility mask).  It
+        restores the distinction between three states that ``visible`` alone
+        cannot express:
+
+        * ``valid & visible``   -- context in the encoder
+        * ``valid & ~visible``  -- MAE reconstruction target
+        * ``~valid``            -- neither (off-cell; never attended, never
+          reconstructed), unless ``keep_offcell_as_context`` is set, in which
+          case it is fed as context only.
+        """
         ps = self._resolve_patch_sizes(images, patch_sizes, generator)
         ns = [_n_patches_for(im, p) for im, p in zip(images, ps)]
         if visible is None:
             visible = self.masker(images, generator=generator, n_patches=ns)
+        else:
+            visible = [v.clone() for v in visible]
+
+        target_valid = None
+        if valid is not None:
+            target_valid = []
+            for b, (v, N) in enumerate(zip(valid, ns)):
+                v = v.to(device=images[0].device, dtype=torch.bool)
+                if v.numel() != N:
+                    raise ValueError(
+                        f"valid[{b}] must have {N} entries for patch size "
+                        f"{ps[b]}, got {v.numel()}"
+                    )
+                keep = v[None, :].expand_as(visible[b])
+                if self.keep_offcell_as_context:
+                    # off-cell patches may be attended, but are never targets
+                    visible[b] = visible[b] | (~keep)
+                else:
+                    visible[b] = visible[b] & keep
+                target_valid.append(keep)
+
+        if (
+            self.encoder_pos_embed == "rope"
+            and self.pe_space == "grid"
+            and len(set(ns)) > 1
+            and not self._warned_nonmetric
+        ):
+            warnings.warn(
+                "variable patch count across samples with pe_space='grid': "
+                "grid-fraction coordinates encode distance relative to the "
+                "window extent, so positional phases are not comparable "
+                "between differently sized cells. Pass pe_space='physical' "
+                "with pixel_sizes for metric coordinates.",
+                stacklevel=2,
+            )
+            self._warned_nonmetric = True
+
         cs = self.tokenizer(
-            images, channel_ids, visible=visible, patch_sizes=ps
+            images,
+            channel_ids,
+            visible=visible,
+            patch_sizes=ps,
+            pixel_sizes=pixel_sizes,
         )
-        return cs, ps, ns, visible
+        return cs, ps, ns, visible, target_valid
 
     def _encode(self, cs, ps, scale_emb=None):
         fused, present = self.fusion(cs)  # [B, Nmax, D]
@@ -430,6 +504,8 @@ class ChannelFusionMAE(nn.Module):
 
         rope = None
         if self.encoder_pos_embed == "rope":
+            metric = self._use_metric_pe(cs)
+            sample_of = present_bi[:, 0]
             rope = axial_rope_cache(
                 rows,
                 cols,
@@ -439,6 +515,13 @@ class ChannelFusionMAE(nn.Module):
                 base=self.rope_base,
                 ref_extent=self.rope_ref_extent,
                 shared_extent=self.rope_shared_extent,
+                patch_size=cs.per_sample_of(cs.patch_size)[sample_of]
+                if metric
+                else None,
+                pixel_size=cs.per_sample_of(cs.pixel_size)[sample_of]
+                if metric
+                else None,
+                ref_um=self.pe_ref_um,
             )
 
         cond_enc = None
@@ -453,6 +536,43 @@ class ChannelFusionMAE(nn.Module):
         )
         return fused, present, mem_out, tok_out, enc_group_id, present_bi
 
+    def _target_step_um(self, cs, ps, ns, tgt_group_id, tgt_p, pixel_sizes):
+        """``patch_size * µm_per_px`` per decoder target, or ``None``.
+
+        Must agree with the encoder's coordinate frame: if the encoder RoPE is
+        metric, the decoder absolute PE has to be metric with the same
+        ``ref_um``, otherwise mask tokens and visible tokens live in different
+        frames.
+        """
+        if not self._use_metric_pe(cs):
+            return None
+        pix = self._resolve_pixel_sizes(cs.n_samples, pixel_sizes)
+        mpp = torch.tensor(
+            [1.0 if v is None else float(v) for v in pix],
+            device=tgt_p.device,
+            dtype=torch.float32,
+        )
+        return tgt_p.to(torch.float32) * mpp[tgt_group_id]
+
+    def _use_metric_pe(self, cs) -> bool:
+        """Whether positional embeddings use physical (µm) coordinates.
+
+        ``pe_space="physical"`` requires a pixel size; ``"auto"`` enables it
+        whenever the tokenizer carries one.  Grid-fraction coordinates encode
+        distance *relative to the crop extent*, so they are only metric when
+        that extent is constant -- with cell-sized crops (variable ``N``) they
+        are not, and an additive scale conditioner cannot recover the metric.
+        """
+        if self.pe_space == "grid":
+            return False
+        has_mpp = cs.pixel_size is not None
+        if self.pe_space == "physical" and not has_mpp:
+            raise ValueError(
+                "pe_space='physical' needs pixel_sizes (µm/px); pass them to "
+                "forward() or use pe_space='auto'/'grid'"
+            )
+        return has_mpp
+
     # ------------------------------------------------------------------ #
     def forward(
         self,
@@ -462,11 +582,13 @@ class ChannelFusionMAE(nn.Module):
         generator: Optional[torch.Generator] = None,
         patch_sizes=None,
         pixel_sizes=None,
+        valid=None,
     ):
         B = len(images)
         device = images[0].device
-        cs, ps, ns, visible = self._prepare(
-            images, channel_ids, visible, generator, patch_sizes
+        cs, ps, ns, visible, target_valid = self._prepare(
+            images, channel_ids, visible, generator, patch_sizes,
+            pixel_sizes=pixel_sizes, valid=valid,
         )
         scale_values = None
         scale_emb = None
@@ -497,7 +619,11 @@ class ChannelFusionMAE(nn.Module):
         tgt_group_id, tgt_ch, tgt_patch = [], [], []
         tgt_row, tgt_col, tgt_gh, tgt_gw, tgt_p = [], [], [], [], []
         for b in range(B):
+            # target = visible-mask complement, intersected with the cell mask so
+            # off-cell patches are never reconstructed (they are only context)
             m = ~visible[b]
+            if target_valid is not None:
+                m = m & target_valid[b]
             ci, pi = m.nonzero(as_tuple=True)
             p = ps[b]
             gw = ns[b] // (images[b].shape[-2] // p)
@@ -561,13 +687,16 @@ class ChannelFusionMAE(nn.Module):
             target_grid_h=tgt_gh,
             target_grid_w=tgt_gw,
             target_patch_size=tgt_p,
+            target_step_um=self._target_step_um(
+                cs, ps, ns, tgt_group_id, tgt_p, pixel_sizes
+            ),
             cond=cond_dec,
         )
 
         target, pred_mask = self._build_targets(
-            images, ps, tgt_group_id, tgt_ch, tgt_patch, tgt_p, pred, gidx
+            images, ps, ns, tgt_group_id, tgt_ch, tgt_patch, tgt_p, pred, gidx
         )
-        loss = self._compute_loss(pred, target, tgt_p, pred_mask)
+        loss = self._compute_loss(pred, target, tgt_p, pred_mask, tgt_group_id)
 
         target_cid = ids_per_ch[gidx]
         out = {
@@ -585,16 +714,21 @@ class ChannelFusionMAE(nn.Module):
             "grid_w": cs.grid_w,
             "n_patches_per_sample": cs.n_patches_per_sample,
             "scale_values": scale_values,
+            "pixel_size": cs.pixel_size,
+            "pe_metric": self._use_metric_pe(cs),
         }
         if pred_mask is not None:
             out["pred"] = pred.masked_fill(~pred_mask, 0.0)
         return out
 
     def _build_targets(
-        self, images, ps, tgt_group_id, tgt_ch, tgt_patch, tgt_p, pred, gidx
+        self, images, ps, ns, tgt_group_id, tgt_ch, tgt_patch, tgt_p, pred, gidx
     ):
         device = pred.device
-        if len(set(ps)) == 1:
+        # The fast path concatenates per-sample unfold results along the channel
+        # axis, which requires a uniform patch count.  Cell-sized crops make N
+        # vary, so only take it when both p and N are uniform across samples.
+        if len(set(ps)) == 1 and len(set(ns)) == 1:
             p = ps[0]
             patch_targets = ChannelTokenizer.extract_patches(images, p)
             target = patch_targets[gidx, :, tgt_patch]
@@ -611,7 +745,12 @@ class ChannelFusionMAE(nn.Module):
             target[sel, :p2] = patches[b][tgt_ch[sel], :, tgt_patch[sel]]
         return target, PatchReconstructionHead.mask(tgt_p, device=device)
 
-    def _compute_loss(self, pred, target, tgt_p, pred_mask):
+    def _loss_on(self, pred, target, tgt_p, pred_mask, sel=None):
+        if sel is not None:
+            pred = pred[sel]
+            target = target[sel]
+            tgt_p = tgt_p[sel]
+            pred_mask = None if pred_mask is None else pred_mask[sel]
         if pred_mask is None:
             return self._loss_fn(pred, target)
         if self.loss_name == "mae":
@@ -628,6 +767,27 @@ class ChannelFusionMAE(nn.Module):
             ) * (idx.numel() / n)
         return total
 
+    def _compute_loss(self, pred, target, tgt_p, pred_mask, tgt_group_id=None):
+        """``loss_reduce="token"`` weights by token count, ``"sample"`` by cell.
+
+        With cell-sized crops the token count is proportional to cell area, so
+        token reduction makes large cells dominate the gradient.  ``"sample"``
+        gives every cell one vote, which is what a per-cell representation
+        wants.
+        """
+        if (
+            self.loss_reduce == "sample"
+            and tgt_group_id is not None
+            and tgt_group_id.numel() > 0
+        ):
+            groups = torch.unique(tgt_group_id)
+            total = pred.new_zeros(())
+            for g in groups.tolist():
+                sel = (tgt_group_id == g).nonzero(as_tuple=True)[0]
+                total = total + self._loss_on(pred, target, tgt_p, pred_mask, sel)
+            return total / groups.numel()
+        return self._loss_on(pred, target, tgt_p, pred_mask)
+
     # ------------------------------------------------------------------ #
     @torch.no_grad()
     def encode(
@@ -637,11 +797,15 @@ class ChannelFusionMAE(nn.Module):
         pool: str = "attention",
         patch_sizes=None,
         pixel_sizes=None,
+        valid=None,
     ):
         """Inference-time representation (no masking).
 
         Returns ``(memory, pooled_descriptor)`` where ``pooled_descriptor`` is
         ``[B, D]`` -- the fixed-size joint embedding for the whole batch.
+
+        ``valid`` (per-sample ``[N_b]`` cell-token mask) drops off-cell patches
+        from the encoder exactly as in :meth:`forward`.
         """
         B = len(images)
         device = images[0].device
@@ -651,7 +815,19 @@ class ChannelFusionMAE(nn.Module):
             torch.ones(im.shape[0], n, dtype=torch.bool, device=im.device)
             for im, n in zip(images, ns)
         ]
-        cs = self.tokenizer(images, channel_ids, visible=visible, patch_sizes=ps)
+        if valid is not None:
+            for b, v in enumerate(valid):
+                v = v.to(device=device, dtype=torch.bool)
+                if v.numel() != ns[b]:
+                    raise ValueError(
+                        f"valid[{b}] must have {ns[b]} entries, got {v.numel()}"
+                    )
+                if not self.keep_offcell_as_context:
+                    visible[b] = visible[b] & v[None, :]
+        cs = self.tokenizer(
+            images, channel_ids, visible=visible, patch_sizes=ps,
+            pixel_sizes=pixel_sizes,
+        )
         scale_values = None
         scale_emb = None
         if self.scale_conditioning != "none":

@@ -67,6 +67,65 @@ Consequences that are easy to get wrong:
   from two devices are comparable in representation space, not equal
   (`references/flexivit/paper.md:309`, Appendix I).
 
+## 0.1 Metric PE: the phase must encode micrometres, not grid fractions
+
+`pe_space` selects the coordinate system the encoder RoPE and decoder
+fractional PE are evaluated in:
+
+```
+grid      coord = (index + 0.5) / grid_extent * ref_extent     (default, back-compat)
+physical  coord = (index + 0.5) * p * mpp / ref_um             (metric)
+```
+
+The identity that decides this (see §1) is
+
+```
+relative RoPE phase  =  (physical separation d / window extent W) * ref_extent * theta
+```
+
+* **Fixed physical window** (`n_tokens * target_um` constant): `W` is constant,
+  so `grid` coordinates are *already* metric. `physical` is then equivalent up
+  to the choice of `ref_um`; nothing is gained or lost.
+* **Cell-sized window** (variable `N`): `W` varies with cell size, so `grid`
+  coordinates encode `d/W` — separation as a fraction of the cell. The same
+  physical gap gets a different rotation in a small cell than in a large one.
+  An additive scale conditioner **cannot** repair this: the rotation is applied
+  to q/k before attention and a per-sample global vector does not rescale the
+  phase. Only `physical` coordinates make the phase proportional to `d`.
+
+Consequences:
+
+- `pe_space="physical"` requires pixel sizes and raises without them.
+  `"auto"` enables it whenever the tokenizer carries a pixel size.
+- **Both** encoder RoPE and decoder PE must use the same frame. The decoder
+  gets `target_step_um = p * mpp` per target so mask tokens and visible tokens
+  share coordinates; mixing `physical` encoder RoPE with per-axis grid-fraction
+  decoder PE is a silent bug.
+- `pe_ref_um` (default `1.0`) fixes how many micrometres one coordinate unit
+  is. With 1 µm/unit a 32 µm window spans ~32 units, matching the
+  `ref_extent=32` grid default, so the RoPE frequency scale is comparable across
+  the two modes. Equivalent mapping: `ref_um = W_um / ref_extent`.
+- `grid` coordinates with a variable patch count emit a warning rather than
+  silently training with non-comparable position phases.
+
+## 0.2 Variable `N` (cell-sized grids)
+
+A cell-sized window (`plan_patches(..., n_tokens="cell")`) makes the patch
+count a function of cell size: `n_tokens = ceil(cell_side_px / p)`, clamped.
+This is legitimate — `p` still absorbs the instrument and `N` encodes cell size
+— but it costs three things, all of which are now handled explicitly:
+
+| cost | handling |
+|---|---|
+| Non-metric position phases | `pe_space="physical"` (§0.1); warning otherwise |
+| Small-cell MAE degeneracy (`N=1` disables patch masking) | `cell_n_tokens(min_n=2)`; `DCPVisibilitySampler` still falls back for `N=1` |
+| Ragged batches | `extract_patches` raises on mixed `N`; `_build_targets` takes the per-sample list path whenever `p` **or** `N` varies |
+| Token-count gradient weighting ∝ cell area | `loss_reduce="sample"` gives each cell one vote |
+
+Fatigue points to watch: the decoder head is per-`p`, so all instruments' `p`
+must be in `patch_sizes`; `max_tokens` only guards the random `flexi_vit`
+sampler, not cell-sized crops.
+
 ## Status in this repo
 
 **Implemented.** The target architecture is now the default model path:

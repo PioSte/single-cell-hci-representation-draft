@@ -77,6 +77,18 @@ class ChannelSet:
     pixel_size: Optional[torch.Tensor] = None
 
     # ------------------------------------------------------------------ #
+    def per_sample_of(self, values: Optional[torch.Tensor]) -> Optional[torch.Tensor]:
+        """Collapse a per-token ``[T]`` tensor to per-sample ``[n_samples]``.
+
+        Patch size and pixel size are constant within a sample, so the last
+        write wins.  Returns ``None`` when ``values`` is ``None``.
+        """
+        if values is None:
+            return None
+        out = values.new_zeros(self.n_samples)
+        out[self.sample_idx] = values
+        return out
+
     def location_group_ids(self) -> torch.Tensor:
         """Group id per token for *per-spatial-location* channel attention.
 

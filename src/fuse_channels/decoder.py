@@ -300,6 +300,7 @@ class ChannelAwareDecoder(nn.Module):
         canonical_patch_size: int | None = None,
         fractional_pe_mode: str = "sincos",
         fractional_pe_base: float = 10000.0,
+        pe_ref_um: float = 1.0,
         adaln: bool = False,
         patch_sizes=None,
         head_mode: str = "per_p",
@@ -307,6 +308,7 @@ class ChannelAwareDecoder(nn.Module):
         super().__init__()
         self.mask_token = nn.Parameter(torch.zeros(dim))
         self.pos_embed = pos_embed
+        self.pe_ref_um = float(pe_ref_um)
         self.fractional_pe = None
         if pos_embed == "fractional":
             self.fractional_pe = FractionalSpatialPE(
@@ -358,14 +360,19 @@ class ChannelAwareDecoder(nn.Module):
         )
 
     def _target_pe(self, target_patch, target_row=None, target_col=None,
-                   target_grid_h=None, target_grid_w=None):
+                   target_grid_h=None, target_grid_w=None, target_step_um=None):
         if self.fractional_pe is not None:
             if target_row is None or target_col is None:
                 raise ValueError(
                     "fractional decoder PE needs target_row/target_col and grid extents"
                 )
             return self.fractional_pe(
-                target_row, target_col, target_grid_h, target_grid_w
+                target_row,
+                target_col,
+                target_grid_h,
+                target_grid_w,
+                step_um=target_step_um,
+                ref_um=self.pe_ref_um,
             )
         if self.pos_embed == "none":
             return self.mask_token.new_zeros(
@@ -387,6 +394,7 @@ class ChannelAwareDecoder(nn.Module):
         target_grid_h=None,
         target_grid_w=None,
         target_patch_size=None,
+        target_step_um=None,
         cond: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Predict pixels for the requested (sample, channel, patch) targets.
@@ -398,7 +406,12 @@ class ChannelAwareDecoder(nn.Module):
         q = (
             self.mask_token
             + self._target_pe(
-                target_patch, target_row, target_col, target_grid_h, target_grid_w
+                target_patch,
+                target_row,
+                target_col,
+                target_grid_h,
+                target_grid_w,
+                target_step_um=target_step_um,
             )
             + self.target_proj(target_channel_embed)
         )

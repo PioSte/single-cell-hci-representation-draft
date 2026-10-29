@@ -82,6 +82,45 @@ def normalized_grid_coords(
     return r_norm, c_norm
 
 
+def physical_grid_coords(
+    rows: torch.Tensor,
+    cols: torch.Tensor,
+    patch_size,
+    pixel_size,
+    *,
+    ref_um: float = 1.0,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Metric coordinates: token centre in micrometres, divided by ``ref_um``.
+
+    ``coord = (index + 0.5) * patch_size * pixel_size / ref_um``
+
+    Because the coordinate is proportional to physical distance, the RoPE phase
+    difference between two tokens is proportional to their separation in µm --
+    for *any* grid extent.  This is what makes a cell-sized (variable ``N``)
+    grid metric: with :func:`normalized_grid_coords` the phase encodes
+    ``distance / window_extent``, so the same physical gap gets a different
+    rotation in a small cell than in a large one, and an additive scale
+    conditioner cannot undo it (the rotation is applied before attention).
+
+    ``patch_size`` and ``pixel_size`` may be scalars or per-token tensors.
+
+    ``ref_um=1.0`` means one coordinate unit is one micrometre, so a 32 um
+    window spans ~32 units -- the same range as the grid-fraction default
+    (``ref_extent=32``), which keeps the RoPE frequency scale comparable when
+    switching between the two coordinate systems.
+    """
+    if ref_um <= 0:
+        raise ValueError(f"ref_um must be positive, got {ref_um}")
+    dtype = torch.float32
+    device = rows.device
+    p = _as_tensor(patch_size, device=device, dtype=dtype).expand_as(rows)
+    mpp = _as_tensor(pixel_size, device=device, dtype=dtype).expand_as(rows)
+    if bool((p <= 0).any()) or bool((mpp <= 0).any()):
+        raise ValueError("patch_size and pixel_size must be positive")
+    step = p * mpp / ref_um
+    return (rows.to(dtype) + 0.5) * step, (cols.to(dtype) + 0.5) * step
+
+
 def axial_rope_cache(
     rows: torch.Tensor,
     cols: torch.Tensor,
@@ -92,17 +131,32 @@ def axial_rope_cache(
     base: float = 100.0,
     ref_extent: float = 32.0,
     shared_extent: bool = False,
+    patch_size=None,
+    pixel_size=None,
+    ref_um: float = 1.0,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Return ``(cos, sin)`` of shape ``[T, head_dim / 2]`` for axial RoPE."""
+    """Return ``(cos, sin)`` of shape ``[T, head_dim / 2]`` for axial RoPE.
+
+    Passing ``pixel_size`` (and ``patch_size``) switches from grid-fraction
+    coordinates to metric ones via :func:`physical_grid_coords`, so the phase
+    encodes physical separation instead of a fraction of the grid extent.
+    """
     theta = rope_frequencies(head_dim, base).to(rows.device)
-    r_norm, c_norm = normalized_grid_coords(
-        rows,
-        cols,
-        grid_h,
-        grid_w,
-        ref_extent=ref_extent,
-        shared_extent=shared_extent,
-    )
+    if pixel_size is not None:
+        if patch_size is None:
+            raise ValueError("metric RoPE needs patch_size when pixel_size is given")
+        r_norm, c_norm = physical_grid_coords(
+            rows, cols, patch_size, pixel_size, ref_um=ref_um
+        )
+    else:
+        r_norm, c_norm = normalized_grid_coords(
+            rows,
+            cols,
+            grid_h,
+            grid_w,
+            ref_extent=ref_extent,
+            shared_extent=shared_extent,
+        )
     angle = torch.cat(
         [r_norm[:, None] * theta[None, :], c_norm[:, None] * theta[None, :]], dim=-1
     )

@@ -3,6 +3,7 @@
 from .container import ChannelSet
 from .crops import (
     CellCrop,
+    cell_n_tokens,
     CellCropDataset,
     CropGeometry,
     TiffStack,
@@ -56,6 +57,7 @@ from .rope import (
 __all__ = [
     "ChannelSet",
     "CellCrop",
+    "cell_n_tokens",
     "CellCropDataset",
     "CropGeometry",
     "TiffStack",

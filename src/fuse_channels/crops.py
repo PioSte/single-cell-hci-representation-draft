@@ -271,29 +271,86 @@ class CellCrop:
         return crop
 
 
+def cell_n_tokens(
+    cell_hw_px: Tuple[int, int],
+    patch_size: int,
+    min_n: int = 2,
+    max_n: int = 8,
+) -> int:
+    """Tokens per side needed to cover a cell: ``ceil(max(h, w) / p)``, clamped.
+
+    ``min_n`` defaults to 2 because a ``1x1`` grid disables the MAE patch
+    region (``floor(1 * patch_ratio) == 0``), so a 1-token cell would be trained
+    with a different objective than every other cell.
+    """
+    if patch_size < 1:
+        raise ValueError(f"patch_size must be >= 1, got {patch_size}")
+    if min_n < 1 or max_n < min_n:
+        raise ValueError(f"need 1 <= min_n <= max_n, got {min_n}, {max_n}")
+    h, w = int(cell_hw_px[0]), int(cell_hw_px[1])
+    need = max(1, math.ceil(max(h, w) / patch_size))
+    return int(max(min_n, min(need, max_n)))
+
+
 def plan_patches(
     mask: np.ndarray,
     image_hw: Tuple[int, int],
-    geometry: CropGeometry,
+    geometry: Optional[CropGeometry] = None,
     image_id: str = "image",
     channel_ids: Sequence[int] = (),
     coverage_mode: str = "any",
     coverage_threshold: float = 0.0,
     min_valid_tokens: int = 1,
     require_full_cell: bool = False,
+    *,
+    mpp: Optional[float] = None,
+    target_um: Optional[float] = None,
+    allowed: Optional[Sequence[int]] = None,
+    n_tokens=None,
+    min_n: int = 2,
+    max_n: int = 8,
+    snap: str = "down",
 ) -> Tuple[List[CellCrop], List[dict]]:
-    """Plan one fixed-size token window per non-zero id in ``mask``.
+    """Plan one token window per non-zero id in ``mask``.
 
-    The window is ``geometry.crop_px`` square regardless of cell size. It is
-    centred on the cell's bounding box when that fits, and shifted to the image
-    boundary when the extension would cross one -- so an interior cell close to
-    a border still gets a full-size in-bounds box.
+    Two modes:
+
+    * pass ``geometry`` -- one fixed window size for every cell;
+    * pass ``mpp``/``target_um``/``allowed`` and ``n_tokens`` -- the window is
+      derived per image, and ``n_tokens="cell"`` additionally sizes it per
+      cell (``ceil(cell_side / p)`` clamped to ``[min_n, max_n]``), i.e. a
+      variable patch count driven by cell size and the pixel-size-adjusted
+      ``p``.
+
+    Either way the window is centred on the cell's bounding box when that fits
+    and shifted to the image boundary when the extension would cross one, so an
+    interior cell close to a border still gets a full, in-bounds box.
 
     Returns ``(crops, skipped)``. A cell is skipped (never padded) when the box
     cannot fit inside ``image_hw``, when fewer than ``min_valid_tokens`` patches
     touch the cell, or when ``require_full_cell`` is set and the cell is larger
     than the window.
     """
+    if geometry is None:
+        if mpp is None or target_um is None or allowed is None:
+            raise ValueError(
+                "pass either geometry=, or mpp= with target_um= and allowed="
+            )
+        if n_tokens is None:
+            raise ValueError(
+                "pass n_tokens= (an int, or 'cell' to size the window per cell)"
+            )
+        base_geometry = (
+            None
+            if n_tokens == "cell"
+            else CropGeometry.build(mpp, target_um, allowed, int(n_tokens), snap=snap)
+        )
+    else:
+        if n_tokens is not None and n_tokens != "cell":
+            raise ValueError("pass geometry= or n_tokens=, not both")
+        base_geometry = geometry
+        if n_tokens == "cell":
+            base_geometry = None
     if mask.ndim != 2:
         raise ValueError(f"mask must be 2-D, got {mask.shape}")
     H, W = int(image_hw[0]), int(image_hw[1])
@@ -306,18 +363,26 @@ def plan_patches(
         if ys.size == 0:
             continue
         bbox = (int(ys.min()), int(ys.max()) + 1, int(xs.min()), int(xs.max()) + 1)
-        box = place_box(bbox, geometry.crop_px, (H, W))
+        geom = base_geometry
+        if geom is None:
+            # variable-N mode: size this cell's window from its own extent
+            p = patch_size_for_mpp(mpp, target_um, allowed, snap=snap)
+            n = cell_n_tokens(
+                (bbox[1] - bbox[0], bbox[3] - bbox[2]), p, min_n=min_n, max_n=max_n
+            )
+            geom = CropGeometry.build(mpp, target_um, allowed, n, snap=snap)
+        box = place_box(bbox, geom.crop_px, (H, W))
         if box is None:
             skipped.append(
                 {
                     "image_id": image_id,
                     "cell_id": int(cid),
-                    "reason": f"crop_px={geometry.crop_px} exceeds image {H}x{W}",
+                    "reason": f"crop_px={geom.crop_px} exceeds image {H}x{W}",
                 }
             )
             continue
         top, left = box
-        s = geometry.crop_px
+        s = geom.crop_px
         # the whole cell fits only if its bbox is inside the placed window
         covers = (
             bbox[0] >= top
@@ -340,7 +405,7 @@ def plan_patches(
         sub = mask[top : top + s, left : left + s]
         coverage = token_coverage(
             sub == cid,
-            geometry.patch_size,
+            geom.patch_size,
             mode=coverage_mode,
             threshold=coverage_threshold,
         )
@@ -357,7 +422,7 @@ def plan_patches(
         crop = CellCrop(
             image_id=image_id,
             cell_id=int(cid),
-            geometry=geometry,
+            geometry=geom,
             top=top,
             left=left,
             channel_ids=tuple(int(c) for c in channel_ids),

@@ -221,12 +221,34 @@ class ChannelTokenizer(nn.Module):
         channel_ids: Sequence[torch.Tensor],
         visible: Optional[Sequence[torch.Tensor]] = None,
         patch_sizes=None,
+        pixel_sizes=None,
     ) -> ChannelSet:
         n_samples = len(images)
         tokens, meta = self.patch_embed(
             images, channel_ids, visible, patch_sizes=patch_sizes
         )
         channel_global = meta["channel_global"]
+
+        # µm/px is constant within a sample; carry it per token so metric PE can
+        # read it without a second lookup path.
+        pixel_size = None
+        if pixel_sizes is not None:
+            if isinstance(pixel_sizes, (int, float, torch.Tensor)) and not isinstance(
+                pixel_sizes, (list, tuple)
+            ):
+                per_sample = [float(pixel_sizes)] * n_samples
+            else:
+                per_sample = [None if v is None else float(v) for v in pixel_sizes]
+            if len(per_sample) != n_samples:
+                raise ValueError(
+                    f"expected {n_samples} pixel sizes, got {len(per_sample)}"
+                )
+            if any(v is None for v in per_sample):
+                raise ValueError(
+                    "metric PE needs a pixel size for every sample; got None"
+                )
+            pv = torch.tensor(per_sample, dtype=torch.float32, device=tokens.device)
+            pixel_size = pv[meta["sample_idx"]]
 
         ids_per_ch = torch.cat([c.to(tokens.device) for c in channel_ids])
         embed_per_ch = self.channel_embed(ids_per_ch)
@@ -248,6 +270,7 @@ class ChannelTokenizer(nn.Module):
             patch_row=meta["patch_row"],
             patch_col=meta["patch_col"],
             patch_size=meta["patch_size"],
+            pixel_size=pixel_size,
         )
 
     # ------------------------------------------------------------------ #
@@ -255,30 +278,24 @@ class ChannelTokenizer(nn.Module):
     def extract_patches(images: Sequence[torch.Tensor], patch_size) -> torch.Tensor:
         """Unfold ``[C,1,H,W]`` channels into ``[ΣC, patch_size**2, N]`` pixels.
 
-        ``patch_size`` may be an int or one size per sample.  Mixed sizes must
-        all produce the same number of pixels per patch (i.e. the same ``p``);
-        for genuinely mixed patch sizes use :func:`extract_patches_list`.
+        Requires a *uniform* patch count ``N`` across samples, because the
+        ``ΣC`` axis is concatenated.  Use :func:`extract_patches_list` whenever
+        the patch count may differ (variable patch size *or* cell-sized crops).
         """
         if isinstance(patch_size, int):
             ps = [patch_size] * len(images)
         else:
             ps = [int(p) for p in patch_size]
-        if len(set(ps)) == 1:
-            p = ps[0]
-            return torch.cat(
-                [
-                    F.unfold(im.to(images[0].device), p, stride=p)
-                    for im in images
-                ],
-                dim=0,
+        per_sample = [
+            F.unfold(im.to(images[0].device), p, stride=p) for im, p in zip(images, ps)
+        ]
+        ns = {t.shape[-1] for t in per_sample}
+        if len(ns) > 1:
+            raise ValueError(
+                "extract_patches needs the same patch count per sample, got "
+                f"{sorted(ns)}; use extract_patches_list for variable-N batches"
             )
-        return torch.cat(
-            [
-                F.unfold(im.to(images[0].device), p, stride=p)
-                for im, p in zip(images, ps)
-            ],
-            dim=0,
-        )
+        return torch.cat(per_sample, dim=0)
 
     @staticmethod
     def extract_patches_list(

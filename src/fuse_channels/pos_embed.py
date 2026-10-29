@@ -112,6 +112,26 @@ def fractional_1d_sincos(
     return torch.cat([out.sin(), out.cos()], dim=1)
 
 
+def get_fractional_sincos_pos_embed_uv(
+    dim: int,
+    v: torch.Tensor,
+    u: torch.Tensor,
+    base: float = 10000.0,
+) -> torch.Tensor:
+    """Factorized fractional PE from pre-computed row/column coordinates.
+
+    ``v`` and ``u`` are the scalar coordinates fed to ``g_row`` / ``g_col``, so
+    callers can supply grid fractions (``(r+0.5)/grid_h``) or metric
+    coordinates (``(r+0.5)*p*mpp/ref_um``).  The two full-width axis embeddings
+    are added.
+    """
+    if dim % 2 != 0:
+        raise ValueError(f"fractional sincos PE needs an even dim, got {dim}")
+    row_pe = fractional_1d_sincos(dim, v, base=base)
+    col_pe = fractional_1d_sincos(dim, u, base=base)
+    return row_pe + col_pe
+
+
 def get_fractional_sincos_pos_embed(
     dim: int,
     rows: torch.Tensor,
@@ -183,16 +203,31 @@ class FractionalSpatialPE(nn.Module):
                 nn.Linear(1, hidden), nn.GELU(), nn.Linear(hidden, dim)
             )
 
-    def forward(self, rows, cols, grid_h, grid_w) -> torch.Tensor:
+    def forward(
+        self, rows, cols, grid_h, grid_w, *, step_um=None, ref_um: float = 1.0
+    ) -> torch.Tensor:
+        """``step_um`` (``patch_size * pixel_size`` per target) selects metric coordinates.
+
+        With ``step_um=None`` the coordinates are grid fractions
+        ``(r+0.5)/grid_h``, which stretch per sample.  With ``step_um`` given
+        they are metric -- ``(r+0.5)*step_um/ref_um`` -- and must use the same
+        ``ref_um`` as the encoder RoPE, otherwise mask tokens and visible
+        tokens live in different coordinate frames.
+        """
         dtype = torch.float32
         device = rows.device
-        gh = _as_float(grid_h, device, dtype).expand_as(rows)
-        gw = _as_float(grid_w, device, dtype).expand_as(cols)
-        v = (rows.to(dtype) + 0.5) / gh
-        u = (cols.to(dtype) + 0.5) / gw
+        if step_um is not None:
+            step = _as_float(step_um, device, dtype).expand_as(rows) / ref_um
+            v = (rows.to(dtype) + 0.5) * step
+            u = (cols.to(dtype) + 0.5) * step
+        else:
+            gh = _as_float(grid_h, device, dtype).expand_as(rows)
+            gw = _as_float(grid_w, device, dtype).expand_as(cols)
+            v = (rows.to(dtype) + 0.5) / gh
+            u = (cols.to(dtype) + 0.5) / gw
         if self.mode == "sincos":
-            return get_fractional_sincos_pos_embed(
-                self.dim, rows, cols, grid_h, grid_w, base=self.base
+            return get_fractional_sincos_pos_embed_uv(
+                self.dim, v, u, base=self.base
             )
         row_pe = self.row_mlp(v.reshape(-1, 1))
         col_pe = self.col_mlp(u.reshape(-1, 1))

@@ -60,6 +60,17 @@ The scale conditioner receives both `log(p)` and `log(mpp)` because FlexiViT
 knows nothing about physical units; `p` alone cannot distinguish "large patch at
 fine sampling" from "small patch at coarse sampling".
 
+**Positional embeddings can be metric.** With a fixed-size physical window the
+default grid-fraction PE is already metric, because the normalization
+denominator is constant. With cell-sized windows (variable patch count) it is
+not: the phase encodes `distance / window_extent`, so an additive scale
+conditioner cannot recover the physical geometry. Use `pe_space="physical"`
+(encoder RoPE and decoder PE both evaluate `index * p * mpp / ref_um`) for
+cell-sized grids. The loader in `crops.py` produces exactly that layout:
+`plan_patches` reads boxes straight out of the raw planes, so `crop_px` is an
+exact multiple of `p`, nothing is padded, and border cells get a shifted box
+instead of a lost border.
+
 ## Architecture
 
 ```
