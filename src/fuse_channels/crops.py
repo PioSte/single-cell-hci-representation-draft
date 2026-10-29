@@ -3,7 +3,7 @@
 The crop box is chosen so that it is an **exact multiple of the patch size**
 implied by the image's pixel size::
 
-    p_px     = round(target_um / mpp)      snapped to the trained patch sizes
+    p_px     = round(target_um / pixel_size)      snapped to the trained patch sizes
     crop_px  = n_tokens * p_px             exact, no padding
 
 Read from the raw image rather than from a pre-existing crop, so the box can
@@ -49,20 +49,20 @@ import torch
 # --------------------------------------------------------------------------- #
 # geometry: pixel size -> patch size -> crop size
 # --------------------------------------------------------------------------- #
-def patch_size_for_mpp(
-    mpp: float,
+def patch_size_for_pixel_size(
+    pixel_size: float,
     target_um: float,
     allowed: Sequence[int],
     snap: str = "down",
 ) -> int:
     """Pick the patch size (in pixels) whose physical extent is closest to ``target_um``.
 
-    ``snap="down"`` prefers the largest allowed ``p <= target_um / mpp`` (smaller
+    ``snap="down"`` prefers the largest allowed ``p <= target_um / pixel_size`` (smaller
     physical token, more tokens, never larger than requested); ``"nearest"``
-    minimises ``|p * mpp - target_um|`` with ties broken towards the smaller ``p``.
+    minimises ``|p * pixel_size - target_um|`` with ties broken towards the smaller ``p``.
     """
-    if mpp <= 0:
-        raise ValueError(f"mpp must be positive, got {mpp}")
+    if pixel_size <= 0:
+        raise ValueError(f"pixel_size must be positive, got {pixel_size}")
     if target_um <= 0:
         raise ValueError(f"target_um must be positive, got {target_um}")
     cands = sorted({int(p) for p in allowed})
@@ -70,12 +70,12 @@ def patch_size_for_mpp(
         raise ValueError("allowed must contain at least one patch size")
     if any(p < 1 for p in cands):
         raise ValueError(f"patch sizes must be positive, got {cands}")
-    raw = target_um / mpp
+    raw = target_um / pixel_size
     if snap == "down":
         feasible = [p for p in cands if p <= raw]
         return feasible[-1] if feasible else cands[0]
     if snap == "nearest":
-        return min(cands, key=lambda p: (abs(p * mpp - target_um), p))
+        return min(cands, key=lambda p: (abs(p * pixel_size - target_um), p))
     raise ValueError(f"snap must be 'down' or 'nearest', got {snap!r}")
 
 
@@ -89,7 +89,7 @@ class CropGeometry:
     patch_size: int
     n_tokens: int
     crop_px: int
-    mpp: float
+    pixel_size: float
     target_um: float
     extent_um: float
     n_patches: int
@@ -97,7 +97,7 @@ class CropGeometry:
     @classmethod
     def build(
         cls,
-        mpp: float,
+        pixel_size: float,
         target_um: float,
         allowed: Sequence[int],
         n_tokens: int,
@@ -105,14 +105,14 @@ class CropGeometry:
     ) -> "CropGeometry":
         if n_tokens < 1:
             raise ValueError(f"n_tokens must be >= 1, got {n_tokens}")
-        p = patch_size_for_mpp(mpp, target_um, allowed, snap=snap)
+        p = patch_size_for_pixel_size(pixel_size, target_um, allowed, snap=snap)
         return cls(
             patch_size=p,
             n_tokens=int(n_tokens),
             crop_px=int(n_tokens) * p,
-            mpp=float(mpp),
+            pixel_size=float(pixel_size),
             target_um=float(target_um),
-            extent_um=p * float(mpp),
+            extent_um=p * float(pixel_size),
             n_patches=int(n_tokens) ** 2,
         )
 
@@ -313,7 +313,7 @@ def plan_patches(
     min_valid_tokens: int = 1,
     require_full_cell: bool = False,
     *,
-    mpp: Optional[float] = None,
+    pixel_size: Optional[float] = None,
     target_um: Optional[float] = None,
     allowed: Optional[Sequence[int]] = None,
     n_tokens=None,
@@ -326,7 +326,7 @@ def plan_patches(
     Two modes:
 
     * pass ``geometry`` -- one fixed window size for every cell;
-    * pass ``mpp``/``target_um``/``allowed`` and ``n_tokens`` -- the window is
+    * pass ``pixel_size``/``target_um``/``allowed`` and ``n_tokens`` -- the window is
       derived per image, and ``n_tokens="cell"`` additionally sizes it per
       cell (``ceil(cell_side / p)``, at least ``min_n``), i.e. a variable
       patch count driven by cell size and the pixel-size-adjusted ``p``.
@@ -345,9 +345,9 @@ def plan_patches(
     than the window.
     """
     if geometry is None:
-        if mpp is None or target_um is None or allowed is None:
+        if pixel_size is None or target_um is None or allowed is None:
             raise ValueError(
-                "pass either geometry=, or mpp= with target_um= and allowed="
+                "pass either geometry=, or pixel_size= with target_um= and allowed="
             )
         if n_tokens is None:
             raise ValueError(
@@ -356,7 +356,7 @@ def plan_patches(
         base_geometry = (
             None
             if n_tokens == "cell"
-            else CropGeometry.build(mpp, target_um, allowed, int(n_tokens), snap=snap)
+            else CropGeometry.build(pixel_size, target_um, allowed, int(n_tokens), snap=snap)
         )
     else:
         if n_tokens is not None and n_tokens != "cell":
@@ -379,7 +379,7 @@ def plan_patches(
         geom = base_geometry
         if geom is None:
             # variable-N mode: size this cell's window from its own extent
-            p = patch_size_for_mpp(mpp, target_um, allowed, snap=snap)
+            p = patch_size_for_pixel_size(pixel_size, target_um, allowed, snap=snap)
             need = cell_n_tokens(
                 (bbox[1] - bbox[0], bbox[3] - bbox[2]), p, min_n=min_n
             )
@@ -395,7 +395,7 @@ def plan_patches(
                     }
                 )
                 continue
-            geom = CropGeometry.build(mpp, target_um, allowed, need, snap=snap)
+            geom = CropGeometry.build(pixel_size, target_um, allowed, need, snap=snap)
         box = place_box(bbox, geom.crop_px, (H, W))
         if box is None:
             skipped.append(
@@ -537,7 +537,7 @@ def write_crop_cache(
     tifffile.imwrite(tif_path, np.ascontiguousarray(arr), photometric="minisblack")
     crop.path = str(tif_path)
     meta = crop.to_dict()
-    meta["mpp"] = crop.geometry.mpp
+    meta["pixel_size"] = crop.geometry.pixel_size
     meta["patch_size"] = crop.geometry.patch_size
     meta["n_tokens"] = crop.geometry.n_tokens
     meta["target_um"] = crop.geometry.target_um
@@ -548,7 +548,7 @@ def write_crop_cache(
 
 
 class CellCropDataset(torch.utils.data.Dataset):
-    """Serve ``(images, channel_ids, mpp, patch_size, valid)`` per cell.
+    """Serve ``(images, channel_ids, pixel_size, patch_size, valid)`` per cell.
 
     Two modes:
 
@@ -603,7 +603,7 @@ class CellCropDataset(torch.utils.data.Dataset):
         item = {
             "images": images,
             "channel_ids": torch.tensor(crop.channel_ids, dtype=torch.long),
-            "pixel_size": float(crop.geometry.mpp),
+            "pixel_size": float(crop.geometry.pixel_size),
             "patch_size": int(crop.geometry.patch_size),
             "image_id": crop.image_id,
             "cell_id": int(crop.cell_id),

@@ -36,14 +36,14 @@ pytestmark = pytest.mark.filterwarnings("ignore:variable patch count")
 # --------------------------------------------------------------------------- #
 def test_physical_coords_make_the_phase_proportional_to_um():
     """The same physical gap must rotate identically in a small and a large cell."""
-    p, mpp = 8, 0.5  # 4 um per token
+    p, pixel_size = 8, 0.5  # 4 um per token
     gap_tokens = 2
-    gap_um = gap_tokens * p * mpp
+    gap_um = gap_tokens * p * pixel_size
 
     def relative_phase(n_h):
         rows = torch.tensor([0, gap_tokens], dtype=torch.float32)
         r, _ = physical_grid_coords(
-            rows, rows, torch.tensor(p), torch.tensor(mpp), ref_um=32.0
+            rows, rows, torch.tensor(p), torch.tensor(pixel_size), ref_um=32.0
         )
         return float(r[1] - r[0]) * 32.0
 
@@ -71,10 +71,10 @@ def test_grid_fraction_coords_encode_distance_relative_to_the_window():
 
 def test_metric_rope_matches_grid_rope_when_the_window_is_constant():
     """At a fixed physical window the metric PE is a numerical no-op."""
-    n_h, p, mpp, ref_extent = 4, 8, 1.0, 32.0
-    # grid coord (r+0.5)/n_h*S == metric coord (r+0.5)*p*mpp/ref_um
-    # iff ref_um == n_h*p*mpp/S
-    ref_um = n_h * p * mpp / ref_extent
+    n_h, p, pixel_size, ref_extent = 4, 8, 1.0, 32.0
+    # grid coord (r+0.5)/n_h*S == metric coord (r+0.5)*p*pixel_size/ref_um
+    # iff ref_um == n_h*p*pixel_size/S
+    ref_um = n_h * p * pixel_size / ref_extent
     rows = torch.arange(n_h * n_h, dtype=torch.float32)
     cols = rows % n_h
     rows = rows // n_h
@@ -87,7 +87,7 @@ def test_metric_rope_matches_grid_rope_when_the_window_is_constant():
         8,
         ref_extent=ref_extent,
         patch_size=torch.tensor(p),
-        pixel_size=torch.tensor(mpp),
+        pixel_size=torch.tensor(pixel_size),
         ref_um=ref_um,
     )
     torch.testing.assert_close(cg, cm, atol=1e-6, rtol=0)
@@ -137,7 +137,7 @@ def test_plan_patches_variable_n_gives_each_cell_its_own_grid():
     mask[100:132, 100:132] = 2  # 32 px -> 4 tokens
     mask[150:190, 150:190] = 3  # 40 px -> 5 tokens
     crops, skipped = plan_patches(
-        mask, (200, 200), mpp=1.0, target_um=8.0, allowed=[8], n_tokens="cell"
+        mask, (200, 200), pixel_size=1.0, target_um=8.0, allowed=[8], n_tokens="cell"
     )
     assert skipped == []
     by_id = {c.cell_id: c for c in crops}
@@ -155,7 +155,7 @@ def test_large_cell_is_processed_not_clipped():
     mask = np.zeros((400, 400), dtype=np.int64)
     mask[150:330, 150:330] = 1  # 180 px cell -> 23 tokens/side at p=8
     crops, skipped = plan_patches(
-        mask, (400, 400), mpp=1.0, target_um=8.0, allowed=[8], n_tokens="cell"
+        mask, (400, 400), pixel_size=1.0, target_um=8.0, allowed=[8], n_tokens="cell"
     )
     assert skipped == [] and len(crops) == 1
     c = crops[0]
@@ -169,7 +169,7 @@ def test_max_n_budget_skips_and_reports_instead_of_clipping():
     mask = np.zeros((400, 400), dtype=np.int64)
     mask[150:330, 150:330] = 1
     crops, skipped = plan_patches(
-        mask, (400, 400), mpp=1.0, target_um=8.0, allowed=[8],
+        mask, (400, 400), pixel_size=1.0, target_um=8.0, allowed=[8],
         n_tokens="cell", max_n=8,
     )
     assert crops == []
@@ -192,7 +192,7 @@ def test_plan_patches_variable_n_still_clamps_to_the_image():
     mask = np.zeros((96, 96), dtype=np.int64)
     mask[80:94, 80:94] = 1  # interior but the window would cross the border
     crops, skipped = plan_patches(
-        mask, (96, 96), mpp=1.0, target_um=8.0, allowed=[8], n_tokens="cell"
+        mask, (96, 96), pixel_size=1.0, target_um=8.0, allowed=[8], n_tokens="cell"
     )
     assert skipped == [] and len(crops) == 1
     c = crops[0]
@@ -367,8 +367,8 @@ def test_crop_reader_to_model_with_variable_n_and_variable_p():
     mask[100:132, 100:132] = 2  # 32 px cell
 
     # two instruments: same physical token extent, different p
-    geom_a = CropGeometry.build(mpp=1.0, target_um=8.0, allowed=[8, 16], n_tokens=2)
-    geom_b = CropGeometry.build(mpp=0.5, target_um=8.0, allowed=[8, 16], n_tokens=2)
+    geom_a = CropGeometry.build(pixel_size=1.0, target_um=8.0, allowed=[8, 16], n_tokens=2)
+    geom_b = CropGeometry.build(pixel_size=0.5, target_um=8.0, allowed=[8, 16], n_tokens=2)
     assert geom_a.patch_size == 8 and geom_b.patch_size == 16
 
     crops_a, _ = plan_patches(mask, (200, 200), geom_a, image_id="a",
@@ -377,7 +377,7 @@ def test_crop_reader_to_model_with_variable_n_and_variable_p():
                               channel_ids=(0, 1))
     # variable N on instrument a: cell-sized windows
     crops_a_cell, skipped = plan_patches(
-        mask, (200, 200), mpp=1.0, target_um=8.0, allowed=[8, 16],
+        mask, (200, 200), pixel_size=1.0, target_um=8.0, allowed=[8, 16],
         n_tokens="cell", image_id="a", channel_ids=(0, 1),
     )
     assert skipped == []

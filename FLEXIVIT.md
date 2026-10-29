@@ -19,48 +19,68 @@ RoPE, or accept that raw-index RoPE also encodes sampling density.
 
 `p` is **not** a pixel size. In FlexiViT, `p` is the patch edge length counted in
 pixels (`references/flexivit/paper.md:75`: `x_i ∈ R^{p×p×c}`, `s = ⌊h/p⌋·⌊w/p⌋`);
-the paper never multiplies it by a physical scale. The three quantities are:
+the paper never multiplies it by a physical scale. The quantities are:
 
 | symbol | meaning | owner |
 |---|---|---|
-| `mpp` | physical size of **one pixel** (µm/px), varies per instrument | dataset metadata → `ChannelSet.pixel_size` |
+| `pixel_size` | physical size of **one pixel** (µm/px), varies per instrument | dataset metadata → `ChannelSet.pixel_size` |
 | `p` | number of **pixels per patch edge**, a model hyperparameter | `patch_sizes` / FlexiViT |
-| `p · mpp` | physical extent of **one token** (µm) | design synthesis, held ≈ constant |
+| `p · pixel_size` | physical extent of **one token** (µm) — **the invariant** | design synthesis, held ≈ constant |
+| `n_tokens · p · pixel_size` | physical extent of the **whole crop** (µm) | *not* an invariant; see §0.2 |
+
+There is exactly one name for the per-pixel quantity in this repo: **`pixel_size`**
+in code and prose alike (physical size of one pixel, µm/px). Its logarithm is
+`log_pixel_size`, and the presence flag in the scale embedding is
+`has_pixel_size`. Unit spellings such as µm/px are units, not names.
 
 **Objective.** High-content data is acquired at different pixel sizes. To make a
-token mean the same physical thing on every instrument, hold `p · mpp` constant
+token mean the same physical thing on every instrument, hold `p · pixel_size` constant
 and let `p` absorb the variation:
 
 ```
-p_b = round(p_target_um / mpp_b)   then snap to the configured `patch_sizes`
+p_b = round(target_um / pixel_size_b)   then snap to the configured `patch_sizes`
 ```
+
+**What is held constant is the patch, not the crop.** The invariant is the
+physical size of a single token (`p · pixel_size`). The physical extent of the
+*whole crop* is `n_tokens · p · pixel_size` and is free to vary — it is
+cell-sized in the variable-`N` mode (§0.2) and fixed only if you choose a fixed
+`n_tokens`. Do not confuse the two: a design can legitimately scale the number
+of tokens with the object being imaged while every token keeps the same
+physical footprint.
+
+Two units traps when ingesting `pixel_size`: some tools report nanometres or
+pixels-per-µm instead of µm/px (a factor of 1000 or an inversion), and OME-TIFF
+carries `PhysicalSizeX` *and* `PhysicalSizeY`, which can differ. `p` is scalar
+and the kernel is square, so for anisotropic pixel sizes use the geometric mean
+and accept the aspect-ratio error, or resample the image.
 
 Consequences that are easy to get wrong:
 
 - **`p` must be selected, not sampled arbitrarily.** The configured
-  `patch_sizes` should be the set of `p_b` implied by the `mpp` range in the
+  `patch_sizes` should be the set of `p_b` implied by the `pixel_size` range in the
   training data, not a generic compute sweep. Otherwise a valid instrument maps
   to a `p` the model never saw.
 - **No extrapolation.** FlexiViT explicitly does not claim it
   (`references/flexivit/paper.md:879`: performance degrades beyond trained patch
   sizes). Inference should assert `p_b ∈ trained patch_sizes`; the decoder's
   nearest-`p` head fallback is graceful degradation, not a guarantee.
-- **Anisotropic `mpp` cannot be honoured.** `p` is scalar and the kernel is
-  square. If `mpp_x ≠ mpp_y`, use the geometric mean and accept the
+- **Anisotropic `pixel_size` cannot be honoured.** `p` is scalar and the kernel is
+  square. If `pixel_size_x ≠ pixel_size_y`, use the geometric mean and accept the
   aspect-ratio error, or resample the image.
 - **Snap direction matters.** Rounding `p` down keeps the physical token smaller
   than the target and yields more tokens; rounding up does the opposite. Prefer
-  down, and record the realized `p · mpp` so the resulting extent error is
+  down, and record the realized `p · pixel_size` so the resulting extent error is
   auditable.
 - **`p` is confounded with instrument identity.** In FlexiViT `p` is randomized
-  independently of content; here it is *determined* by `mpp`, so the model can
+  independently of content; here it is *determined* by `pixel_size`, so the model can
   learn `p → dataset` shortcuts. Jitter the physical target extent across a
-  small set within an `mpp` and ablate with `scale_conditioning="none"`.
-- **Rejected baseline:** resample every image to a canonical `mpp` and keep one
+  small set within an `pixel_size` and ablate with `scale_conditioning="none"`.
+- **Rejected baseline:** resample every image to a canonical `pixel_size` and keep one
   fixed `p`. This is the standard HCI/pathology approach and is simpler. It is
   rejected here because it resamples content (destroying native PSF/noise
   statistics and cost on large multiplexed panels); FlexiViT instead resizes the
-  *kernel* and leaves the pixels untouched. If a single canonical `mpp` covers
+  *kernel* and leaves the pixels untouched. If a single canonical `pixel_size` covers
   the instruments acceptably, that baseline is cheaper and should be preferred.
 - **PI-resize is a smooth operator across sampling density, not a physically
   faithful resampling between instruments.** Tokens at the same physical extent
@@ -74,7 +94,7 @@ fractional PE are evaluated in:
 
 ```
 grid      coord = (index + 0.5) / grid_extent * ref_extent     (default, back-compat)
-physical  coord = (index + 0.5) * p * mpp / ref_um             (metric)
+physical  coord = (index + 0.5) * p * pixel_size / ref_um             (metric)
 ```
 
 The identity that decides this (see §1) is
@@ -98,7 +118,7 @@ Consequences:
 - `pe_space="physical"` requires pixel sizes and raises without them.
   `"auto"` enables it whenever the tokenizer carries a pixel size.
 - **Both** encoder RoPE and decoder PE must use the same frame. The decoder
-  gets `target_step_um = p * mpp` per target so mask tokens and visible tokens
+  gets `target_step_um = p * pixel_size` per target so mask tokens and visible tokens
   share coordinates; mixing `physical` encoder RoPE with per-axis grid-fraction
   decoder PE is a silent bug.
 - `pe_ref_um` (default `1.0`) fixes how many micrometres one coordinate unit
@@ -116,15 +136,15 @@ A cell-sized window (`plan_patches(..., n_tokens="cell")`) makes the patch
 count a function of cell size: `n_tokens = ceil(cell_side_px / p)`, clamped.
 
 This is *consistent* with the §0 contract, not in tension with it. The invariant
-is the **per-token** physical extent `p · mpp ≈ target_um`, which is unchanged:
-with constant `p · mpp`,
+is the **per-token** physical extent `p · pixel_size ≈ target_um`, which is unchanged:
+with constant `p · pixel_size`,
 
 ```
 n_tokens = ceil(cell_side_px / p) ≈ ceil(cell_side_um / target_um)
 ```
 
 is essentially instrument-independent and tracks the cell, not the acquisition.
-Only the *crop* extent `n_tokens · p · mpp` varies, and it is meant to: it is
+Only the *crop* extent `n_tokens · p · pixel_size` varies, and it is meant to: it is
 cell size plus at most one token of slack. So `p` absorbs the instrument, `N`
 absorbs the cell, and tokens stay physically comparable everywhere.
 
@@ -421,17 +441,17 @@ Tests: `test_fusion_is_content_scale_invariant`,
 Define the scale scalar explicitly. These are different quantities:
 
 ```text
-s_p    = log(p)                    # token size in pixels / sampling density
-s_phys = log(µm per pixel)         # physical pixel size
-s_tok  = log(p * µm_per_px)        # physical token extent
+s_px  = log(pixel_size)            # physical size of one pixel (µm/px)
+s_p   = log(p)                     # token size in pixels / sampling density
+s_tok = log(p * pixel_size)        # physical token extent (µm)
 ```
 
-- If only patch size varies and physical pixel size is fixed, `log p` is
-  enough to tell the model the current token density.
-- If both patch size and µm/pixel vary, one scalar cannot encode both. Feed
-  both `s_p` and `s_phys`, or feed `s_tok` plus `s_phys`.
-- If the dataset has no µm metadata, call the scalar what it is: `log p`, not
-  physical scale.
+- If only patch size varies and `pixel_size` is fixed, `log p` is enough to
+  tell the model the current token density.
+- If both patch size and `pixel_size` vary, one scalar cannot encode both.
+  Feed both `s_p` and `s_px`, or feed `s_tok` plus `s_px`.
+- If the dataset has no `pixel_size` metadata, call the scalar what it is:
+  `log p`, not physical scale.
 
 Embed it with Fourier features and a small MLP:
 

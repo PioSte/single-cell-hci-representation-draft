@@ -118,10 +118,10 @@ def physical_grid_coords(
     dtype = torch.float32
     device = rows.device
     p = _as_tensor(patch_size, device=device, dtype=dtype).expand_as(rows)
-    mpp = _as_tensor(pixel_size, device=device, dtype=dtype).expand_as(rows)
-    if bool((p <= 0).any()) or bool((mpp <= 0).any()):
+    pixel_size = _as_tensor(pixel_size, device=device, dtype=dtype).expand_as(rows)
+    if bool((p <= 0).any()) or bool((pixel_size <= 0).any()):
         raise ValueError("patch_size and pixel_size must be positive")
-    step = p * mpp / ref_um
+    step = p * pixel_size / ref_um
     return (rows.to(dtype) + 0.5) * step, (cols.to(dtype) + 0.5) * step
 
 

@@ -60,7 +60,12 @@ _LEGACY_POS = ("learned", "sincos")
 
 
 class FourierScaleEmbedding(nn.Module):
-    """Fourier features + MLP for ``[log p, log(µm/px), has_µ]``."""
+    """Fourier features + MLP for ``[log(p), log(pixel_size), has_pixel_size]``.
+
+    ``pixel_size`` is the physical size of one pixel (µm/px); the boolean slot
+    marks samples that carry it, so the same embedding serves datasets with and
+    without pixel-size metadata.
+    """
 
     def __init__(
         self,
@@ -411,17 +416,17 @@ class ChannelFusionMAE(nn.Module):
     def _scale_values(self, patch_sizes, pixel_sizes, device):
         p = torch.tensor(patch_sizes, dtype=torch.float32, device=device)
         log_p = torch.log(p)
-        has = torch.tensor(
+        has_pixel_size = torch.tensor(
             [0.0 if x is None else 1.0 for x in pixel_sizes],
             dtype=torch.float32,
             device=device,
         )
-        log_phys = torch.tensor(
+        log_pixel_size = torch.tensor(
             [0.0 if x is None else math.log(x) for x in pixel_sizes],
             dtype=torch.float32,
             device=device,
         )
-        return torch.stack([log_p, log_phys, has], dim=-1)
+        return torch.stack([log_p, log_pixel_size, has_pixel_size], dim=-1)
 
     def _prepare(self, images, channel_ids, visible, generator, patch_sizes,
                  pixel_sizes=None, valid=None):
@@ -547,12 +552,12 @@ class ChannelFusionMAE(nn.Module):
         if not self._use_metric_pe(cs):
             return None
         pix = self._resolve_pixel_sizes(cs.n_samples, pixel_sizes)
-        mpp = torch.tensor(
+        pixel_size = torch.tensor(
             [1.0 if v is None else float(v) for v in pix],
             device=tgt_p.device,
             dtype=torch.float32,
         )
-        return tgt_p.to(torch.float32) * mpp[tgt_group_id]
+        return tgt_p.to(torch.float32) * pixel_size[tgt_group_id]
 
     def _use_metric_pe(self, cs) -> bool:
         """Whether positional embeddings use physical (µm) coordinates.
@@ -565,13 +570,13 @@ class ChannelFusionMAE(nn.Module):
         """
         if self.pe_space == "grid":
             return False
-        has_mpp = cs.pixel_size is not None
-        if self.pe_space == "physical" and not has_mpp:
+        has_pixel_size = cs.pixel_size is not None
+        if self.pe_space == "physical" and not has_pixel_size:
             raise ValueError(
                 "pe_space='physical' needs pixel_sizes (µm/px); pass them to "
                 "forward() or use pe_space='auto'/'grid'"
             )
-        return has_mpp
+        return has_pixel_size
 
     # ------------------------------------------------------------------ #
     def forward(

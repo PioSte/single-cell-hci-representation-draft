@@ -35,19 +35,24 @@ patch size) and the pooled descriptor is `[B, D]`.
 ## Variable pixel size: `p` is a pixel count, not a physical size
 
 High-content images come from different instruments, so the **pixel size**
-(`mpp`, micrometres per pixel) and therefore the number of pixels per
+(`pixel_size`, micrometres per pixel) and therefore the number of pixels per
 micrometre differs across datasets. A token must cover a comparable *physical*
 extent on every instrument, otherwise the same marker is a different object at
 different sites. The mechanism is: **choose the patch size per sample so that
 the token extent in micrometres stays constant.**
 
 ```
-p        patch edge in PIXELS (a model knob; FlexiViT's axis, never a physical size)
-mpp      micrometres per pixel (dataset metadata, varies per instrument)
-p * mpp  physical token extent in micrometres (the quantity held constant)
+p               patch edge in PIXELS (a model knob; FlexiViT's axis, never a physical size)
+pixel_size      micrometres per pixel (dataset metadata, varies per instrument)
+p * pixel_size  physical token extent in micrometres (the quantity held constant)
 
-p_b ≈ round(p_target_um / mpp_b)      snap to the trained `patch_sizes` set
+p_b = round(target_um / pixel_size_b)     snapped to the trained `patch_sizes` set
 ```
+
+`pixel_size` is the only name this repo uses for that quantity — in code, in
+comments and in prose. `log_pixel_size` is its logarithm, `has_pixel_size` the
+flag marking samples that carry it; `s_px` in `FLEXIVIT.md` §4 is the same
+scalar.
 
 So `p` *absorbs* the pixel-size variation: a 0.5 µm/px image uses `p = 16` for an
 8 µm token, a 1.0 µm/px image uses `p = 8` for the same 8 µm token. This is what
@@ -56,13 +61,13 @@ work: one weight set, PI-resized kernels, and a token that means the same
 physical thing everywhere. It is **not** extrapolation — a `p` outside the
 trained set is out of contract (see
 [`FLEXIVIT.md` §0](FLEXIVIT.md#0-patch-size-vs-pixel-size-the-contract)).
-The scale conditioner receives both `log(p)` and `log(mpp)` because FlexiViT
+The scale conditioner receives both `log(p)` and `log(pixel_size)` because FlexiViT
 knows nothing about physical units; `p` alone cannot distinguish "large patch at
 fine sampling" from "small patch at coarse sampling".
 
 **The invariant is the patch, not the crop.** What is held constant across
-instruments is the physical footprint of a *single token*, `p · mpp ≈
-target_um`. The physical extent of the whole window, `n_tokens · p · mpp`, is a
+instruments is the physical footprint of a *single token*, `p · pixel_size ≈
+target_um`. The physical extent of the whole window, `n_tokens · p · pixel_size`, is a
 separate quantity and is free to vary: it is cell-sized when the patch count is
 derived from the segmented object, which is the intended behaviour. Scaling the
 number of tokens with the object does not violate the constant-patch-size
@@ -73,7 +78,7 @@ default grid-fraction PE is already metric, because its normalization
 denominator is constant. With cell-sized crops (variable patch count) it is not:
 the phase encodes `distance / crop_extent`, so an additive scale conditioner
 cannot recover the physical geometry. Use `pe_space="physical"` (encoder RoPE
-and decoder PE both evaluate `index * p * mpp / ref_um`) for cell-sized grids. The loader in `crops.py` produces exactly that layout:
+and decoder PE both evaluate `index * p * pixel_size / ref_um`) for cell-sized grids. The loader in `crops.py` produces exactly that layout:
 `plan_patches` reads boxes straight out of the raw planes, so `crop_px` is an
 exact multiple of `p`, nothing is padded, and border cells get a shifted box
 instead of a lost border.

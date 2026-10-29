@@ -8,7 +8,7 @@ from fuse_channels.crops import (
     CropGeometry,
     TiffStack,
     collate_crops,
-    patch_size_for_mpp,
+    patch_size_for_pixel_size,
     place_box,
     plan_patches,
     token_coverage,
@@ -20,25 +20,25 @@ def test_patch_size_holds_physical_extent_across_instruments():
     allowed = [4, 8, 16, 32]
     target = 8.0  # micrometres per token
     # finer sampling -> more pixels per token; extent stays ~8 um
-    assert patch_size_for_mpp(0.5, target, allowed) == 16
-    assert patch_size_for_mpp(1.0, target, allowed) == 8
-    assert patch_size_for_mpp(2.0, target, allowed) == 4
-    for mpp in (0.5, 1.0, 2.0):
-        p = patch_size_for_mpp(mpp, target, allowed)
-        assert p * mpp == pytest.approx(target)
+    assert patch_size_for_pixel_size(0.5, target, allowed) == 16
+    assert patch_size_for_pixel_size(1.0, target, allowed) == 8
+    assert patch_size_for_pixel_size(2.0, target, allowed) == 4
+    for pixel_size in (0.5, 1.0, 2.0):
+        p = patch_size_for_pixel_size(pixel_size, target, allowed)
+        assert p * pixel_size == pytest.approx(target)
 
 
 def test_patch_size_snaps_down_and_never_returns_unconfigured_p():
     allowed = [8, 16, 32]
     # 8 um / 0.6 um/px = 13.3 -> down snaps to 8, not 16
-    assert patch_size_for_mpp(0.6, 8.0, allowed, snap="down") == 8
-    assert patch_size_for_mpp(0.6, 8.0, allowed, snap="nearest") == 16
+    assert patch_size_for_pixel_size(0.6, 8.0, allowed, snap="down") == 8
+    assert patch_size_for_pixel_size(0.6, 8.0, allowed, snap="nearest") == 16
     # out of range low falls back to the smallest configured p, never to 0
-    assert patch_size_for_mpp(100.0, 8.0, allowed) == 8
+    assert patch_size_for_pixel_size(100.0, 8.0, allowed) == 8
 
 
 def test_crop_px_is_an_exact_multiple_of_patch_size():
-    g = CropGeometry.build(mpp=0.65, target_um=8.0, allowed=[8, 16], n_tokens=4)
+    g = CropGeometry.build(pixel_size=0.65, target_um=8.0, allowed=[8, 16], n_tokens=4)
     assert g.crop_px == 4 * g.patch_size
     assert g.n_patches == 16
     assert g.crop_px % g.patch_size == 0
@@ -58,7 +58,7 @@ def test_place_box_shifts_interior_cell_away_from_border():
 
 def test_plan_patches_keeps_interior_near_border_cell_in_bounds_and_covered():
     H = W = 128
-    g = CropGeometry.build(mpp=1.0, target_um=8.0, allowed=[8], n_tokens=2)  # 16 px
+    g = CropGeometry.build(pixel_size=1.0, target_um=8.0, allowed=[8], n_tokens=2)  # 16 px
     mask = np.zeros((H, W), dtype=np.int64)
     mask[118:126, 118:126] = 7  # interior, 2 px from the border
     crops, skipped = plan_patches(mask, (H, W), g, image_id="im", channel_ids=(0,))
@@ -70,7 +70,7 @@ def test_plan_patches_keeps_interior_near_border_cell_in_bounds_and_covered():
 
 
 def test_plan_patches_marks_cells_larger_than_the_window():
-    g = CropGeometry.build(mpp=1.0, target_um=8.0, allowed=[8], n_tokens=2)  # 16 px
+    g = CropGeometry.build(pixel_size=1.0, target_um=8.0, allowed=[8], n_tokens=2)  # 16 px
     mask = np.zeros((128, 128), dtype=np.int64)
     mask[20:80, 20:80] = 1  # 60 px cell vs 16 px window
     crops, _ = plan_patches(mask, (128, 128), g)
@@ -134,7 +134,7 @@ def _mask_with_three_cells():
 
 
 def test_plan_patches_crops_tile_exactly_and_carry_a_valid_mask():
-    g = CropGeometry.build(mpp=1.0, target_um=8.0, allowed=[8], n_tokens=2)
+    g = CropGeometry.build(pixel_size=1.0, target_um=8.0, allowed=[8], n_tokens=2)
     assert g.crop_px == 16
     crops, skipped = plan_patches(_mask_with_three_cells(), (64, 64), g, image_id="im0")
     assert skipped == []
@@ -148,7 +148,7 @@ def test_plan_patches_crops_tile_exactly_and_carry_a_valid_mask():
 
 
 def test_plan_patches_skips_instead_of_padding():
-    g = CropGeometry.build(mpp=1.0, target_um=8.0, allowed=[8], n_tokens=4)  # 32 px
+    g = CropGeometry.build(pixel_size=1.0, target_um=8.0, allowed=[8], n_tokens=4)  # 32 px
     mask = np.zeros((20, 20), dtype=np.int64)
     mask[5:15, 5:15] = 1
     crops, skipped = plan_patches(mask, (20, 20), g)
@@ -157,7 +157,7 @@ def test_plan_patches_skips_instead_of_padding():
 
 
 def test_plan_patches_respects_min_valid_tokens():
-    g = CropGeometry.build(mpp=1.0, target_um=8.0, allowed=[8], n_tokens=1)  # 8 px
+    g = CropGeometry.build(pixel_size=1.0, target_um=8.0, allowed=[8], n_tokens=1)  # 8 px
     mask = np.zeros((32, 32), dtype=np.int64)
     mask[10:11, 10:11] = 1  # one pixel, but always inside the single patch
     crops, skipped = plan_patches(mask, (32, 32), g, min_valid_tokens=2)
@@ -165,15 +165,15 @@ def test_plan_patches_respects_min_valid_tokens():
 
 
 def test_dataset_reads_variable_size_crops_and_collates_padding_free():
-    # two images with different mpp -> different p, hence different crop_px
+    # two images with different pixel_size -> different p, hence different crop_px
     im_a = torch.randn(3, 1, 96, 96)
     im_b = torch.randn(2, 1, 96, 96)
     mask = np.zeros((96, 96), dtype=np.int64)
     mask[40:60, 40:60] = 1
     mask[20:32, 60:74] = 2
 
-    g_a = CropGeometry.build(mpp=1.0, target_um=8.0, allowed=[8, 16], n_tokens=2)
-    g_b = CropGeometry.build(mpp=0.5, target_um=8.0, allowed=[8, 16], n_tokens=2)
+    g_a = CropGeometry.build(pixel_size=1.0, target_um=8.0, allowed=[8, 16], n_tokens=2)
+    g_b = CropGeometry.build(pixel_size=0.5, target_um=8.0, allowed=[8, 16], n_tokens=2)
     crops_a, _ = plan_patches(mask, (96, 96), g_a, image_id="a", channel_ids=(0, 1, 2))
     crops_b, _ = plan_patches(mask, (96, 96), g_b, image_id="b", channel_ids=(0, 4))
     assert g_a.patch_size != g_b.patch_size
@@ -195,7 +195,7 @@ def test_cache_roundtrip(tmp_path):
     from fuse_channels.crops import write_crop_cache
     import json
 
-    g = CropGeometry.build(mpp=1.0, target_um=8.0, allowed=[8], n_tokens=2)
+    g = CropGeometry.build(pixel_size=1.0, target_um=8.0, allowed=[8], n_tokens=2)
     crops, _ = plan_patches(
         _mask_with_three_cells(), (64, 64), g, image_id="im0", channel_ids=(0, 1, 2)
     )

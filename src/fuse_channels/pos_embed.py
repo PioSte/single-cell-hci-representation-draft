@@ -122,7 +122,7 @@ def get_fractional_sincos_pos_embed_uv(
 
     ``v`` and ``u`` are the scalar coordinates fed to ``g_row`` / ``g_col``, so
     callers can supply grid fractions (``(r+0.5)/grid_h``) or metric
-    coordinates (``(r+0.5)*p*mpp/ref_um``).  The two full-width axis embeddings
+    coordinates (``(r+0.5)*p*pixel_size/ref_um``).  The two full-width axis embeddings
     are added.
     """
     if dim % 2 != 0:
