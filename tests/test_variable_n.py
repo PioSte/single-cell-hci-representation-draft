@@ -112,13 +112,21 @@ def test_decoder_metric_pe_uses_the_same_frame_as_the_encoder():
     )
 
 
-def test_pe_space_physical_requires_a_pixel_size():
+def test_pixel_size_is_required_metadata():
+    """There is no "unknown pixel size" state: the model refuses to run blind."""
     model = ChannelFusionMAE(image_size=16, patch_size=8, dim=16, n_heads=4,
-                             pe_space="physical", scale_conditioning="none")
+                             scale_conditioning="none")
     images = [torch.randn(2, 1, 16, 16)]
     ids = [torch.tensor([0, 1])]
-    with pytest.raises(ValueError, match="needs pixel_sizes"):
+    with pytest.raises(ValueError, match="pixel size .* is required"):
         model(images, ids, patch_sizes=8)
+    with pytest.raises(ValueError, match="all be known"):
+        model(images, ids, patch_sizes=8, pixel_sizes=[None])
+    with pytest.raises(ValueError, match="must be positive"):
+        model(images, ids, patch_sizes=8, pixel_sizes=[0.0])
+    # and it runs once a real value is supplied
+    out = model(images, ids, patch_sizes=8, pixel_sizes=[0.65])
+    assert torch.isfinite(out["loss"])
 
 
 # --------------------------------------------------------------------------- #
@@ -226,6 +234,7 @@ def _model(**kw):
         p_patch=0.0,
         p_channel=0.0,
         patch_ratio=0.5,
+        pixel_size=1.0,
     )
     defaults.update(kw)
     return ChannelFusionMAE(**defaults)
@@ -243,7 +252,9 @@ def test_variable_n_batch_builds_targets_and_loss():
 
 
 def test_variable_n_with_grid_pe_warns_about_non_metric_coordinates():
-    model = _model()
+    # metric PE is the default; grid PE is the fixed-window ablation, and using
+    # it with cell-sized crops is what the warning is for
+    model = _model(pe_space="grid")
     images, ids = _variable_n_batch()
     with pytest.warns(UserWarning, match="variable patch count"):
         model(images, ids, patch_sizes=8)
@@ -276,7 +287,7 @@ def test_valid_mask_three_states_with_context():
     valid = [torch.tensor([True, False, False, False]), torch.ones(8, dtype=torch.bool)]
     vis = _visible_two_samples()
     vis[0][:, 1:] = False  # ask for exactly the valid patch
-    _cs, _ps, _ns, visible, target_valid = model._prepare(
+    _cs, _ps, _ns, visible, target_valid, _px = model._prepare(
         images, ids, vis, None, 8, valid=valid
     )
     # off-cell patches are kept as context ...

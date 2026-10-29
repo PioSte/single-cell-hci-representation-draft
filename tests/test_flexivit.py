@@ -232,6 +232,7 @@ def _model(**kw):
         n_memory=2,
         num_channel_ids=8,
         flexi_random=False,
+        pixel_size=1.0,
     )
     cfg.update(kw)
     return ChannelFusionMAE(**cfg)
@@ -448,6 +449,7 @@ def test_non_divisible_border_is_cropped_not_rejected():
         n_memory=2,
         num_channel_ids=8,
         flexi_random=False,
+        pixel_size=1.0,
     )
     g = torch.Generator().manual_seed(0)
     images = [torch.randn(2, 1, 15, 15, generator=g)]

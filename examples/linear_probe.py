@@ -82,8 +82,8 @@ def pretrain(
     last_loss = float("nan")
     step = 0
     while step < steps:
-        for images, ids in loader:
-            out = model(images, ids)
+        for images, ids, pixel_sizes in loader:
+            out = model(images, ids, pixel_sizes=pixel_sizes)
             opt.zero_grad()
             out["loss"].backward()
             opt.step()
@@ -106,8 +106,10 @@ def extract_descriptors(
     model.eval()
     features, labels = [], []
     with torch.no_grad():
-        for images, ids in loader:
-            _, pooled = model.encode(images, ids, pool="attention")
+        for images, ids, pixel_sizes in loader:
+            _, pooled = model.encode(
+                images, ids, pool="attention", pixel_sizes=pixel_sizes
+            )
             features.append(pooled)
             labels.append(channel_presence_labels(ids, target_channel))
     return torch.cat(features, dim=0), torch.cat(labels, dim=0)
@@ -219,7 +221,9 @@ def main() -> None:
         choices=("add", "adaln", "none"),
         default="add",
     )
-    p.add_argument("--pixel-size", type=float, default=None, help="um per pixel")
+    p.add_argument(
+        "--pixel-size", type=float, default=1.0, help="um per pixel (required)"
+    )
     p.add_argument("--seed", type=int, default=0)
     args = p.parse_args()
 
@@ -232,6 +236,7 @@ def main() -> None:
         image_size=args.image_size,
         c_max=args.c_max,
         n_channel_ids=args.channel_ids,
+        pixel_size=args.pixel_size,
         seed=args.seed,
     )
     train_idx, test_idx = split_indices(args.samples, args.test_frac, args.split_seed)

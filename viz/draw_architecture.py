@@ -59,6 +59,7 @@ def draw_torchview() -> None:
         n_heads=4,
         n_memory=4,
         num_channel_ids=16,
+        pixel_size=1.0,
     )
     model.eval()
     images = [torch.randn(2, 1, 16, 16), torch.randn(4, 1, 16, 16)]

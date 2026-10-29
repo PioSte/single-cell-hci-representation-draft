@@ -27,7 +27,7 @@ discarded rather than rejected.  ``max_tokens`` optionally restricts the random
 training sampler to patch sizes whose token count fits the budget; an explicit
 ``patch_sizes=`` argument overrides that guard.
 
-Scale conditioning embeds ``log(p)`` and, when available, ``log(µm/px)`` with
+Scale conditioning embeds ``log(p)`` and ``log(pixel_size)`` with
 Fourier features and a small MLP.  ``scale_conditioning="add"`` (default) adds
 the embedding to encoder and decoder tokens; ``"adaln"`` modulates the
 LayerNorms instead; ``"none"`` disables it.
@@ -60,14 +60,11 @@ _LEGACY_POS = ("learned", "sincos")
 
 
 class FourierScaleEmbedding(nn.Module):
-    """Fourier features + MLP for ``[log(p), log(pixel_size), has_pixel_size]``.
+    """Fourier features + MLP for ``[log(p), log(pixel_size)]``.
 
-    ``pixel_size`` is the physical size of one pixel (µm/px).  The third slot is
-    a *presence flag*, not a value: absent pixel sizes are filled with ``0.0``,
-    which is numerically identical to a genuine ``1.0`` µm/px, so the flag is
-    what lets the MLP ignore the filled value.  It is constant in any
-    homogeneous run and only matters when one run mixes samples with and without
-    pixel-size metadata.
+    ``pixel_size`` is the physical size of one pixel (µm/px).  It is required
+    metadata, not an optional field, so there is no presence flag and no filled
+    value: every sample carries a real pixel size.
     """
 
     def __init__(
@@ -77,7 +74,7 @@ class FourierScaleEmbedding(nn.Module):
         hidden: int | None = None,
     ) -> None:
         super().__init__()
-        self.input_dim = 3
+        self.input_dim = 2
         self.n_frequencies = n_frequencies
         freqs = (2.0 ** torch.arange(n_frequencies, dtype=torch.float32)) * math.pi
         self.register_buffer("freqs", freqs)
@@ -155,7 +152,7 @@ class ChannelFusionMAE(nn.Module):
         scale_fourier_frequencies: int = 8,
         fractional_pe_mode: str = "sincos",
         fractional_pe_base: float = 10000.0,
-        pe_space: str = "grid",
+        pe_space: str = "physical",
         pe_ref_um: float = 1.0,
         loss_reduce: str = "token",
         keep_offcell_as_context: bool = True,
@@ -179,9 +176,10 @@ class ChannelFusionMAE(nn.Module):
             )
         if max_tokens is not None and int(max_tokens) < 1:
             raise ValueError(f"max_tokens must be >= 1 or None, got {max_tokens}")
-        if pe_space not in ("grid", "physical", "auto"):
+        if pe_space not in ("grid", "physical"):
             raise ValueError(
-                f"unknown pe_space '{pe_space}'; expected 'grid', 'physical' or 'auto'"
+                f"unknown pe_space '{pe_space}'; expected 'grid' or 'physical' "
+                "(pixel size is always supplied, so there is no 'auto')"
             )
         if loss_reduce not in ("token", "sample"):
             raise ValueError(
@@ -401,35 +399,44 @@ class ChannelFusionMAE(nn.Module):
         return ps
 
     def _resolve_pixel_sizes(self, n, pixel_sizes):
+        """Per-sample µm/px. Required: there is no "unknown pixel size" state.
+
+        Pixels always have a physical size, so a missing value is a bug in the
+        data pipeline, not a legitimate input. Raise instead of substituting a
+        placeholder that the model would have to learn to distrust.
+        """
         if pixel_sizes is None:
             pixel_sizes = self.pixel_size
         if pixel_sizes is None:
-            return [None] * n
-        if torch.is_tensor(pixel_sizes) and pixel_sizes.ndim == 0:
-            return [float(pixel_sizes)] * n
-        if isinstance(pixel_sizes, (int, float)):
-            return [float(pixel_sizes)] * n
-        ps = [None if p is None else float(p) for p in pixel_sizes]
-        if len(ps) != n:
             raise ValueError(
-                f"expected {n} pixel sizes, got {len(ps)}"
+                "pixel size (µm/px) is required: pass pixel_sizes= to forward()/"
+                "encode(), or construct the model with pixel_size=<µm/px>. "
+                "It is metadata every image has, not an optional field."
             )
-        return ps
+        if torch.is_tensor(pixel_sizes) and pixel_sizes.ndim == 0:
+            values = [float(pixel_sizes)] * n
+        elif isinstance(pixel_sizes, (int, float)):
+            values = [float(pixel_sizes)] * n
+        else:
+            if any(v is None for v in pixel_sizes):
+                raise ValueError(
+                    "pixel sizes must all be known; got a None entry. Every "
+                    "image has a physical pixel size, so fill it in the loader."
+                )
+            values = [float(v) for v in pixel_sizes]
+        if len(values) != n:
+            raise ValueError(f"expected {n} pixel sizes, got {len(values)}")
+        if any(v <= 0 for v in values):
+            raise ValueError(f"pixel sizes must be positive, got {values}")
+        return values
 
     def _scale_values(self, patch_sizes, pixel_sizes, device):
         p = torch.tensor(patch_sizes, dtype=torch.float32, device=device)
         log_p = torch.log(p)
-        has_pixel_size = torch.tensor(
-            [0.0 if x is None else 1.0 for x in pixel_sizes],
-            dtype=torch.float32,
-            device=device,
-        )
         log_pixel_size = torch.tensor(
-            [0.0 if x is None else math.log(x) for x in pixel_sizes],
-            dtype=torch.float32,
-            device=device,
+            [math.log(x) for x in pixel_sizes], dtype=torch.float32, device=device
         )
-        return torch.stack([log_p, log_pixel_size, has_pixel_size], dim=-1)
+        return torch.stack([log_p, log_pixel_size], dim=-1)
 
     def _prepare(self, images, channel_ids, visible, generator, patch_sizes,
                  pixel_sizes=None, valid=None):
@@ -447,6 +454,7 @@ class ChannelFusionMAE(nn.Module):
           case it is fed as context only.
         """
         ps = self._resolve_patch_sizes(images, patch_sizes, generator)
+        pixel_sizes = self._resolve_pixel_sizes(len(images), pixel_sizes)
         ns = [_n_patches_for(im, p) for im, p in zip(images, ps)]
         if visible is None:
             visible = self.masker(images, generator=generator, n_patches=ns)
@@ -481,8 +489,8 @@ class ChannelFusionMAE(nn.Module):
                 "variable patch count across samples with pe_space='grid': "
                 "grid-fraction coordinates encode distance relative to the "
                 "window extent, so positional phases are not comparable "
-                "between differently sized cells. Pass pe_space='physical' "
-                "with pixel_sizes for metric coordinates.",
+                "between differently sized cells. Use the default "
+                "pe_space='physical' for metric coordinates.",
                 stacklevel=2,
             )
             self._warned_nonmetric = True
@@ -494,7 +502,7 @@ class ChannelFusionMAE(nn.Module):
             patch_sizes=ps,
             pixel_sizes=pixel_sizes,
         )
-        return cs, ps, ns, visible, target_valid
+        return cs, ps, ns, visible, target_valid, pixel_sizes
 
     def _encode(self, cs, ps, scale_emb=None):
         fused, present = self.fusion(cs)  # [B, Nmax, D]
@@ -544,7 +552,7 @@ class ChannelFusionMAE(nn.Module):
         )
         return fused, present, mem_out, tok_out, enc_group_id, present_bi
 
-    def _target_step_um(self, cs, ps, ns, tgt_group_id, tgt_p, pixel_sizes):
+    def _target_step_um(self, cs, tgt_group_id, tgt_p, pixel_sizes):
         """``patch_size * µm_per_px`` per decoder target, or ``None``.
 
         Must agree with the encoder's coordinate frame: if the encoder RoPE is
@@ -565,21 +573,20 @@ class ChannelFusionMAE(nn.Module):
     def _use_metric_pe(self, cs) -> bool:
         """Whether positional embeddings use physical (µm) coordinates.
 
-        ``pe_space="physical"`` requires a pixel size; ``"auto"`` enables it
-        whenever the tokenizer carries one.  Grid-fraction coordinates encode
-        distance *relative to the crop extent*, so they are only metric when
-        that extent is constant -- with cell-sized crops (variable ``N``) they
-        are not, and an additive scale conditioner cannot recover the metric.
+        Default ``"physical"``: grid-fraction coordinates encode distance
+        *relative to the crop extent*, so they are only metric when that extent
+        is constant -- with cell-sized crops (variable ``N``) they are not, and
+        an additive scale conditioner cannot recover the metric.
+        ``"grid"`` is the fixed-window ablation.
         """
         if self.pe_space == "grid":
             return False
-        has_pixel_size = cs.pixel_size is not None
-        if self.pe_space == "physical" and not has_pixel_size:
+        if cs.pixel_size is None:
             raise ValueError(
-                "pe_space='physical' needs pixel_sizes (µm/px); pass them to "
-                "forward() or use pe_space='auto'/'grid'"
+                "physical positional embeddings need the tokenizer to receive "
+                "pixel sizes; pixel size is required metadata, not optional"
             )
-        return has_pixel_size
+        return True
 
     # ------------------------------------------------------------------ #
     def forward(
@@ -594,16 +601,14 @@ class ChannelFusionMAE(nn.Module):
     ):
         B = len(images)
         device = images[0].device
-        cs, ps, ns, visible, target_valid = self._prepare(
+        cs, ps, ns, visible, target_valid, pixel_sizes = self._prepare(
             images, channel_ids, visible, generator, patch_sizes,
             pixel_sizes=pixel_sizes, valid=valid,
         )
         scale_values = None
         scale_emb = None
         if self.scale_conditioning != "none":
-            scale_values = self._scale_values(
-                ps, self._resolve_pixel_sizes(B, pixel_sizes), device
-            )
+            scale_values = self._scale_values(ps, pixel_sizes, device)
             scale_emb = self.scale_embed(scale_values)
         fused, present, mem_out, tok_out, enc_group_id, present_bi = self._encode(
             cs, ps, scale_emb
@@ -696,7 +701,7 @@ class ChannelFusionMAE(nn.Module):
             target_grid_w=tgt_gw,
             target_patch_size=tgt_p,
             target_step_um=self._target_step_um(
-                cs, ps, ns, tgt_group_id, tgt_p, pixel_sizes
+                cs, tgt_group_id, tgt_p, pixel_sizes
             ),
             cond=cond_dec,
         )
@@ -818,6 +823,7 @@ class ChannelFusionMAE(nn.Module):
         B = len(images)
         device = images[0].device
         ps = self._resolve_patch_sizes(images, patch_sizes)
+        pixel_sizes = self._resolve_pixel_sizes(B, pixel_sizes)
         ns = [_n_patches_for(im, p) for im, p in zip(images, ps)]
         visible = [
             torch.ones(im.shape[0], n, dtype=torch.bool, device=im.device)
@@ -839,9 +845,7 @@ class ChannelFusionMAE(nn.Module):
         scale_values = None
         scale_emb = None
         if self.scale_conditioning != "none":
-            scale_values = self._scale_values(
-                ps, self._resolve_pixel_sizes(B, pixel_sizes), device
-            )
+            scale_values = self._scale_values(ps, pixel_sizes, device)
             scale_emb = self.scale_embed(scale_values)
         _fused, present, mem_out, tok_out, enc_group_id, _bi = self._encode(
             cs, ps, scale_emb

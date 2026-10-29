@@ -21,8 +21,18 @@ def test_collate_supports_per_sample_pixel_size():
     assert all(isinstance(v, float) for v in pixel_sizes)
 
 
-def test_collate_legacy_two_tuple_is_unchanged():
-    ds = SyntheticChannelDataset(n_samples=2, image_size=8, seed=0)
+def test_pixel_size_is_required_metadata():
+    import pytest
+
+    with pytest.raises(ValueError, match="pixel size is required"):
+        SyntheticChannelDataset(n_samples=2, image_size=8, seed=0)
+
+
+def test_collate_without_pixel_sizes_is_opt_out_only():
+    ds = SyntheticChannelDataset(
+        n_samples=2, image_size=8, seed=0, pixel_size=1.0,
+        return_pixel_size=False,
+    )
     images, ids = collate_fn([ds[0], ds[1]])
     assert len(images) == len(ids) == 2
 

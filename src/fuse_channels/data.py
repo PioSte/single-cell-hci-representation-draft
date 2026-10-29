@@ -27,7 +27,7 @@ class SyntheticChannelDataset(Dataset):
         seed: int = 0,
         pixel_size: Optional[Union[float, Sequence[float]]] = None,
         pixel_size_range: Optional[Sequence[float]] = None,
-        return_pixel_size: bool = False,
+        return_pixel_size: bool = True,
     ) -> None:
         super().__init__()
         self.image_size = image_size
@@ -37,9 +37,10 @@ class SyntheticChannelDataset(Dataset):
         self.pixel_sizes = self._resolve_pixel_sizes(
             n_samples, pixel_size, pixel_size_range, g
         )
-        if self.return_pixel_size and self.pixel_sizes is None:
+        if self.pixel_sizes is None:
             raise ValueError(
-                "return_pixel_size=True requires pixel_size or pixel_size_range"
+                "pixel size is required metadata: pass pixel_size=<µm/px> or "
+                "pixel_size_range=(lo, hi). There is no 'unknown pixel size'."
             )
 
         # shared latent basis over channels x pixels
@@ -80,7 +81,7 @@ class SyntheticChannelDataset(Dataset):
                 lo, hi, generator=generator
             ).tolist()
         if pixel_size is None:
-            return None
+            return None  # caller raises: pixel size is required
         if isinstance(pixel_size, (int, float)):
             return [float(pixel_size)] * n_samples
         values = [float(v) for v in pixel_size]
@@ -96,10 +97,6 @@ class SyntheticChannelDataset(Dataset):
     def __getitem__(self, idx: int):
         img, channel_ids = self.items[idx]
         if self.return_pixel_size:
-            if self.pixel_sizes is None:
-                raise ValueError(
-                    "return_pixel_size=True requires a pixel_size argument"
-                )
             return img.clone(), channel_ids.clone(), self.pixel_sizes[idx]
         return img.clone(), channel_ids.clone()
 

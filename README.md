@@ -50,10 +50,9 @@ p_b = round(target_um / pixel_size_b)     snapped to the trained `patch_sizes` s
 ```
 
 `pixel_size` is the only name this repo uses for that quantity — in code, in
-comments and in prose. `log_pixel_size` is its logarithm, and `has_pixel_size`
-is a presence flag (not a value): it exists because a missing pixel size is
-filled with `0.0`, which would otherwise be indistinguishable from a genuine
-`1.0` µm/px.
+comments and in prose — and it is **required metadata**: every image has a
+physical pixel size, so `forward`/`encode` raise rather than invent a default.
+`log_pixel_size` is its logarithm.
 
 So `p` *absorbs* the pixel-size variation: a 0.5 µm/px image uses `p = 16` for an
 8 µm token, a 1.0 µm/px image uses `p = 8` for the same 8 µm token. This is what
@@ -155,7 +154,7 @@ per-channel tied Conv2d(1 -> D) patch embed, PI-resized to the current p
   the old fixed-grid scheme: post-fusion table plus decoder target table, with
   no encoder RoPE. It cannot change patch size within a run.
 * **Scale conditioning.** `scale_conditioning="add"` (default) adds a Fourier
-  embedding of `log(p)` and, when available, `log(µm/px)` to the encoder tokens
+  embedding of `log(p)` and `log(pixel_size)` to the encoder tokens
   (before the pre-LN branch; the residual stream carries it) and to the
   decoder's target channel embedding. `"adaln"` modulates the LayerNorms
   instead; `"none"` disables it. `add` is not erased by pre-LN: the additive

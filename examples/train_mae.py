@@ -89,7 +89,12 @@ def main() -> None:
         default="add",
         help="log(p) / log(um per px) conditioning",
     )
-    p.add_argument("--pixel-size", type=float, default=None, help="um per pixel")
+    p.add_argument(
+        "--pixel-size",
+        type=float,
+        default=1.0,
+        help="um per pixel (required metadata; 1.0 for the synthetic toy data)",
+    )
     p.add_argument(
         "--pixel-size-range",
         type=float,
@@ -114,11 +119,9 @@ def main() -> None:
         image_size=args.image_size,
         c_max=args.c_max,
         n_channel_ids=args.channel_ids,
-        pixel_size=args.pixel_size,
+        pixel_size=None if args.pixel_size_range else args.pixel_size,
         pixel_size_range=args.pixel_size_range,
-        return_pixel_size=(
-            args.pixel_size is not None or args.pixel_size_range is not None
-        ),
+        return_pixel_size=True,
     )
     loader = DataLoader(
         ds, batch_size=args.batch_size, shuffle=True, collate_fn=collate_fn, drop_last=True
@@ -158,11 +161,7 @@ def main() -> None:
     last_batch = None
     while step < args.steps:
         for batch in loader:
-            if len(batch) == 3:
-                images, ids, pixel_sizes = batch
-            else:
-                images, ids = batch
-                pixel_sizes = None
+            images, ids, pixel_sizes = batch
             images = [im.to(device) for im in images]
             ids = [i.to(device) for i in ids]
             last_batch = (images, ids, pixel_sizes)

@@ -222,7 +222,14 @@ def test_mae_end_to_end(fusion_name):
         torch.randn(5, 1, 32, 32, generator=g),
     ]
     ids = [torch.tensor([0, 1, 2]), torch.tensor([2, 3, 4, 5, 6])]
-    out = model(images, ids, patch_sizes=[8, 16])
+    # seed the masking draw: this assertion is about gradient routing, and an
+    # unseeded draw can land on a step with no masked tokens (zero loss)
+    out = model(
+        images,
+        ids,
+        patch_sizes=[8, 16],
+        generator=torch.Generator().manual_seed(0),
+    )
     assert torch.isfinite(out["loss"])
     out["loss"].backward()
 

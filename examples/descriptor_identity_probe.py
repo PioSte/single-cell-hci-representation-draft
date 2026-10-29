@@ -61,6 +61,7 @@ def main() -> None:
     p.add_argument("--channels", type=int, default=3)
     p.add_argument("--channel-ids", type=int, default=16)
     p.add_argument("--samples", type=int, default=600)
+    p.add_argument("--pixel-size", type=float, default=1.0, help="um per pixel")
     p.add_argument("--seed", type=int, default=0)
     args = p.parse_args()
 
@@ -75,6 +76,7 @@ def main() -> None:
         n_heads=4,
         n_memory=2,
         num_channel_ids=args.channel_ids,
+        pixel_size=args.pixel_size,
         flexi_random=False,
     ).eval()
 

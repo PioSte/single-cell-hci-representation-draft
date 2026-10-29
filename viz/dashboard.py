@@ -452,6 +452,7 @@ def _(ChannelFusionMAE, mae_steps, mo, structured_batch, torch):
         n_heads=4,
         n_memory=4,
         num_channel_ids=16,
+        pixel_size=1.0,
     )
     train_imgs, train_ids = structured_batch(24, seed=1)
     opt = torch.optim.AdamW(mae.parameters(), lr=2e-3, weight_decay=0.01)

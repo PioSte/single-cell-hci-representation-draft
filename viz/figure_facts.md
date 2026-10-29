@@ -71,7 +71,7 @@ axis** in the fused tensor. `n_queries` exists only on the descriptor pooler
 - No positional table is resized: encoder `2-D axial RoPE` uses normalized
   `(row,col)`, decoder uses factorized fractional PE from `(r,c,g_h,g_w)`,
   and `ChannelFusion` adds no spatial table.
-- `scale_conditioning="add"` (default) embeds `[log(p), log(pixel_size), has_pixel_size]` with
+- `scale_conditioning="add"` (default) embeds `[log(p), log(pixel_size)]` with
   Fourier features + MLP and adds it to encoder tokens and to the decoder
   target channel embedding before `target_proj`.
 - The reconstruction head keeps one `Linear(D, p²)` per configured `p`
@@ -189,7 +189,7 @@ attention mask. It is **not** in the model path.
   `grouped_projected_self_attention` (bucketed equal-length groups) per
   sample. 2-D axial RoPE rotates q/k from normalized `(row, col)` coordinates;
   memory tokens get zero rotation. Default `scale_conditioning="add"` adds a
-  Fourier embedding of `[log(p), log(pixel_size), has_pixel_size]` to the encoder tokens;
+  Fourier embedding of `[log(p), log(pixel_size)]` to the encoder tokens;
   `"adaln"` instead modulates the LayerNorms. Final `LayerNorm`.
 - Returns `mem_out [B·M, D]`, `tok_out [Kf, D]`.
 - Final decoder KV is `enc_all = cat([mem_out, tok_out, desc])` →

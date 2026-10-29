@@ -25,6 +25,7 @@ def _model(**kw):
         n_heads=4,
         n_memory=3,
         num_channel_ids=16,
+        pixel_size=1.0,
     )
     cfg.update(kw)
     return ChannelFusionMAE(**cfg)

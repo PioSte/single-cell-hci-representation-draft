@@ -24,6 +24,7 @@ def test_linear_probe_smoke():
         image_size=image_size,
         c_max=4,
         n_channel_ids=8,
+        pixel_size=1.0,
         seed=1,
     )
     train_idx, test_idx = split_indices(len(ds), test_frac=0.25, seed=0)
@@ -39,6 +40,7 @@ def test_linear_probe_smoke():
         n_heads=2,
         n_memory=2,
         num_channel_ids=8,
+        pixel_size=1.0,
     )
     model.eval()
     model.requires_grad_(False)

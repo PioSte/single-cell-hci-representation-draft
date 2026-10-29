@@ -189,7 +189,7 @@ filter is a systems guard, not a claim that uniform `p` is wrong for accuracy;
 FlexiViT's distribution ablation found little accuracy difference
 (`references/flexivit/paper.md:619`).
 
-**Scale conditioning.** `log(p)` and, when supplied, `log(µm/px)` are embedded
+**Scale conditioning.** `log(p)` and `log(pixel_size)` are embedded
 with Fourier features and a small MLP. The default `scale_conditioning="add"`
 adds the embedding to encoder patch tokens and to the decoder's target channel
 embedding. `"adaln"` modulates the LayerNorms instead. The pre-LN warning is

@@ -29,9 +29,9 @@ the paper never multiplies it by a physical scale. The quantities are:
 | `n_tokens · p · pixel_size` | physical extent of the **whole crop** (µm) | *not* an invariant; see §0.2 |
 
 There is exactly one name for the per-pixel quantity in this repo: **`pixel_size`**
-in code and prose alike (physical size of one pixel, µm/px). Its logarithm is
-`log_pixel_size`, and the presence flag in the scale embedding is
-`has_pixel_size`. Unit spellings such as µm/px are units, not names.
+in code and prose alike (physical size of one pixel, µm/px), and it is required
+metadata. Its logarithm is `log_pixel_size`. Unit spellings such as µm/px are
+units, not names.
 
 **Objective.** High-content data is acquired at different pixel sizes. To make a
 token mean the same physical thing on every instrument, hold `p · pixel_size` constant
@@ -115,8 +115,8 @@ relative RoPE phase  =  (physical separation d / window extent W) * ref_extent *
 
 Consequences:
 
-- `pe_space="physical"` requires pixel sizes and raises without them.
-  `"auto"` enables it whenever the tokenizer carries a pixel size.
+- `pe_space` defaults to `"physical"` (metric). `"grid"` is the fixed-window
+  ablation; there is no `"auto"`, because pixel sizes are always present.
 - **Both** encoder RoPE and decoder PE must use the same frame. The decoder
   gets `target_step_um = p * pixel_size` per target so mask tokens and visible tokens
   share coordinates; mixing `physical` encoder RoPE with per-axis grid-fraction
@@ -189,7 +189,7 @@ clipping.
    evaluates `g_row(v) + g_col(u)` from `(r, c, n_h, n_w)`; it has no grid-sized
    table and works with non-square or changing grids.
 2. **Scale conditioning** — `scale_conditioning="add"` (default) or `"adaln"`
-   embeds `log(p)` and, when supplied, `log(µm/px)` with Fourier features and a
+   embeds `log(p)` and `log(pixel_size)` with Fourier features and a
    small MLP, in both encoder and decoder.
 3. **Encoder RoPE** — `encoder_pos_embed="rope"` (default) applies 2-D axial
    RoPE to q/k on normalized coordinates.  Fusion no longer owns a spatial
@@ -458,23 +458,16 @@ choose deliberately:
 - If the dataset has no `pixel_size` metadata, feed `log_p` and say so: the
   scalar is `log_p`, not physical scale.
 
-The shipped conditioner feeds `log_p` **and** `log_pixel_size` (plus the
-`has_pixel_size` flag, see below), which is the second option above; the
-derived `log_token_um` is not supplied because it is exactly their sum.
+The shipped conditioner feeds `log_p` **and** `log_pixel_size`; the derived
+`log_token_um` is not supplied because it is exactly their sum.
 
-**`has_pixel_size` is a presence flag, not a value.** When a sample has no
-`pixel_size`, `log_pixel_size` is filled with `0.0`, which is indistinguishable
-from a genuine `pixel_size = 1.0` µm/px. The flag (`1.0` when present, `0.0`
-when absent) lets the MLP learn to ignore the filled value. Consequences:
-
-- it is **constant** in any homogeneous run — always `0` when pixel sizes are
-  absent, always `1` when present (and always `1` under `pe_space="physical"`,
-  which *requires* pixel sizes) — so it contributes only a bias direction;
-- it is *load-bearing* only when one training run mixes samples with and without
-  pixel-size metadata, which is exactly the case the flag exists for.
-
-Do not drop it while `pixel_size` remains optional: without it, unknown pixel
-sizes are silently read as 1.0 µm/px.
+**`pixel_size` is required metadata, not an optional field.** Every image has a
+physical pixel size, so there is no "unknown" state to encode: no presence flag,
+no filled placeholder, and no way for an absent value to be silently read as
+`1.0` µm/px. `ChannelFusionMAE.forward`/`encode` raise if no pixel size is
+supplied, and the loader must provide one per sample. An earlier design carried
+a `has_pixel_size` flag to disambiguate "absent" from "1.0"; that state no longer
+exists, so the flag is gone.
 
 Embed it with Fourier features and a small MLP:
 

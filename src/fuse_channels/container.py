@@ -56,7 +56,9 @@ class ChannelSet:
     patch_size:
         optional ``[T]`` patch size in pixels for each token.
     pixel_size:
-        optional ``[T]`` physical pixel size (e.g. micrometres per pixel).
+        ``[T]`` physical pixel size (micrometres per pixel). Required metadata:
+        the tokenizer fills it from ``pixel_sizes`` and the model refuses to run
+        without it, since every image has a physical pixel size.
     """
 
     tokens: torch.Tensor

@@ -315,6 +315,7 @@ def main() -> None:
         n_heads=4,
         n_memory=2,
         num_channel_ids=16,
+        pixel_size=1.0,
         fusion="attention",
     ).to(device).eval()
 
