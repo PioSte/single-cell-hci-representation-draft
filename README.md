@@ -50,9 +50,10 @@ p_b = round(target_um / pixel_size_b)     snapped to the trained `patch_sizes` s
 ```
 
 `pixel_size` is the only name this repo uses for that quantity — in code, in
-comments and in prose. `log_pixel_size` is its logarithm, `has_pixel_size` the
-flag marking samples that carry it; `s_px` in `FLEXIVIT.md` §4 is the same
-scalar.
+comments and in prose. `log_pixel_size` is its logarithm, and `has_pixel_size`
+is a presence flag (not a value): it exists because a missing pixel size is
+filled with `0.0`, which would otherwise be indistinguishable from a genuine
+`1.0` µm/px.
 
 So `p` *absorbs* the pixel-size variation: a 0.5 µm/px image uses `p = 16` for an
 8 µm token, a 1.0 µm/px image uses `p = 8` for the same 8 µm token. This is what

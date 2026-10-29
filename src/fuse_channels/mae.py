@@ -62,9 +62,12 @@ _LEGACY_POS = ("learned", "sincos")
 class FourierScaleEmbedding(nn.Module):
     """Fourier features + MLP for ``[log(p), log(pixel_size), has_pixel_size]``.
 
-    ``pixel_size`` is the physical size of one pixel (µm/px); the boolean slot
-    marks samples that carry it, so the same embedding serves datasets with and
-    without pixel-size metadata.
+    ``pixel_size`` is the physical size of one pixel (µm/px).  The third slot is
+    a *presence flag*, not a value: absent pixel sizes are filled with ``0.0``,
+    which is numerically identical to a genuine ``1.0`` µm/px, so the flag is
+    what lets the MLP ignore the filled value.  It is constant in any
+    homogeneous run and only matters when one run mixes samples with and without
+    pixel-size metadata.
     """
 
     def __init__(

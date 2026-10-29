@@ -438,20 +438,43 @@ Tests: `test_fusion_is_content_scale_invariant`,
 
 ## 4. Pixel-size / scale token
 
-Define the scale scalar explicitly. These are different quantities:
+The dozen names this used to carry are gone; use the code's names in prose too:
 
 ```text
-s_px  = log(pixel_size)            # physical size of one pixel (µm/px)
-s_p   = log(p)                     # token size in pixels / sampling density
-s_tok = log(p * pixel_size)        # physical token extent (µm)
+log_p           = log(p)                        # token size in pixels / sampling density
+log_pixel_size  = log(pixel_size)               # physical size of one pixel (µm/px)
+log_token_um    = log_p + log_pixel_size        # physical token extent (µm)
 ```
 
-- If only patch size varies and `pixel_size` is fixed, `log p` is enough to
-  tell the model the current token density.
-- If both patch size and `pixel_size` vary, one scalar cannot encode both.
-  Feed both `s_p` and `s_px`, or feed `s_tok` plus `s_px`.
-- If the dataset has no `pixel_size` metadata, call the scalar what it is:
-  `log p`, not physical scale.
+`log_token_um` is a *derived* feature — it is the sum of the other two, so feeding
+all three gives the MLP no information it cannot form itself. Feed **two**, and
+choose deliberately:
+
+- If only patch size varies and `pixel_size` is fixed, `log_p` alone tells the
+  model the current token density; the missing constant is absorbed by the bias.
+- If both vary, feed `log_p` and `log_pixel_size` (`log_token_um` is redundant
+  with them), or feed `log_token_um` and `log_pixel_size` if you would rather
+  have the physically meaningful combination explicit.
+- If the dataset has no `pixel_size` metadata, feed `log_p` and say so: the
+  scalar is `log_p`, not physical scale.
+
+The shipped conditioner feeds `log_p` **and** `log_pixel_size` (plus the
+`has_pixel_size` flag, see below), which is the second option above; the
+derived `log_token_um` is not supplied because it is exactly their sum.
+
+**`has_pixel_size` is a presence flag, not a value.** When a sample has no
+`pixel_size`, `log_pixel_size` is filled with `0.0`, which is indistinguishable
+from a genuine `pixel_size = 1.0` µm/px. The flag (`1.0` when present, `0.0`
+when absent) lets the MLP learn to ignore the filled value. Consequences:
+
+- it is **constant** in any homogeneous run — always `0` when pixel sizes are
+  absent, always `1` when present (and always `1` under `pe_space="physical"`,
+  which *requires* pixel sizes) — so it contributes only a bias direction;
+- it is *load-bearing* only when one training run mixes samples with and without
+  pixel-size metadata, which is exactly the case the flag exists for.
+
+Do not drop it while `pixel_size` remains optional: without it, unknown pixel
+sizes are silently read as 1.0 µm/px.
 
 Embed it with Fourier features and a small MLP:
 
