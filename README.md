@@ -54,8 +54,19 @@ comments and in prose — and it is **required metadata**: every image has a
 physical pixel size, so `forward`/`encode` raise rather than invent a default.
 `log_pixel_size` is its logarithm.
 
-So `p` *absorbs* the pixel-size variation: a 0.5 µm/px image uses `p = 16` for an
-8 µm token, a 1.0 µm/px image uses `p = 8` for the same 8 µm token. This is what
+**Expected data: square pixels, `pixel_size ∈ [0.4, 0.6] µm/px`.** `pixel_size` is
+a scalar and the patch kernel is square, which is exact because the target
+instruments acquire square pixels: `PhysicalSizeX ≠ PhysicalSizeY` beyond a
+small tolerance is metadata to fix or reject, not an anisotropy the model is
+expected to absorb. That ~1.5× range is the whole of the pixel-size variation the
+design must cover, so for a 12.8 µm token `p` only spans 32 px (0.4 µm/px) down
+to 21 px (0.6 µm/px), and a residual token-extent error of ≤ ~1.6 % is the worst
+rounding case (see
+[`FLEXIVIT.md` §0](FLEXIVIT.md#0-patch-size-vs-pixel-size-the-contract)).
+
+So `p` *absorbs* the pixel-size variation: a 0.4 µm/px image uses `p = 20` for an
+8 µm token, a 0.6 µm/px image uses `p = 13` (`8/0.6 = 13.33`, snapped down) for
+the same 8 µm token. This is what
 makes "train once, infer on any instrument seen in training, no finetuning"
 work: one weight set, PI-resized kernels, and a token that means the same
 physical thing everywhere. It is **not** extrapolation — a `p` outside the

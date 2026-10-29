@@ -6,6 +6,11 @@ implied by the image's pixel size::
     p_px     = round(target_um / pixel_size)      snapped to the trained patch sizes
     crop_px  = n_tokens * p_px             exact, no padding
 
+``pixel_size`` is one scalar per image, i.e. square pixels are assumed. That is
+correct for the expected data (0.4--0.6 um/px, isotropic); anisotropic metadata is
+a data error here, not a case this geometry handles. Pixels are never resampled:
+the patch *size* absorbs the pixel-size variation.
+
 Read from the raw image rather than from a pre-existing crop, so the box can
 always be made to tile exactly; nothing is padded and no border is discarded
 (the FlexiViT ``floor(H/p)`` contract never applies).

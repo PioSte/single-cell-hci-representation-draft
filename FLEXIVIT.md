@@ -51,9 +51,23 @@ physical footprint.
 
 Two units traps when ingesting `pixel_size`: some tools report nanometres or
 pixels-per-µm instead of µm/px (a factor of 1000 or an inversion), and OME-TIFF
-carries `PhysicalSizeX` *and* `PhysicalSizeY`, which can differ. `p` is scalar
-and the kernel is square, so for anisotropic pixel sizes use the geometric mean
-and accept the aspect-ratio error, or resample the image.
+carries `PhysicalSizeX` *and* `PhysicalSizeY` separately.
+
+**Expected data: square pixels, `pixel_size ∈ [0.4, 0.6] µm/px`.** Anisotropy is
+*not* a case this design serves. The target instruments acquire square pixels, so
+`pixel_size` is a scalar and `PhysicalSizeY ≠ PhysicalSizeX` means suspect
+metadata, not astigmatic optics: treat a mismatch beyond a small tolerance
+(warn and/or reject the image) rather than silently averaging the two. If an
+anisotropic image ever does arrive, `p` is scalar and the kernel is square, so
+the options are the geometric mean with an accepted aspect-ratio error, or
+resampling — but no machinery is justified for it.
+
+The 0.4–0.6 span is also why this is a narrow problem: for a 12.8 µm token `p`
+goes from `12.8/0.4 = 32` px to `12.8/0.6 = 21.33 → 21` px. That is ~1.5× on
+FlexiViT's axis — under one octave, i.e. a two-entry `patch_sizes` set covers the
+fleet — while resampling to the finest pixel size instead costs 2.25× in area,
+hence in tokens and compute. The rounding question is therefore a ≤ 1 px
+question: the residual token-extent error is ≤ ~1.6 %.
 
 Consequences that are easy to get wrong:
 
@@ -65,9 +79,9 @@ Consequences that are easy to get wrong:
   (`references/flexivit/paper.md:879`: performance degrades beyond trained patch
   sizes). Inference should assert `p_b ∈ trained patch_sizes`; the decoder's
   nearest-`p` head fallback is graceful degradation, not a guarantee.
-- **Anisotropic `pixel_size` cannot be honoured.** `p` is scalar and the kernel is
-  square. If `pixel_size_x ≠ pixel_size_y`, use the geometric mean and accept the
-  aspect-ratio error, or resample the image.
+- **Anisotropy is out of scope by data assumption, not by capability.**
+  `PhysicalSizeX ≠ PhysicalSizeY` should be treated as bad metadata (see above),
+  not as an architecture gap to close.
 - **Snap direction matters.** Rounding `p` down keeps the physical token smaller
   than the target and yields more tokens; rounding up does the opposite. Prefer
   down, and record the realized `p · pixel_size` so the resulting extent error is
@@ -82,6 +96,14 @@ Consequences that are easy to get wrong:
   statistics and cost on large multiplexed panels); FlexiViT instead resizes the
   *kernel* and leaves the pixels untouched. If a single canonical `pixel_size` covers
   the instruments acceptably, that baseline is cheaper and should be preferred.
+  **Status: not implemented and not yet ablated.** Nothing in `data.py`/`crops.py`
+  resamples; a runnable comparison needs a `--resample-to <µm/px>` transform in
+  front of the existing loader (upsample `0.6 → 0.4 µm/px`, keep `p` fixed, and
+  mask out the `p`-selection entirely so the two arms see the same token extent).
+  Given the 0.4–0.6 range the resampling arm costs 2.25× the patches of the native
+  arm, so the honest expectation is *not* that it is more accurate — only that it
+  pins the token extent exactly. It should be run before the design is called
+  settled, since it is the one ablation that could falsify the FlexiViT choice.
 - **PI-resize is a smooth operator across sampling density, not a physically
   faithful resampling between instruments.** Tokens at the same physical extent
   from two devices are comparable in representation space, not equal
@@ -213,6 +235,17 @@ clipping.
 
 Tests for these properties live in `tests/test_flexivit.py`, and the original
 fixed-grid invariants remain covered in the other tests.
+
+**Open ablation: upsample-to-finest-`pixel_size` baseline.** There is exactly one
+comparison the prose above promises and the repo does not yet contain: resample
+every image to the finest `pixel_size` in the fleet (0.4 µm/px), fix
+`p = target_um / 0.4`, and compare against native pixels with per-sample `p_b`.
+It needs only a preprocessing transform plus a fixed-`p` model config; the
+FlexiViT arm is the default path. Two things make it worth running despite the
+rejected-baseline note: the two arms differ by 2.25× in token count (so the
+comparison must be matched on physical crop extent, not on `N`), and the
+prediction to test is that the gain from exact `p·pixel_size` is smaller than the
+loss from interpolated, PSF-blurred input.
 
 ---
 

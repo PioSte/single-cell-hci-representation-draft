@@ -12,7 +12,7 @@ An HCI image is a set of per-channel embeddings {E_c ∈ R^D} where:
 
 The goal is a function f({E_1..E_C}) → [N, D] per sample whose size is independent of C, plus a pooled [D] descriptor — no concatenation blow-up, channel-identity-aware, permutation-invariant, with no padding tokens.
 
-Pixel size is a separate, orthogonal axis: `p` is a pixel count, not a physical size. Each *token* is kept at a comparable physical extent across instruments by choosing `p_b ≈ p_target_um / pixel_size_b` from the image's µm/px metadata. The invariant is the per-token footprint `p · pixel_size`; the crop/window extent `n_tokens · p · pixel_size` is a separate, deliberately variable quantity (cell-sized grids are intended). See `README.md` §"Variable pixel size" and `FLEXIVIT.md` §0 before changing patch-size, scale-conditioning, or dataloading behaviour.
+Pixel size is a separate, orthogonal axis: `p` is a pixel count, not a physical size. Expected data has square pixels in the `0.4–0.6 µm/px` range, so pixel anisotropy is **not** a design case (`PhysicalSizeX ≠ PhysicalSizeY` is bad metadata to fix or reject, not something `p` absorbs). Each *token* is kept at a comparable physical extent across instruments by choosing `p_b ≈ p_target_um / pixel_size_b` from the image's µm/px metadata. The invariant is the per-token footprint `p · pixel_size`; the crop/window extent `n_tokens · p · pixel_size` is a separate, deliberately variable quantity (cell-sized grids are intended). See `README.md` §"Variable pixel size" and `FLEXIVIT.md` §0 before changing patch-size, scale-conditioning, or dataloading behaviour.
 
 ## Layout
 
