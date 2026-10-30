@@ -9,9 +9,10 @@ implied by the image's pixel size::
 ``pixel_size`` is one scalar per image, i.e. square pixels are assumed. That is
 correct for the expected data (square pixels from the acquisition fleet, see
 :mod:`fuse_channels.fleet`); anisotropic metadata is a data error here, not a
-case this geometry handles. Pass ``fleet=`` to validate the pixel size at ingest
-and compute ``p`` from the canonical table value; leave it ``None`` to serve a
-dataset with a different (or unknown) fleet. Pixels are never resampled:
+case this geometry handles. Pass ``fleet_pixel_sizes=`` (the fleet's pixel-size
+table) to validate the pixel size at ingest and compute ``p`` from the canonical
+table value; leave it ``None`` to serve a dataset with a different (or unknown)
+fleet. Pixels are never resampled:
 the patch *size* absorbs the pixel-size variation.
 
 Read from the raw image rather than from a pre-existing crop, so the box can
@@ -66,9 +67,8 @@ def patch_size_for_pixel_size(pixel_size: float, target_um: float) -> int:
     deliberately not Python's banker's ``round`` (which maps 24.5 -> 24 and
     25.5 -> 26), so the map is monotone in ``pixel_size`` and reproducible.
 
-    There is no candidate set. The acquisition fleet is a *discrete* set of
-    pixel sizes (see :mod:`fuse_channels.fleet`), each member implies exactly
-    one ``p``, and the trained patch size for an instrument *is* that value.
+    There is no candidate set. A fleet's pixel sizes are discrete (see
+    :mod:`fuse_channels.fleet`), each one implies exactly one ``p``, and the trained patch size for an instrument *is* that value.
     Validate the pixel size at ingest (``canonical_fleet_pixel_size``) instead
     of snapping ``p`` onto a lattice here: a snap would silently move ``p`` by
     one pixel and land on a head the model never trained.
@@ -101,15 +101,17 @@ class CropGeometry:
         pixel_size: float,
         target_um: float,
         n_tokens: int,
-        fleet: Optional[Sequence[float]] = None,
+        fleet_pixel_sizes: Optional[Sequence[float]] = None,
     ) -> "CropGeometry":
         if n_tokens < 1:
             raise ValueError(f"n_tokens must be >= 1, got {n_tokens}")
-        if fleet is not None:
+        if fleet_pixel_sizes is not None:
             # Ingest-time validation: the pixel size must name an acquisition
             # fleet entry, and the canonical table value is what p is computed
             # from (float noise in the metadata must not move p).
-            pixel_size = canonical_fleet_pixel_size(pixel_size, fleet)
+            pixel_size = canonical_fleet_pixel_size(
+                pixel_size, fleet_pixel_sizes
+            )
         p = patch_size_for_pixel_size(pixel_size, target_um)
         return cls(
             patch_size=p,
@@ -320,7 +322,7 @@ def plan_patches(
     *,
     pixel_size: Optional[float] = None,
     target_um: Optional[float] = None,
-    fleet: Optional[Sequence[float]] = None,
+    fleet_pixel_sizes: Optional[Sequence[float]] = None,
     n_tokens=None,
     min_n: int = 2,
     max_n: Optional[int] = None,
@@ -348,10 +350,10 @@ def plan_patches(
     touch the cell, or when ``require_full_cell`` is set and the cell is larger
     than the window.
     """
-    if fleet is not None and pixel_size is not None:
+    if fleet_pixel_sizes is not None and pixel_size is not None:
         # Ingest-time validation, once per image: the canonical table value is
         # what p is computed from, so float noise cannot move p by one pixel.
-        pixel_size = canonical_fleet_pixel_size(pixel_size, fleet)
+        pixel_size = canonical_fleet_pixel_size(pixel_size, fleet_pixel_sizes)
     if geometry is None:
         if pixel_size is None or target_um is None:
             raise ValueError(
@@ -364,7 +366,12 @@ def plan_patches(
         base_geometry = (
             None
             if n_tokens == "cell"
-            else CropGeometry.build(pixel_size, target_um, int(n_tokens), fleet=fleet)
+            else CropGeometry.build(
+                pixel_size,
+                target_um,
+                int(n_tokens),
+                fleet_pixel_sizes=fleet_pixel_sizes,
+            )
         )
     else:
         if n_tokens is not None and n_tokens != "cell":
@@ -403,7 +410,9 @@ def plan_patches(
                     }
                 )
                 continue
-            geom = CropGeometry.build(pixel_size, target_um, need, fleet=fleet)
+            geom = CropGeometry.build(
+                pixel_size, target_um, need, fleet_pixel_sizes=fleet_pixel_sizes
+            )
         box = place_box(bbox, geom.crop_px, (H, W))
         if box is None:
             skipped.append(

@@ -55,18 +55,20 @@ carries `PhysicalSizeX` *and* `PhysicalSizeY` separately.
 
 **The acquisition fleet.** The **acquisition fleet** is the set of acquisition
 instruments (microscopes/scanners) and acquisition settings that the model will
-be trained *and* deployed on. Each configuration acquires at one physical pixel
-size, so the fleet is a finite, sorted table of `pixel_size` values — not an
-interval:
+be trained *and* deployed on. It is a set of *instruments*, not a set of numbers;
+each configuration acquires at one physical pixel size, so the **fleet's pixel
+sizes** are a finite, sorted table — not an interval:
 
 ```
-fleet_pixel_sizes = (0.598, 0.646, 0.650, 0.652, 0.703)   # µm/px
+fleet_pixel_sizes = (0.598, 0.646, 0.650, 0.652, 0.703)   # µm/px, one per configuration
 ```
 
 (`FLEET_PIXEL_SIZES` in `src/fuse_channels/fleet.py`; a different dataset passes
-its own table, or `fleet=None` for none.) Because the table is discrete, each
-entry implies exactly one `p`, and the trained patch size for an instrument *is*
-that value; there is nothing to snap. A pixel size outside the table is an
+its own table, or `fleet_pixel_sizes=None` for none. The table is the fleet's
+image under `pixel_size` — the same distinction as `p` being a pixel count and
+never a physical size.) Because the table is discrete, each entry implies
+exactly one `p`, and the trained patch size for an instrument *is* that value;
+there is nothing to snap. A pixel size outside the table is an
 **ingest-time error** (`canonical_fleet_pixel_size` raises, calling out the
 nm / px-per-µm / mm metadata traps), because it would imply an untrained `p`.
 

@@ -56,16 +56,16 @@ physical pixel size, so `forward`/`encode` raise rather than invent a default.
 
 **Expected data: square pixels from a finite acquisition fleet.** The
 **acquisition fleet** is the set of acquisition instruments (microscopes /
-scanners) and acquisition settings the model is trained *and* deployed on. It has
-one pixel size per instrument configuration, so `pixel_size` is a finite sorted
-table, not an interval:
+scanners) and acquisition settings the model is trained *and* deployed on. It is
+a set of instruments; each configuration acquires at one physical pixel size, so
+the **fleet's pixel sizes** are a finite sorted table, not an interval:
 
 ```
-fleet_pixel_sizes = (0.598, 0.646, 0.650, 0.652, 0.703)   # µm/px
+fleet_pixel_sizes = (0.598, 0.646, 0.650, 0.652, 0.703)   # µm/px, one per configuration
 ```
 
 (`FLEET_PIXEL_SIZES` in `src/fuse_channels/fleet.py`; the library itself is
-general — another dataset passes its own table, or `fleet=None`.) A pixel size
+general — another dataset passes its own table, or `fleet_pixel_sizes=None`.) A pixel size
 outside the table implies a `p` the model never trained, so it is an
 **ingest-time error**, not something to snap: `canonical_fleet_pixel_size`
 maps metadata to its table entry within a tolerance (`0.59766` and

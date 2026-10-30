@@ -20,7 +20,7 @@ from .fleet import (
     FLEET_PIXEL_SIZES,
     canonical_fleet_pixel_size,
     fleet_patch_sizes,
-    sorted_fleet,
+    sorted_fleet_pixel_sizes,
 )
 from .decoder import (
     ChannelAwareDecoder,
@@ -105,7 +105,7 @@ __all__ = [
     "FLEET_PIXEL_SIZES",
     "canonical_fleet_pixel_size",
     "fleet_patch_sizes",
-    "sorted_fleet",
+    "sorted_fleet_pixel_sizes",
     "DecoderBlock",
     "DCPVisibilitySampler",
     "HierarchicalChannelSampler",

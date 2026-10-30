@@ -15,7 +15,7 @@ from typing import List, Optional, Sequence, Tuple, Union
 import torch
 from torch.utils.data import Dataset
 
-from .fleet import canonical_fleet_pixel_size, sorted_fleet
+from .fleet import canonical_fleet_pixel_size, sorted_fleet_pixel_sizes
 
 
 class SyntheticChannelDataset(Dataset):
@@ -30,7 +30,7 @@ class SyntheticChannelDataset(Dataset):
         pixel_size: Optional[Union[float, Sequence[float]]] = None,
         pixel_size_range: Optional[Sequence[float]] = None,
         return_pixel_size: bool = True,
-        fleet: Optional[Sequence[float]] = None,
+        fleet_pixel_sizes: Optional[Sequence[float]] = None,
         strict_fleet: bool = True,
     ) -> None:
         super().__init__()
@@ -38,11 +38,18 @@ class SyntheticChannelDataset(Dataset):
         self.n_channel_ids = n_channel_ids
         self.return_pixel_size = bool(return_pixel_size)
         g = torch.Generator().manual_seed(seed)
-        self.fleet = None if fleet is None else sorted_fleet(fleet)
-        self.strict_fleet = bool(strict_fleet) and self.fleet is not None
+        self.fleet_pixel_sizes = (
+            None
+            if fleet_pixel_sizes is None
+            else sorted_fleet_pixel_sizes(fleet_pixel_sizes)
+        )
+        self.strict_fleet = (
+            bool(strict_fleet) and self.fleet_pixel_sizes is not None
+        )
         self.pixel_sizes = self._resolve_pixel_sizes(
             n_samples, pixel_size, pixel_size_range, g,
-            fleet=self.fleet, strict_fleet=self.strict_fleet,
+            fleet_pixel_sizes=self.fleet_pixel_sizes,
+            strict_fleet=self.strict_fleet,
         )
         if self.pixel_sizes is None:
             raise ValueError(
@@ -75,13 +82,14 @@ class SyntheticChannelDataset(Dataset):
         pixel_size,
         pixel_size_range=None,
         generator: Optional[torch.Generator] = None,
-        fleet: Optional[Sequence[float]] = None,
+        fleet_pixel_sizes: Optional[Sequence[float]] = None,
         strict_fleet: bool = False,
     ) -> Optional[List[float]]:
         """Resolve the per-sample pixel sizes.
 
-        With ``fleet`` given the values are **discrete**: drawn from the fleet
-        (``pixel_size_range`` then selects the fleet members inside the range)
+        With ``fleet_pixel_sizes`` given the values are **discrete**: drawn
+        from that table (``pixel_size_range`` then selects its members inside
+        the range)
         and canonicalised to the table entry. Without it, sampling is uniform
         and continuous, which is how a dataset from another fleet is served.
         """
@@ -93,12 +101,12 @@ class SyntheticChannelDataset(Dataset):
                 raise ValueError(
                     f"pixel_size_range must be positive and ordered, got {pixel_size_range}"
                 )
-            if fleet is not None:
-                members = [q for q in fleet if lo <= q <= hi]
+            if fleet_pixel_sizes is not None:
+                members = [q for q in fleet_pixel_sizes if lo <= q <= hi]
                 if not members:
                     raise ValueError(
-                        f"pixel_size_range={pixel_size_range} contains no fleet "
-                        f"member of {list(fleet)}"
+                        f"pixel_size_range={pixel_size_range} contains no fleet pixel "
+                        f"size of {list(fleet_pixel_sizes)}"
                     )
                 picks = torch.randint(
                     len(members), (n_samples,), generator=generator
@@ -120,7 +128,9 @@ class SyntheticChannelDataset(Dataset):
                     f"got {len(values)}"
                 )
         if strict_fleet:
-            values = [canonical_fleet_pixel_size(v, fleet) for v in values]
+            values = [
+                canonical_fleet_pixel_size(v, fleet_pixel_sizes) for v in values
+            ]
         return values
 
     def __len__(self) -> int:

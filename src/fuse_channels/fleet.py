@@ -1,10 +1,13 @@
-"""The **acquisition fleet**: the discrete per-instrument ``pixel_size`` values.
+"""The **acquisition fleet**: its discrete per-instrument ``pixel_size`` values.
 
 The fleet is the set of acquisition instruments (microscopes/scanners) and
-acquisition settings that the model is trained *and* deployed on. Each
-configuration has one physical pixel size, so the fleet is a finite, sorted
-table of ``pixel_size`` values -- not an interval. That matters because the
-patch size is derived from it:
+acquisition settings that the model is trained *and* deployed on. The fleet is
+therefore a set of *instruments*, not a set of numbers; each configuration
+acquires at one physical pixel size, so the fleet's **pixel sizes** are a
+finite, sorted table -- not an interval. That distinction is load-bearing, and
+it is why the values here are named ``fleet_pixel_sizes``: the table is the
+fleet's image under ``pixel_size``, just as ``p`` is a pixel count and never a
+physical size. The patch size is derived from the table:
 
     p_b = round(target_um / pixel_size_b)        one p per fleet entry
 
@@ -14,16 +17,18 @@ an **ingest-time error**, not something to snap onto a nearest lattice. Snapping
 it makes ``p`` reproducible from float-noise metadata (``0.6500000000000001``
 and ``0.65`` are the same instrument).
 
-The library stays general: pass ``fleet=None`` to serve a dataset with a
-different (or unknown) fleet; pass its own table to validate that one. The
-constants below are *this* project's fleet, not a property of the architecture.
+The library stays general: pass ``fleet_pixel_sizes=None`` to serve a dataset
+with a different (or unknown) fleet; pass that fleet's own table to validate it.
+The constants below are *this* project's fleet, not a property of the
+architecture.
 """
 
 from __future__ import annotations
 
 from typing import Optional, Sequence, Tuple
 
-#: The project's acquisition fleet, micrometres per pixel, sorted.
+#: The pixel sizes of this project's fleet, micrometres per pixel, sorted.
+#: One entry per instrument configuration.
 FLEET_PIXEL_SIZES: Tuple[float, ...] = (0.598, 0.646, 0.650, 0.652, 0.703)
 
 #: Relative tolerance for matching metadata against a fleet entry. OME-TIFF
@@ -32,11 +37,11 @@ FLEET_PIXEL_SIZES: Tuple[float, ...] = (0.598, 0.646, 0.650, 0.652, 0.703)
 FLEET_RTOL = 1e-3
 
 
-def sorted_fleet(fleet: Sequence[float]) -> Tuple[float, ...]:
-    """Return the fleet sorted and deduplicated, rejecting non-positive sizes."""
-    table = tuple(sorted({float(q) for q in fleet}))
+def sorted_fleet_pixel_sizes(pixel_sizes: Sequence[float]) -> Tuple[float, ...]:
+    """Return a fleet's pixel sizes sorted and deduplicated, rejecting non-positive ones."""
+    table = tuple(sorted({float(q) for q in pixel_sizes}))
     if not table:
-        raise ValueError("fleet must contain at least one pixel size")
+        raise ValueError("fleet_pixel_sizes must contain at least one pixel size")
     if any(q <= 0 for q in table):
         raise ValueError(f"fleet pixel sizes must be positive, got {table}")
     return table
@@ -44,7 +49,7 @@ def sorted_fleet(fleet: Sequence[float]) -> Tuple[float, ...]:
 
 def canonical_fleet_pixel_size(
     pixel_size: float,
-    fleet: Optional[Sequence[float]] = None,
+    fleet_pixel_sizes: Optional[Sequence[float]] = None,
     rtol: float = FLEET_RTOL,
 ) -> float:
     """Map one image's metadata ``pixel_size`` to its fleet entry.
@@ -59,7 +64,9 @@ def canonical_fleet_pixel_size(
     """
     if pixel_size <= 0:
         raise ValueError(f"pixel_size must be positive, got {pixel_size}")
-    table = sorted_fleet(fleet if fleet is not None else FLEET_PIXEL_SIZES)
+    table = sorted_fleet_pixel_sizes(
+        fleet_pixel_sizes if fleet_pixel_sizes is not None else FLEET_PIXEL_SIZES
+    )
 
     def nearest(value: float) -> Tuple[float, bool]:
         best = min(table, key=lambda q: abs(q - value))
@@ -91,9 +98,9 @@ def canonical_fleet_pixel_size(
 
 
 def fleet_patch_sizes(
-    fleet: Optional[Sequence[float]] = None, target_um: float = 12.8
+    fleet_pixel_sizes: Optional[Sequence[float]] = None, target_um: float = 12.8
 ) -> Tuple[int, ...]:
-    """The distinct ``p`` values implied by a fleet (the model's ``patch_sizes``).
+    """The distinct ``p`` values implied by a fleet's pixel sizes.
 
     This is the only place the fleet's concrete numbers should turn into model
     configuration: ``patch_sizes`` must be derived from it, never hand-written,
@@ -102,5 +109,7 @@ def fleet_patch_sizes(
     """
     from .crops import patch_size_for_pixel_size
 
-    table = sorted_fleet(fleet if fleet is not None else FLEET_PIXEL_SIZES)
+    table = sorted_fleet_pixel_sizes(
+        fleet_pixel_sizes if fleet_pixel_sizes is not None else FLEET_PIXEL_SIZES
+    )
     return tuple(sorted({patch_size_for_pixel_size(q, target_um) for q in table}))
