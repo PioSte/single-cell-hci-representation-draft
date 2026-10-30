@@ -204,8 +204,11 @@ optional budget, and a cell that exceeds it is skipped and reported, never
 silently truncated. `min_n=2` is the opposite kind of bound — it *enlarges* the
 window to keep the MAE patch region usable, so it loses no content.
 
-The genuine caveats that remain are per-`p`, not per-`N`: the decoder head is
-per-`p`, so every instrument's `p` must be in `patch_sizes`; `max_tokens` guards
+The genuine caveats that remain are per-`p`, not per-`N`: with `head_mode="per_p"`
+(the default) the decoder head is per-`p`, so every instrument's `p` must be in
+`patch_sizes`; `head_mode="shared"` removes that requirement (no parameter
+depends on `p`) at the cost of resampling the prediction across `p`;
+`max_tokens` guards
 only the random FlexiViT sampler, not cell-sized crops; and metric PE does not
 extrapolate in coordinate range, so very large `N` means attention distances
 beyond any trained cell — degrade it by monitoring the `N` distribution, not by
@@ -423,17 +426,38 @@ That equality depends on `B` being the true bilinear operator, i.e.
 itself by `test_pi_resize_preserves_token_intensity_when_upsampling`. Token RMS
 is bounded across `p` by `test_pi_resized_kernel_keeps_token_scale_bounded`.
 
-The decoder reconstruction head is the open part. An MAE-style head maps
-`d -> p²·C`; changing `p` changes both the output basis and the pixel target.
-Resampling that linear weight is possible but is not the same operation as
-PI-resizing an input patch kernel. This repo keeps one linear head per
-configured `p`; the decoder is discarded after MAE, so the extra head parameters
-cost nothing at deployment. An unseen `p` uses the nearest larger per-`p` head
-with bilinear point-sampling; `head_mode="canonical"` is the single-head
-ablation. Bilinear here is point-sampling
-(`align_corners=False`, no antialias), which matches the discrete `p×p` target;
-area/antialiased downsampling would low-pass it. Do not PI-resize the decoder
-head: PI-resize is an input-kernel operation, not an output-head resampler.
+The decoder reconstruction head is the part where `p` touches a parameter shape.
+An MAE-style head maps `d -> p²`; changing `p` changes both the output basis and
+the pixel target. Three modes:
+
+* `head_mode="per_p"` (default, exact): one linear head per configured `p`. The
+decoder is discarded after MAE, so the extra parameters cost nothing at
+deployment. An unseen `p` uses the nearest larger per-`p` head with bilinear
+point-sampling and never upsamples. Bilinear there is point-sampling
+(`align_corners=False`, no antialias), which matches the discrete `p×p` *target*
+of that same `p`.
+* `head_mode="shared"` (`p`-free): one canonical `dim -> p0²` head plus a fixed
+linear operator to the target grid. Resampling commutes with the linear head, so
+resampling the prediction and resampling the head's output rows are the same
+map. Because `p · pixel_size` is held constant, a smaller `p` is a genuinely
+coarser sampling of the *same* field, so the physically consistent cross-`p`
+relation is a low-pass: `head_resample="area"` (default) box-averages when
+shrinking and uses bilinear when growing. `"bilinear"` is the same-`p`
+point-sampling operator extended across `p` (the ablation arm).
+* `head_mode="canonical"`: the legacy single head, bilinear, no upsampling.
+
+PI-resize is *not* obviously right for the head. Its justification is that it
+best preserves the inner product between a resampled *input* patch and the
+kernel; the head's `p²` axis is an *output*, and `P = (B^T)^+` is a minimum-norm
+least-squares inverse, not a low-pass -- it keeps detail and can ring, where
+`"area"` blurs. It is therefore exposed as `head_resample="pi"` (the exact
+FlexiViT operator applied along the output axis) for the ablation, not as the
+default. `p0` is an **explicit** hyperparameter (`head_patch_size`), not derived
+from `patch_sizes`: deriving it would silently change the head's shape when the
+fleet changes, which is exactly what the `p`-free head is for.
+`canonical_patch_size_for(patch_sizes)` suggests the log-space median so neither
+resampling direction is unnecessarily large; the other two modes keep
+`p0 = max(patch_sizes)` because they cannot upsample.
 
 ### 3.1 Channel identity must not ride on the patch token
 

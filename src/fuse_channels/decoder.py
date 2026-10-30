@@ -14,12 +14,24 @@ PE from ``FLEXIVIT.md``: a function of ``(row, col, grid_h, grid_w)`` with no
 grid-sized table, defined for any patch size.  ``"learned"`` and ``"sincos"``
 remain as legacy fixed-grid tables/lookup maps.
 
-The reconstruction head keeps one linear ``dim -> p*p`` head per configured
-patch size (``head_mode="per_p"``).  The decoder is pretraining-only and
-discarded after MAE, so the extra head parameters do not affect deployment.
-For an unseen ``p`` it falls back to the nearest configured head with
-``p_head >= p`` and bilinear point-sampling, and refuses to upsample.  FlexiViT does not define MAE
-output-head resampling; per-p heads avoid resampling for configured sizes.
+The reconstruction head has three modes:
+
+* ``head_mode="per_p"`` (default) -- one linear ``dim -> p*p`` head per
+  configured patch size.  Exact for configured ``p``; an unseen ``p`` falls
+  back to the nearest configured head with ``p_head >= p`` (bilinear
+  point-sampling) and refuses to upsample.
+* ``head_mode="shared"`` -- **one** ``dim -> p0*p0`` head at a canonical
+  ``p0`` whose parameters do not depend on ``p``, resampled to any target
+  ``p`` (both directions) by a fixed linear operator.  This is the FlexiViT
+  pattern applied to the head instead of the patch kernel: canonical
+  parameters + a resolution operator, so a checkpoint is fleet-independent
+  and every ``p`` is legal.  ``head_resample`` selects the operator (see
+  :class:`PatchReconstructionHead`).
+* ``head_mode="canonical"`` -- the legacy single head with bilinear
+  point-sampling and no upsampling (kept as an ablation).
+
+The decoder is pretraining-only and discarded after MAE, so head parameters do
+not affect deployment.
 """
 
 from __future__ import annotations
@@ -131,24 +143,75 @@ class DecoderBlock(nn.Module):
         return q
 
 
+def canonical_patch_size_for(patch_sizes) -> int:
+    """Suggested ``p0`` for the ``p``-free head: the log-space median.
+
+    ``head_mode="shared"`` resamples in both directions, so the canonical size
+    should minimise the worst-case resampling ratio over the fleet rather than
+    sit at an edge (``max`` would upsample for every instrument and low-pass
+    nothing).  Minimising ``max_p |log(p0 / p)|`` gives the geometric midpoint;
+    ties go to the smaller ``p``.  For ``(4, 8, 16)`` this is 8, for
+    ``(18, 20, 21)`` it is 20.
+
+    This is a *suggestion*: ``p0`` is a fixed hyperparameter, so pass it
+    explicitly as ``head_patch_size`` -- letting it default from
+    ``patch_sizes`` would silently change the head's shape when the fleet
+    changes.
+    """
+    ps = sorted({int(p) for p in patch_sizes})
+    if not ps:
+        raise ValueError("patch_sizes must not be empty")
+    if any(p < 1 for p in ps):
+        raise ValueError(f"patch sizes must be positive, got {ps}")
+    # log ratios are antisymmetric but not bit-exact, so round the key before
+    # using the smaller ``p`` as the tie-break.
+    return min(
+        ps,
+        key=lambda q: (round(max(abs(math.log(q / p)) for p in ps), 12), q),
+    )
+
+
 class PatchReconstructionHead(nn.Module):
-    """Reconstruction head: per-patch-size linear heads, with a nearest-head fallback.
+    """Reconstruction head: per-patch-size heads, or one ``p``-free head.
 
     ``head_mode="per_p"`` (default) keeps one ``nn.Linear(dim, p*p)`` per
-    configured patch size.  The decoder is pretraining-only and discarded after
-    MAE, so this costs pretraining parameters only and removes the shared-head
-    interpolation mismatch.  ``head_mode="canonical"`` keeps the old single
-    ``dim -> canonical_patch_size**2`` head, resized bilinearly to the target
-    ``p``, as an ablation/fallback.
+    configured patch size: exact for configured ``p``, and the decoder is
+    pretraining-only.  ``head_mode="canonical"`` is the legacy single head with
+    bilinear point-sampling that refuses to upsample (ablation).
 
-    For an unseen ``p`` the nearest configured head with ``p_head >= p`` is used
-    as the fallback (the canonical head when no larger per-p head exists).
-    The fallback never upsamples: ``p > max(patch_sizes)`` raises.  The
-    bilinear op is point-sampling (``align_corners=False``, no antialias), which
-    is the right operator for a discrete ``p x p`` MAE target.  ``area`` or
-    antialiased downsampling would low-pass the prediction and mismatch the
-    point-sampled target.
+    ``head_mode="shared"`` is the **parameter-free-in-``p``** head: one
+    ``nn.Linear(dim, p0*p0)`` whose output rows are indexed by the canonical
+    ``p0 x p0`` patch grid, resampled to the target grid by a fixed linear
+    operator.  Since resampling commutes with the linear head, resampling the
+    prediction and resampling the head's rows are the same map, so the operator
+    can be applied to the ``[K, p**2]`` prediction directly.  ``p0`` is
+    ``canonical_patch_size`` (typically the middle of the fleet's ``p`` range).
+    Every ``p >= 1`` is legal, in both directions, and the checkpoint carries no
+    per-``p`` parameters.
+
+    ``head_resample`` picks that operator (``head_mode="shared"`` only):
+
+    * ``"area"`` (default) -- box-average when shrinking, bilinear when
+      growing.  The physically consistent choice under this repo's contract:
+      tokens hold a constant *physical* extent, so a smaller ``p`` is a
+      genuinely coarser sampling of the same field and the cross-``p`` relation
+      is a low-pass, not a point-sample.
+    * ``"bilinear"`` -- point-sampling both ways
+      (``align_corners=False``, no antialias): the operator the per-``p``
+      fallback uses, kept as the ablation arm.
+    * ``"pi"`` -- FlexiViT's PI-resize (``P = (B^T)^+``, ``flexi.py``) applied
+      along the output-pixel axis, i.e. the head's rows are treated as a
+      ``p0 x p0`` kernel and PI-resized.  Exactly the tokenizer's operator; it
+      is the minimum-norm least-squares inverse rather than a low-pass, so it
+      keeps detail (and can ring) where ``"area"`` blurs.
+
+    For an unseen ``p`` with ``head_mode="per_p"`` the nearest configured head
+    with ``p_head >= p`` is used as the fallback (the canonical head when no
+    larger per-p head exists).  That fallback never upsamples: ``p >
+    max(patch_sizes)`` raises; use ``"shared"`` to lift that limit.
     """
+
+    RESAMPLE_OPS = ("area", "bilinear", "pi")
 
     def __init__(
         self,
@@ -156,15 +219,22 @@ class PatchReconstructionHead(nn.Module):
         canonical_patch_size: int,
         patch_sizes=None,
         mode: str = "per_p",
+        resample: str = "area",
     ) -> None:
         super().__init__()
-        if mode not in ("per_p", "canonical"):
+        if mode not in ("per_p", "canonical", "shared"):
             raise ValueError(
                 f"unknown reconstruction head mode '{mode}'; "
-                "expected 'per_p' or 'canonical'"
+                "expected 'per_p', 'canonical' or 'shared'"
+            )
+        if resample not in self.RESAMPLE_OPS:
+            raise ValueError(
+                f"unknown head_resample '{resample}'; "
+                f"expected one of {self.RESAMPLE_OPS}"
             )
         self.canonical_patch_size = int(canonical_patch_size)
         self.mode = mode
+        self.resample = resample
         if patch_sizes is None:
             patch_sizes = (self.canonical_patch_size,)
         self.patch_sizes = tuple(
@@ -173,7 +243,7 @@ class PatchReconstructionHead(nn.Module):
         for p in self.patch_sizes:
             if p < 1:
                 raise ValueError(f"patch sizes must be positive, got {p}")
-        if mode == "canonical":
+        if mode in ("canonical", "shared"):
             self.heads = None
             self.head = nn.Linear(dim, self.canonical_patch_size**2)
         else:
@@ -199,6 +269,9 @@ class PatchReconstructionHead(nn.Module):
     def _head_for(self, patch_size: int) -> tuple[nn.Linear, bool, int]:
         """Return ``(head, needs_resize, source_p)`` for one target size."""
         p = int(patch_size)
+        if self.mode == "shared":
+            # p-free: one head, resampled in both directions.
+            return self.head, p != self.canonical_patch_size, self.canonical_patch_size
         if self.heads is None:
             if p > self.canonical_patch_size:
                 raise ValueError(
@@ -254,6 +327,8 @@ class PatchReconstructionHead(nn.Module):
         c = int(source_patch_size)
         if p == c:
             return pred
+        if self.mode == "shared":
+            return self._resample_shared(pred, c, p)
         if p > c:
             raise ValueError(
                 f"cannot resize p={c} prediction up to p={p}"
@@ -261,6 +336,31 @@ class PatchReconstructionHead(nn.Module):
         x = pred.reshape(-1, 1, c, c)
         x = F.interpolate(x, size=(p, p), mode="bilinear", align_corners=False)
         return x.reshape(pred.shape[0], p * p)
+
+    def _resample_shared(
+        self, pred: torch.Tensor, source_p: int, target_p: int
+    ) -> torch.Tensor:
+        """Resample a ``[K, source_p**2]`` patch prediction to ``target_p``.
+
+        Resampling commutes with the linear head, so applying the operator to
+        the prediction is identical to resampling the head's output rows -- and
+        much cheaper than rebuilding the head per ``p``.
+        """
+        if self.resample == "pi":
+            from .flexi import _pi_resize_matrix
+
+            # ``_pi_resize_matrix`` is [target_p**2, source_p**2], matching
+            # ``pi_resize_patch_embed``'s ``flat @ P.T`` convention.
+            op = _pi_resize_matrix(source_p, target_p, pred.dtype).to(pred.device)
+            return pred @ op.T
+        x = pred.reshape(-1, 1, source_p, source_p)
+        if self.resample == "area" and target_p < source_p:
+            x = F.interpolate(x, size=(target_p, target_p), mode="area")
+        else:
+            x = F.interpolate(
+                x, size=(target_p, target_p), mode="bilinear", align_corners=False
+            )
+        return x.reshape(pred.shape[0], target_p * target_p)
 
     @staticmethod
     def mask(patch_sizes, device=None) -> torch.Tensor | None:
@@ -304,6 +404,7 @@ class ChannelAwareDecoder(nn.Module):
         adaln: bool = False,
         patch_sizes=None,
         head_mode: str = "per_p",
+        head_resample: str = "area",
     ) -> None:
         super().__init__()
         self.mask_token = nn.Parameter(torch.zeros(dim))
@@ -357,6 +458,7 @@ class ChannelAwareDecoder(nn.Module):
             self.canonical_patch_size,
             patch_sizes=patch_sizes,
             mode=head_mode,
+            resample=head_resample,
         )
 
     def _target_pe(self, target_patch, target_row=None, target_col=None,

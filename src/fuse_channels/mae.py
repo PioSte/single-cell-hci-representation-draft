@@ -53,7 +53,11 @@ from typing import Optional, Sequence
 import torch
 import torch.nn as nn
 
-from .decoder import ChannelAwareDecoder, PatchReconstructionHead
+from .decoder import (
+    ChannelAwareDecoder,
+    PatchReconstructionHead,
+    canonical_patch_size_for,
+)
 from .encoder import TransformerEncoder
 from .fusion import ChannelFusion, IdentityGatedSum, MultiheadAttentionPooling
 from .identity import ChannelEmbedding
@@ -169,6 +173,7 @@ class ChannelFusionMAE(nn.Module):
         keep_offcell_as_context: bool = True,
         head_patch_size: int | None = None,
         head_mode: str = "per_p",
+        head_resample: str = "area",
         max_tokens: int | None = None,
     ) -> None:
         super().__init__()
@@ -181,9 +186,10 @@ class ChannelFusionMAE(nn.Module):
                 f"unknown scale_conditioning '{scale_conditioning}'; "
                 "expected 'none', 'add' or 'adaln'"
             )
-        if head_mode not in ("per_p", "canonical"):
+        if head_mode not in ("per_p", "canonical", "shared"):
             raise ValueError(
-                f"unknown head_mode '{head_mode}'; expected 'per_p' or 'canonical'"
+                f"unknown head_mode '{head_mode}'; "
+                "expected 'per_p', 'canonical' or 'shared'"
             )
         if max_tokens is not None and int(max_tokens) < 1:
             raise ValueError(f"max_tokens must be >= 1 or None, got {max_tokens}")
@@ -316,6 +322,19 @@ class ChannelFusionMAE(nn.Module):
             post_sab=n_queries > 1,
             readout="mean",
         )
+        if head_mode == "shared" and head_patch_size is None:
+            raise ValueError(
+                "head_mode='shared' needs an explicit head_patch_size: the "
+                "canonical p0 is a fixed hyperparameter, and letting it default "
+                "from patch_sizes would silently change the head's shape when "
+                "the fleet changes. A reasonable value is "
+                f"head_patch_size={canonical_patch_size_for(self.patch_sizes)} "
+                "for patch_sizes="
+                f"{list(self.patch_sizes)}."
+            )
+        # per_p never upsamples, so its canonical/fallback head must be the
+        # largest configured size; the p-free head resamples both ways and its
+        # p0 is explicit.
         canonical_patch_size = int(head_patch_size or max(self.patch_sizes))
         self.decoder = ChannelAwareDecoder(
             dim,
@@ -332,6 +351,7 @@ class ChannelFusionMAE(nn.Module):
             adaln=scale_conditioning == "adaln",
             patch_sizes=self.patch_sizes,
             head_mode=head_mode,
+            head_resample=head_resample,
         )
         self.masker = DCPVisibilitySampler(
             base_n_patches,

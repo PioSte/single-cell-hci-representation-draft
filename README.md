@@ -182,15 +182,18 @@ per-channel tied Conv2d(1 -> D) patch embed, PI-resized to the current p
   self-attend within each sample, then cross-attend to the encoder
   representation + memory + descriptor. A fully dropped channel has no encoder
   evidence, only its identity query, so identity acts as a **target
-  specification** as well as an input feature. The reconstruction head keeps a
-  separate linear `dim -> p²` head for every configured patch size
-  (`head_mode="per_p"`, default); the decoder is pretraining-only and discarded
-  after MAE, so this is a pretraining parameter cost only. An unseen `p` falls
-  back to the nearest configured head with `p_head >= p` + bilinear
-  point-sampling, and never upsamples.
-  `head_mode="canonical"` is the legacy single-head ablation. FlexiViT does not
-  define MAE output-head resampling; the per-`p` head avoids resampling for all
-  configured sizes.
+  specification** as well as an input feature. The reconstruction head has
+  three modes. `head_mode="per_p"` (default) keeps a separate linear
+  `dim -> p²` head for every configured patch size: exact for configured `p`,
+  and an unseen `p` falls back to the nearest configured head with
+  `p_head >= p` + bilinear point-sampling, never upsampling.
+  `head_mode="shared"` is **`p`-free**: one canonical `dim -> p0²` head
+  resampled to *any* `p` in both directions by a fixed operator
+  (`head_resample` = `"area"` default, `"bilinear"`, or `"pi"`), so no
+  parameter depends on `p` and a checkpoint trained on one fleet serves
+  another. `head_mode="canonical"` is the legacy single-head ablation. The
+  decoder is pretraining-only and discarded after MAE, so heads are a
+  pretraining parameter cost only.
 * **Token budget.** `max_tokens` (optional) filters the random `flexi_random`
   sampler to patch sizes with `floor(H/p)·floor(W/p) <= max_tokens`. Explicit
   `patch_sizes=` overrides the budget for inference/evaluation. This caps the
@@ -241,7 +244,9 @@ model = ChannelFusionMAE(
     loss="mae",                       # or "cha_maevit" (ablation)
     patch_sizes=(4, 8, 16),           # FlexiViT; patch_size is canonical p0
     max_tokens=1024,                  # optional training sampler cap
-    head_mode="per_p",                # or "canonical" (legacy ablation)
+    head_mode="per_p",                # or "shared" (p-free) / "canonical" (legacy)
+    # head_patch_size=8,              # required for head_mode="shared" (p0)
+    head_resample="area",             # head_mode="shared" only: area/bilinear/pi
     scale_conditioning="add",         # or "adaln" / "none"
     pixel_size=0.5,                   # optional µm/px; log p is always used
     # pos_embed="learned",            # legacy fixed-grid PE ablation
@@ -388,6 +393,8 @@ identity-gated fusion at `C = 60`.
 * The default `head_mode="per_p"` changes decoder state-dict keys from
   `decoder.head.head.*` to `decoder.head.heads.<p>.*`. Load an older
   checkpoint with `head_mode="canonical"`, or remap the output head.
+  `head_mode="shared"` uses the `decoder.head.head.*` keys and, unlike the
+  other two modes, its state dict is independent of `patch_sizes`.
 * Attention uses `F.scaled_dot_product_attention` over real, grouped tokens. No
   custom fused kernel is required or implemented.
 * The model's data path is torch-only; the visualization extras are separate.
@@ -436,7 +443,9 @@ default loss is patch-normalized MSE with ChA-MAEViT as an ablation;
 position now follows the FLEXIVIT.md target (encoder RoPE + decoder fractional PE,
 no fusion table), with the legacy table retained as an ablation; the decoder
 uses per-patch-size output heads by default, with a nearest-head bilinear
-fallback for unseen `p` and the canonical single head retained as an ablation;
+fallback for unseen `p`, a `p`-free shared head (`head_mode="shared"`) that
+resamples one canonical head to any `p`, and the canonical single head retained
+as an ablation;
 tokens use FlexiViT's floor/crop border
 contract rather than rejecting non-divisible tiles; channel identity is
 decoupled from the patch token (routing bias + output skip) so the

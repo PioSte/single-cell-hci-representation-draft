@@ -41,9 +41,27 @@ def main() -> None:
     )
     p.add_argument(
         "--head-mode",
-        choices=("per_p", "canonical"),
+        choices=("per_p", "canonical", "shared"),
         default="per_p",
-        help="decoder reconstruction head; canonical is the legacy ablation",
+        help=(
+            "decoder reconstruction head; 'shared' is p-free (one canonical "
+            "head resampled to any p), 'canonical' is the legacy ablation"
+        ),
+    )
+    p.add_argument(
+        "--head-patch-size",
+        type=int,
+        default=None,
+        help=(
+            "canonical p0 for --head-mode shared (required there); a good "
+            "value is the log-space median of --patch-sizes"
+        ),
+    )
+    p.add_argument(
+        "--head-resample",
+        choices=("area", "bilinear", "pi"),
+        default="area",
+        help="resample operator for --head-mode shared (ignored otherwise)",
     )
     p.add_argument("--dim", type=int, default=128)
     p.add_argument("--depth", type=int, default=4)
@@ -134,6 +152,8 @@ def main() -> None:
         flexi_random=not args.no_flexi_random,
         max_tokens=args.max_tokens,
         head_mode=args.head_mode,
+        head_patch_size=args.head_patch_size,
+        head_resample=args.head_resample,
         dim=args.dim,
         encoder_depth=args.depth,
         decoder_depth=2,

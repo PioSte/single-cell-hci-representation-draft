@@ -16,7 +16,11 @@ from .crops import (
     token_coverage_torch,
     write_crop_cache,
 )
-from .decoder import ChannelAwareDecoder, DecoderBlock
+from .decoder import (
+    ChannelAwareDecoder,
+    DecoderBlock,
+    canonical_patch_size_for,
+)
 from .encoder import TransformerBlock, TransformerEncoder
 from .fusion import (
     ChannelFusion,
@@ -91,6 +95,7 @@ __all__ = [
     "TransformerEncoder",
     "TransformerBlock",
     "ChannelAwareDecoder",
+    "canonical_patch_size_for",
     "DecoderBlock",
     "DCPVisibilitySampler",
     "HierarchicalChannelSampler",
