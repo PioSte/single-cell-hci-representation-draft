@@ -46,7 +46,7 @@ p               patch edge in PIXELS (a model knob; FlexiViT's axis, never a phy
 pixel_size      micrometres per pixel (dataset metadata, varies per instrument)
 p * pixel_size  physical token extent in micrometres (the quantity held constant)
 
-p_b = round(target_um / pixel_size_b)     snapped to the trained `patch_sizes` set
+p_b = round(target_um / pixel_size_b)     one p per pixel size, no snapping
 ```
 
 `pixel_size` is the only name this repo uses for that quantity — in code, in
@@ -54,19 +54,46 @@ comments and in prose — and it is **required metadata**: every image has a
 physical pixel size, so `forward`/`encode` raise rather than invent a default.
 `log_pixel_size` is its logarithm.
 
-**Expected data: square pixels, `pixel_size ∈ [0.4, 0.6] µm/px`.** `pixel_size` is
-a scalar and the patch kernel is square, which is exact because the target
-instruments acquire square pixels: `PhysicalSizeX ≠ PhysicalSizeY` beyond a
-small tolerance is metadata to fix or reject, not an anisotropy the model is
-expected to absorb. That ~1.5× range is the whole of the pixel-size variation the
-design must cover, so for a 12.8 µm token `p` only spans 32 px (0.4 µm/px) down
-to 21 px (0.6 µm/px), and a residual token-extent error of ≤ ~1.6 % is the worst
-rounding case (see
-[`FLEXIVIT.md` §0](FLEXIVIT.md#0-patch-size-vs-pixel-size-the-contract)).
+**Expected data: square pixels from a finite acquisition fleet.** The
+**acquisition fleet** is the set of acquisition instruments (microscopes /
+scanners) and acquisition settings the model is trained *and* deployed on. It has
+one pixel size per instrument configuration, so `pixel_size` is a finite sorted
+table, not an interval:
 
-So `p` *absorbs* the pixel-size variation: a 0.4 µm/px image uses `p = 20` for an
-8 µm token, a 0.6 µm/px image uses `p = 13` (`8/0.6 = 13.33`, snapped down) for
-the same 8 µm token. This is what
+```
+fleet_pixel_sizes = (0.598, 0.646, 0.650, 0.652, 0.703)   # µm/px
+```
+
+(`FLEET_PIXEL_SIZES` in `src/fuse_channels/fleet.py`; the library itself is
+general — another dataset passes its own table, or `fleet=None`.) A pixel size
+outside the table implies a `p` the model never trained, so it is an
+**ingest-time error**, not something to snap: `canonical_fleet_pixel_size`
+maps metadata to its table entry within a tolerance (`0.59766` and
+`0.6500000000000001` are the same instrument) and raises otherwise.
+
+`pixel_size` is a scalar and the patch kernel is square, which is exact because
+the target instruments acquire square pixels: `PhysicalSizeX ≠ PhysicalSizeY`
+beyond a small tolerance is metadata to fix or reject, not an anisotropy the
+model is expected to absorb. The fleet spans only 0.703/0.598 = 1.18×, so for a
+12.8 µm token `p` takes just three values:
+
+| pixel_size | p | extent | error |
+|---|---|---|---|
+| 0.598 | 21 | 12.56 µm | −1.9 % |
+| 0.646 | 20 | 12.92 µm | +0.9 % |
+| 0.650 | 20 | 13.00 µm | +1.6 % |
+| 0.652 | 20 | 13.04 µm | +1.9 % |
+| 0.703 | 18 | 12.65 µm | −1.1 % |
+
+so `patch_sizes = (18, 20, 21)` and the residual token-extent error is ≤ ~1.9 %
+(a ≈ 0.5/`p` rounding case; at a smaller token extent it is larger, e.g. ~3 % for
+8 µm). Note that 0.646/0.650/0.652 all collapse to `p = 20`: `p` alone cannot
+distinguish those three instruments, which is exactly why the scale conditioner
+also receives `log(pixel_size)`.
+
+So `p` *absorbs* the pixel-size variation: 0.598 µm/px uses `p = 21` for a
+12.8 µm token, 0.703 µm/px uses `p = 18`, correspondingly for other target
+extents. This is what
 makes "train once, infer on any instrument seen in training, no finetuning"
 work: one weight set, PI-resized kernels, and a token that means the same
 physical thing everywhere. It is **not** extrapolation — a `p` outside the

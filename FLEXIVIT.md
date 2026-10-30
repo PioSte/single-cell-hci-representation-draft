@@ -38,7 +38,7 @@ token mean the same physical thing on every instrument, hold `p · pixel_size` c
 and let `p` absorb the variation:
 
 ```
-p_b = round(target_um / pixel_size_b)   then snap to the configured `patch_sizes`
+p_b = round(target_um / pixel_size_b)   one p per fleet pixel size, no snapping
 ```
 
 **What is held constant is the patch, not the crop.** The invariant is the
@@ -53,39 +53,63 @@ Two units traps when ingesting `pixel_size`: some tools report nanometres or
 pixels-per-µm instead of µm/px (a factor of 1000 or an inversion), and OME-TIFF
 carries `PhysicalSizeX` *and* `PhysicalSizeY` separately.
 
-**Expected data: square pixels, `pixel_size ∈ [0.4, 0.6] µm/px`.** Anisotropy is
-*not* a case this design serves. The target instruments acquire square pixels, so
-`pixel_size` is a scalar and `PhysicalSizeY ≠ PhysicalSizeX` means suspect
-metadata, not astigmatic optics: treat a mismatch beyond a small tolerance
-(warn and/or reject the image) rather than silently averaging the two. If an
-anisotropic image ever does arrive, `p` is scalar and the kernel is square, so
-the options are the geometric mean with an accepted aspect-ratio error, or
-resampling — but no machinery is justified for it.
+**The acquisition fleet.** The **acquisition fleet** is the set of acquisition
+instruments (microscopes/scanners) and acquisition settings that the model will
+be trained *and* deployed on. Each configuration acquires at one physical pixel
+size, so the fleet is a finite, sorted table of `pixel_size` values — not an
+interval:
 
-The 0.4–0.6 span is also why this is a narrow problem: for a 12.8 µm token `p`
-goes from `12.8/0.4 = 32` px to `12.8/0.6 = 21.33 → 21` px. That is ~1.5× on
-FlexiViT's axis — under one octave, i.e. a two-entry `patch_sizes` set covers the
-fleet — while resampling to the finest pixel size instead costs 2.25× in area,
-hence in tokens and compute. The rounding question is therefore a ≤ 1 px
-question: the residual token-extent error is ≤ ~1.6 %.
+```
+fleet_pixel_sizes = (0.598, 0.646, 0.650, 0.652, 0.703)   # µm/px
+```
+
+(`FLEET_PIXEL_SIZES` in `src/fuse_channels/fleet.py`; a different dataset passes
+its own table, or `fleet=None` for none.) Because the table is discrete, each
+entry implies exactly one `p`, and the trained patch size for an instrument *is*
+that value; there is nothing to snap. A pixel size outside the table is an
+**ingest-time error** (`canonical_fleet_pixel_size` raises, calling out the
+nm / px-per-µm / mm metadata traps), because it would imply an untrained `p`.
+
+**Expected data: square pixels.** Anisotropy is *not* a case this design serves.
+The target instruments acquire square pixels, so `pixel_size` is a scalar and
+`PhysicalSizeY ≠ PhysicalSizeX` means suspect metadata, not astigmatic optics:
+treat a mismatch beyond a small tolerance (warn and/or reject the image) rather
+than silently averaging the two. If an anisotropic image ever does arrive, `p` is
+scalar and the kernel is square, so the options are the geometric mean with an
+accepted aspect-ratio error, or resampling — but no machinery is justified for
+it.
+
+The fleet spans only `0.703/0.598 = 1.18×`, so for a 12.8 µm token `p` takes
+three values, `{18, 20, 21}`, and the residual token-extent error is ≤ ~1.9 %
+(≈ 0.5/`p`; at an 8 µm token it is ~3 %). That narrow span is why this is a
+cheap problem: three `p` values on FlexiViT's axis, one PI-resized kernel and one
+reconstruction head per distinct `p` — while resampling every image to the finest
+pixel size instead costs `(0.703/0.598)² = 1.38×` in area, hence in tokens and
+compute. Note that 0.646/0.650/0.652 all collapse to `p = 20`: `p` alone cannot
+distinguish those instruments, which is why `log(pixel_size)` is in the scale
+conditioner too.
 
 Consequences that are easy to get wrong:
 
-- **`p` must be selected, not sampled arbitrarily.** The configured
-  `patch_sizes` should be the set of `p_b` implied by the `pixel_size` range in the
-  training data, not a generic compute sweep. Otherwise a valid instrument maps
-  to a `p` the model never saw.
+- **`p` is derived, not sampled arbitrarily.** The configured `patch_sizes`
+  **is** the set `{round(target_um/pixel_size) : pixel_size ∈ fleet}` — derive it
+  with `fleet_patch_sizes`, never hand-write it or use a generic compute sweep,
+  otherwise a valid instrument maps to a `p` the model never saw, or the loader
+  and the decoder disagree about which instruments are in contract.
 - **No extrapolation.** FlexiViT explicitly does not claim it
-  (`references/flexivit/paper.md:879`: performance degrades beyond trained patch
-  sizes). Inference should assert `p_b ∈ trained patch_sizes`; the decoder's
-  nearest-`p` head fallback is graceful degradation, not a guarantee.
+  (`references/flexivit/paper.md:876-884`: performance degrades beyond the patch
+  sizes seen in training). The fleet check enforces membership in *pixel-size*
+  space and `fleet_patch_sizes` derives `patch_sizes` from it, so both sides of
+  the contract are the same table. A decoder's nearest-`p` head fallback or a
+  `p`-free head (`head_mode="shared"`) is graceful degradation, not a guarantee.
 - **Anisotropy is out of scope by data assumption, not by capability.**
   `PhysicalSizeX ≠ PhysicalSizeY` should be treated as bad metadata (see above),
   not as an architecture gap to close.
-- **Snap direction matters.** Rounding `p` down keeps the physical token smaller
-  than the target and yields more tokens; rounding up does the opposite. Prefer
-  down, and record the realized `p · pixel_size` so the resulting extent error is
-  auditable.
+- **Rounding is not snapping.** `p = round(target_um/pixel_size)` (half up, so
+  the map is monotone) and the realized `p · pixel_size` is recorded as
+  `CropGeometry.extent_um`/`extent_error_um` so the residual is auditable. Do not
+  re-snap `p` onto a lattice at inference: that moves it by up to one pixel and
+  lands on a head the model never trained.
 - **`p` is confounded with instrument identity.** In FlexiViT `p` is randomized
   independently of content; here it is *determined* by `pixel_size`, so the model can
   learn `p → dataset` shortcuts. Jitter the physical target extent across a
@@ -98,9 +122,9 @@ Consequences that are easy to get wrong:
   the instruments acceptably, that baseline is cheaper and should be preferred.
   **Status: not implemented and not yet ablated.** Nothing in `data.py`/`crops.py`
   resamples; a runnable comparison needs a `--resample-to <µm/px>` transform in
-  front of the existing loader (upsample `0.6 → 0.4 µm/px`, keep `p` fixed, and
+  front of the existing loader (upsample `0.703 → 0.598 µm/px`, keep `p` fixed, and
   mask out the `p`-selection entirely so the two arms see the same token extent).
-  Given the 0.4–0.6 range the resampling arm costs 2.25× the patches of the native
+  Given the 0.598–0.703 fleet the resampling arm costs 1.38× the patches of the native
   arm, so the honest expectation is *not* that it is more accurate — only that it
   pins the token extent exactly. It should be run before the design is called
   settled, since it is the one ablation that could falsify the FlexiViT choice.
@@ -249,11 +273,11 @@ fixed-grid invariants remain covered in the other tests.
 
 **Open ablation: upsample-to-finest-`pixel_size` baseline.** There is exactly one
 comparison the prose above promises and the repo does not yet contain: resample
-every image to the finest `pixel_size` in the fleet (0.4 µm/px), fix
-`p = target_um / 0.4`, and compare against native pixels with per-sample `p_b`.
+every image to the finest `pixel_size` in the fleet (0.598 µm/px), fix
+`p = target_um / 0.598`, and compare against native pixels with per-sample `p_b`.
 It needs only a preprocessing transform plus a fixed-`p` model config; the
 FlexiViT arm is the default path. Two things make it worth running despite the
-rejected-baseline note: the two arms differ by 2.25× in token count (so the
+rejected-baseline note: the two arms differ by 1.38× in token count (so the
 comparison must be matched on physical crop extent, not on `N`), and the
 prediction to test is that the gain from exact `p·pixel_size` is smaller than the
 loss from interpolated, PSF-blurred input.
