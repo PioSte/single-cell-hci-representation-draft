@@ -15,6 +15,8 @@ from typing import List, Optional, Sequence, Tuple, Union
 import torch
 from torch.utils.data import Dataset
 
+from .fleet import canonical_fleet_pixel_size, sorted_fleet
+
 
 class SyntheticChannelDataset(Dataset):
     def __init__(
@@ -28,14 +30,19 @@ class SyntheticChannelDataset(Dataset):
         pixel_size: Optional[Union[float, Sequence[float]]] = None,
         pixel_size_range: Optional[Sequence[float]] = None,
         return_pixel_size: bool = True,
+        fleet: Optional[Sequence[float]] = None,
+        strict_fleet: bool = True,
     ) -> None:
         super().__init__()
         self.image_size = image_size
         self.n_channel_ids = n_channel_ids
         self.return_pixel_size = bool(return_pixel_size)
         g = torch.Generator().manual_seed(seed)
+        self.fleet = None if fleet is None else sorted_fleet(fleet)
+        self.strict_fleet = bool(strict_fleet) and self.fleet is not None
         self.pixel_sizes = self._resolve_pixel_sizes(
-            n_samples, pixel_size, pixel_size_range, g
+            n_samples, pixel_size, pixel_size_range, g,
+            fleet=self.fleet, strict_fleet=self.strict_fleet,
         )
         if self.pixel_sizes is None:
             raise ValueError(
@@ -68,7 +75,16 @@ class SyntheticChannelDataset(Dataset):
         pixel_size,
         pixel_size_range=None,
         generator: Optional[torch.Generator] = None,
+        fleet: Optional[Sequence[float]] = None,
+        strict_fleet: bool = False,
     ) -> Optional[List[float]]:
+        """Resolve the per-sample pixel sizes.
+
+        With ``fleet`` given the values are **discrete**: drawn from the fleet
+        (``pixel_size_range`` then selects the fleet members inside the range)
+        and canonicalised to the table entry. Without it, sampling is uniform
+        and continuous, which is how a dataset from another fleet is served.
+        """
         if pixel_size is not None and pixel_size_range is not None:
             raise ValueError("pass pixel_size or pixel_size_range, not both")
         if pixel_size_range is not None:
@@ -77,18 +93,34 @@ class SyntheticChannelDataset(Dataset):
                 raise ValueError(
                     f"pixel_size_range must be positive and ordered, got {pixel_size_range}"
                 )
-            return torch.empty(n_samples).uniform_(
-                lo, hi, generator=generator
-            ).tolist()
-        if pixel_size is None:
+            if fleet is not None:
+                members = [q for q in fleet if lo <= q <= hi]
+                if not members:
+                    raise ValueError(
+                        f"pixel_size_range={pixel_size_range} contains no fleet "
+                        f"member of {list(fleet)}"
+                    )
+                picks = torch.randint(
+                    len(members), (n_samples,), generator=generator
+                ).tolist()
+                values = [members[i] for i in picks]
+            else:
+                values = torch.empty(n_samples).uniform_(
+                    lo, hi, generator=generator
+                ).tolist()
+        elif pixel_size is None:
             return None  # caller raises: pixel size is required
-        if isinstance(pixel_size, (int, float)):
-            return [float(pixel_size)] * n_samples
-        values = [float(v) for v in pixel_size]
-        if len(values) != n_samples:
-            raise ValueError(
-                f"pixel_size must be a scalar or {n_samples} values, got {len(values)}"
-            )
+        elif isinstance(pixel_size, (int, float)):
+            values = [float(pixel_size)] * n_samples
+        else:
+            values = [float(v) for v in pixel_size]
+            if len(values) != n_samples:
+                raise ValueError(
+                    f"pixel_size must be a scalar or {n_samples} values, "
+                    f"got {len(values)}"
+                )
+        if strict_fleet:
+            values = [canonical_fleet_pixel_size(v, fleet) for v in values]
         return values
 
     def __len__(self) -> int:

@@ -145,7 +145,7 @@ def test_plan_patches_variable_n_gives_each_cell_its_own_grid():
     mask[100:132, 100:132] = 2  # 32 px -> 4 tokens
     mask[150:190, 150:190] = 3  # 40 px -> 5 tokens
     crops, skipped = plan_patches(
-        mask, (200, 200), pixel_size=1.0, target_um=8.0, allowed=[8], n_tokens="cell"
+        mask, (200, 200), pixel_size=1.0, target_um=8.0, n_tokens="cell"
     )
     assert skipped == []
     by_id = {c.cell_id: c for c in crops}
@@ -163,7 +163,7 @@ def test_large_cell_is_processed_not_clipped():
     mask = np.zeros((400, 400), dtype=np.int64)
     mask[150:330, 150:330] = 1  # 180 px cell -> 23 tokens/side at p=8
     crops, skipped = plan_patches(
-        mask, (400, 400), pixel_size=1.0, target_um=8.0, allowed=[8], n_tokens="cell"
+        mask, (400, 400), pixel_size=1.0, target_um=8.0, n_tokens="cell"
     )
     assert skipped == [] and len(crops) == 1
     c = crops[0]
@@ -177,7 +177,7 @@ def test_max_n_budget_skips_and_reports_instead_of_clipping():
     mask = np.zeros((400, 400), dtype=np.int64)
     mask[150:330, 150:330] = 1
     crops, skipped = plan_patches(
-        mask, (400, 400), pixel_size=1.0, target_um=8.0, allowed=[8],
+        mask, (400, 400), pixel_size=1.0, target_um=8.0,
         n_tokens="cell", max_n=8,
     )
     assert crops == []
@@ -200,7 +200,7 @@ def test_plan_patches_variable_n_still_clamps_to_the_image():
     mask = np.zeros((96, 96), dtype=np.int64)
     mask[80:94, 80:94] = 1  # interior but the window would cross the border
     crops, skipped = plan_patches(
-        mask, (96, 96), pixel_size=1.0, target_um=8.0, allowed=[8], n_tokens="cell"
+        mask, (96, 96), pixel_size=1.0, target_um=8.0, n_tokens="cell"
     )
     assert skipped == [] and len(crops) == 1
     c = crops[0]
@@ -378,8 +378,8 @@ def test_crop_reader_to_model_with_variable_n_and_variable_p():
     mask[100:132, 100:132] = 2  # 32 px cell
 
     # two instruments: same physical token extent, different p
-    geom_a = CropGeometry.build(pixel_size=1.0, target_um=8.0, allowed=[8, 16], n_tokens=2)
-    geom_b = CropGeometry.build(pixel_size=0.5, target_um=8.0, allowed=[8, 16], n_tokens=2)
+    geom_a = CropGeometry.build(pixel_size=1.0, target_um=8.0, n_tokens=2)
+    geom_b = CropGeometry.build(pixel_size=0.5, target_um=8.0, n_tokens=2)
     assert geom_a.patch_size == 8 and geom_b.patch_size == 16
 
     crops_a, _ = plan_patches(mask, (200, 200), geom_a, image_id="a",
@@ -388,7 +388,7 @@ def test_crop_reader_to_model_with_variable_n_and_variable_p():
                               channel_ids=(0, 1))
     # variable N on instrument a: cell-sized windows
     crops_a_cell, skipped = plan_patches(
-        mask, (200, 200), pixel_size=1.0, target_um=8.0, allowed=[8, 16],
+        mask, (200, 200), pixel_size=1.0, target_um=8.0,
         n_tokens="cell", image_id="a", channel_ids=(0, 1),
     )
     assert skipped == []

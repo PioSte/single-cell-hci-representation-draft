@@ -16,6 +16,12 @@ from .crops import (
     token_coverage_torch,
     write_crop_cache,
 )
+from .fleet import (
+    FLEET_PIXEL_SIZES,
+    canonical_fleet_pixel_size,
+    fleet_patch_sizes,
+    sorted_fleet,
+)
 from .decoder import (
     ChannelAwareDecoder,
     DecoderBlock,
@@ -96,6 +102,10 @@ __all__ = [
     "TransformerBlock",
     "ChannelAwareDecoder",
     "canonical_patch_size_for",
+    "FLEET_PIXEL_SIZES",
+    "canonical_fleet_pixel_size",
+    "fleet_patch_sizes",
+    "sorted_fleet",
     "DecoderBlock",
     "DCPVisibilitySampler",
     "HierarchicalChannelSampler",

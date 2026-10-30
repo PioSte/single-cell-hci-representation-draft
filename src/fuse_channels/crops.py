@@ -3,12 +3,15 @@
 The crop box is chosen so that it is an **exact multiple of the patch size**
 implied by the image's pixel size::
 
-    p_px     = round(target_um / pixel_size)      snapped to the trained patch sizes
+    p_px     = round(target_um / pixel_size)      one p per pixel size, no snapping
     crop_px  = n_tokens * p_px             exact, no padding
 
 ``pixel_size`` is one scalar per image, i.e. square pixels are assumed. That is
-correct for the expected data (0.4--0.6 um/px, isotropic); anisotropic metadata is
-a data error here, not a case this geometry handles. Pixels are never resampled:
+correct for the expected data (square pixels from the acquisition fleet, see
+:mod:`fuse_channels.fleet`); anisotropic metadata is a data error here, not a
+case this geometry handles. Pass ``fleet=`` to validate the pixel size at ingest
+and compute ``p`` from the canonical table value; leave it ``None`` to serve a
+dataset with a different (or unknown) fleet. Pixels are never resampled:
 the patch *size* absorbs the pixel-size variation.
 
 Read from the raw image rather than from a pre-existing crop, so the box can
@@ -50,38 +53,31 @@ from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 import numpy as np
 import torch
 
+from .fleet import canonical_fleet_pixel_size
+
 
 # --------------------------------------------------------------------------- #
 # geometry: pixel size -> patch size -> crop size
 # --------------------------------------------------------------------------- #
-def patch_size_for_pixel_size(
-    pixel_size: float,
-    target_um: float,
-    allowed: Sequence[int],
-    snap: str = "down",
-) -> int:
-    """Pick the patch size (in pixels) whose physical extent is closest to ``target_um``.
+def patch_size_for_pixel_size(pixel_size: float, target_um: float) -> int:
+    """Pixels per patch edge for a token of ``target_um`` physical extent.
 
-    ``snap="down"`` prefers the largest allowed ``p <= target_um / pixel_size`` (smaller
-    physical token, more tokens, never larger than requested); ``"nearest"``
-    minimises ``|p * pixel_size - target_um|`` with ties broken towards the smaller ``p``.
+    ``p = max(1, floor(target_um / pixel_size + 0.5))``: round half **up**,
+    deliberately not Python's banker's ``round`` (which maps 24.5 -> 24 and
+    25.5 -> 26), so the map is monotone in ``pixel_size`` and reproducible.
+
+    There is no candidate set. The acquisition fleet is a *discrete* set of
+    pixel sizes (see :mod:`fuse_channels.fleet`), each member implies exactly
+    one ``p``, and the trained patch size for an instrument *is* that value.
+    Validate the pixel size at ingest (``canonical_fleet_pixel_size``) instead
+    of snapping ``p`` onto a lattice here: a snap would silently move ``p`` by
+    one pixel and land on a head the model never trained.
     """
     if pixel_size <= 0:
         raise ValueError(f"pixel_size must be positive, got {pixel_size}")
     if target_um <= 0:
         raise ValueError(f"target_um must be positive, got {target_um}")
-    cands = sorted({int(p) for p in allowed})
-    if not cands:
-        raise ValueError("allowed must contain at least one patch size")
-    if any(p < 1 for p in cands):
-        raise ValueError(f"patch sizes must be positive, got {cands}")
-    raw = target_um / pixel_size
-    if snap == "down":
-        feasible = [p for p in cands if p <= raw]
-        return feasible[-1] if feasible else cands[0]
-    if snap == "nearest":
-        return min(cands, key=lambda p: (abs(p * pixel_size - target_um), p))
-    raise ValueError(f"snap must be 'down' or 'nearest', got {snap!r}")
+    return max(1, int(math.floor(target_um / pixel_size + 0.5)))
 
 
 @dataclass(frozen=True)
@@ -104,13 +100,17 @@ class CropGeometry:
         cls,
         pixel_size: float,
         target_um: float,
-        allowed: Sequence[int],
         n_tokens: int,
-        snap: str = "down",
+        fleet: Optional[Sequence[float]] = None,
     ) -> "CropGeometry":
         if n_tokens < 1:
             raise ValueError(f"n_tokens must be >= 1, got {n_tokens}")
-        p = patch_size_for_pixel_size(pixel_size, target_um, allowed, snap=snap)
+        if fleet is not None:
+            # Ingest-time validation: the pixel size must name an acquisition
+            # fleet entry, and the canonical table value is what p is computed
+            # from (float noise in the metadata must not move p).
+            pixel_size = canonical_fleet_pixel_size(pixel_size, fleet)
+        p = patch_size_for_pixel_size(pixel_size, target_um)
         return cls(
             patch_size=p,
             n_tokens=int(n_tokens),
@@ -123,7 +123,7 @@ class CropGeometry:
 
     @property
     def extent_error_um(self) -> float:
-        """Realised token extent minus the requested one; auditable snapping error."""
+        """Realised token extent minus the requested one; auditable rounding error."""
         return self.extent_um - self.target_um
 
 
@@ -320,18 +320,17 @@ def plan_patches(
     *,
     pixel_size: Optional[float] = None,
     target_um: Optional[float] = None,
-    allowed: Optional[Sequence[int]] = None,
+    fleet: Optional[Sequence[float]] = None,
     n_tokens=None,
     min_n: int = 2,
     max_n: Optional[int] = None,
-    snap: str = "down",
 ) -> Tuple[List[CellCrop], List[dict]]:
     """Plan one token window per non-zero id in ``mask``.
 
     Two modes:
 
     * pass ``geometry`` -- one fixed window size for every cell;
-    * pass ``pixel_size``/``target_um``/``allowed`` and ``n_tokens`` -- the window is
+    * pass ``pixel_size``/``target_um`` and ``n_tokens`` -- the window is
       derived per image, and ``n_tokens="cell"`` additionally sizes it per
       cell (``ceil(cell_side / p)``, at least ``min_n``), i.e. a variable
       patch count driven by cell size and the pixel-size-adjusted ``p``.
@@ -349,10 +348,14 @@ def plan_patches(
     touch the cell, or when ``require_full_cell`` is set and the cell is larger
     than the window.
     """
+    if fleet is not None and pixel_size is not None:
+        # Ingest-time validation, once per image: the canonical table value is
+        # what p is computed from, so float noise cannot move p by one pixel.
+        pixel_size = canonical_fleet_pixel_size(pixel_size, fleet)
     if geometry is None:
-        if pixel_size is None or target_um is None or allowed is None:
+        if pixel_size is None or target_um is None:
             raise ValueError(
-                "pass either geometry=, or pixel_size= with target_um= and allowed="
+                "pass either geometry=, or pixel_size= with target_um="
             )
         if n_tokens is None:
             raise ValueError(
@@ -361,7 +364,7 @@ def plan_patches(
         base_geometry = (
             None
             if n_tokens == "cell"
-            else CropGeometry.build(pixel_size, target_um, allowed, int(n_tokens), snap=snap)
+            else CropGeometry.build(pixel_size, target_um, int(n_tokens), fleet=fleet)
         )
     else:
         if n_tokens is not None and n_tokens != "cell":
@@ -384,7 +387,7 @@ def plan_patches(
         geom = base_geometry
         if geom is None:
             # variable-N mode: size this cell's window from its own extent
-            p = patch_size_for_pixel_size(pixel_size, target_um, allowed, snap=snap)
+            p = patch_size_for_pixel_size(pixel_size, target_um)
             need = cell_n_tokens(
                 (bbox[1] - bbox[0], bbox[3] - bbox[2]), p, min_n=min_n
             )
@@ -400,7 +403,7 @@ def plan_patches(
                     }
                 )
                 continue
-            geom = CropGeometry.build(pixel_size, target_um, allowed, need, snap=snap)
+            geom = CropGeometry.build(pixel_size, target_um, need, fleet=fleet)
         box = place_box(bbox, geom.crop_px, (H, W))
         if box is None:
             skipped.append(
