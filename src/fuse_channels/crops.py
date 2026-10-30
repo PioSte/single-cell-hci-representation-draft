@@ -61,7 +61,7 @@ from .fleet import canonical_fleet_pixel_size
 # geometry: pixel size -> patch size -> crop size
 # --------------------------------------------------------------------------- #
 def patch_size_for_pixel_size(pixel_size: float, target_um: float) -> int:
-    """Pixels per patch edge for a token of ``target_um`` physical extent.
+    """Pixels per patch edge for a patch of ``target_um`` physical size.
 
     ``p = max(1, floor(target_um / pixel_size + 0.5))``: round half **up**,
     deliberately not Python's banker's ``round`` (which maps 24.5 -> 24 and
@@ -125,7 +125,7 @@ class CropGeometry:
 
     @property
     def extent_error_um(self) -> float:
-        """Realised token extent minus the requested one; auditable rounding error."""
+        """Realised patch extent minus the requested one; auditable rounding error."""
         return self.extent_um - self.target_um
 
 

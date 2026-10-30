@@ -36,15 +36,15 @@ patch size) and the pooled descriptor is `[B, D]`.
 
 High-content images come from different instruments, so the **pixel size**
 (`pixel_size`, micrometres per pixel) and therefore the number of pixels per
-micrometre differs across datasets. A token must cover a comparable *physical*
+micrometre differs across datasets. A patch must cover a comparable *physical*
 extent on every instrument, otherwise the same marker is a different object at
 different sites. The mechanism is: **choose the patch size per sample so that
-the token extent in micrometres stays constant.**
+the patch extent in micrometres stays constant.**
 
 ```
 p               patch edge in PIXELS (a model knob; FlexiViT's axis, never a physical size)
 pixel_size      micrometres per pixel (dataset metadata, varies per instrument)
-p * pixel_size  physical token extent in micrometres (the quantity held constant)
+p * pixel_size  physical patch size in micrometres (the quantity held constant)
 
 p_b = round(target_um / pixel_size_b)     one p per pixel size, no snapping
 ```
@@ -75,7 +75,7 @@ maps metadata to its table entry within a tolerance (`0.59766` and
 the target instruments acquire square pixels: `PhysicalSizeX ≠ PhysicalSizeY`
 beyond a small tolerance is metadata to fix or reject, not an anisotropy the
 model is expected to absorb. The fleet spans only 0.703/0.598 = 1.18×, so for a
-12.8 µm token `p` takes just three values:
+12.8 µm patch `p` takes just three values:
 
 | pixel_size | p | extent | error |
 |---|---|---|---|
@@ -85,18 +85,18 @@ model is expected to absorb. The fleet spans only 0.703/0.598 = 1.18×, so for a
 | 0.652 | 20 | 13.04 µm | +1.9 % |
 | 0.703 | 18 | 12.65 µm | −1.1 % |
 
-so `patch_sizes = (18, 20, 21)` and the residual token-extent error is ≤ ~1.9 %
-(a ≈ 0.5/`p` rounding case; at a smaller token extent it is larger, e.g. ~3 % for
-8 µm). Note that 0.646/0.650/0.652 all collapse to `p = 20`: `p` alone cannot
+so `patch_sizes = (18, 20, 21)` and the residual patch-extent error is ≤ ~1.9 %
+(a ≈ 0.5/`p` rounding case; at a smaller patch it is larger, e.g. ~3 % for an
+8 µm patch). Note that 0.646/0.650/0.652 all collapse to `p = 20`: `p` alone cannot
 distinguish those three instruments, which is exactly why the scale conditioner
 also receives `log(pixel_size)`.
 
 So `p` *absorbs* the pixel-size variation: 0.598 µm/px uses `p = 21` for a
-12.8 µm token, 0.703 µm/px uses `p = 18`, correspondingly for other target
+12.8 µm patch, 0.703 µm/px uses `p = 18`, correspondingly for other target
 extents. This is what
 makes "train once, infer on any instrument seen in training, no finetuning"
-work: one weight set, PI-resized kernels, and a token that means the same
-physical thing everywhere. It is **not** extrapolation — a `p` outside the
+work: one weight set, PI-resized kernels, and a patch that covers the same
+physical extent everywhere. It is **not** extrapolation — a `p` outside the
 trained set is out of contract (see
 [`FLEXIVIT.md` §0](FLEXIVIT.md#0-patch-size-vs-pixel-size-the-contract)).
 The scale conditioner receives both `log(p)` and `log(pixel_size)` because FlexiViT
@@ -104,7 +104,7 @@ knows nothing about physical units; `p` alone cannot distinguish "large patch at
 fine sampling" from "small patch at coarse sampling".
 
 **The invariant is the patch, not the crop.** What is held constant across
-instruments is the physical footprint of a *single token*, `p · pixel_size ≈
+instruments is the physical footprint of a *single patch*, `p · pixel_size ≈
 target_um`. The physical extent of the whole window, `n_tokens · p · pixel_size`, is a
 separate quantity and is free to vary: it is cell-sized when the patch count is
 derived from the segmented object, which is the intended behaviour. Scaling the

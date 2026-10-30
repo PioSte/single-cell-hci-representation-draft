@@ -349,11 +349,11 @@ def test_metric_pe_end_to_end_with_pixel_sizes():
 
 
 def test_metric_pe_is_patch_size_invariant_for_the_same_physical_token():
-    """Same physical token extent at two pixel sizes -> identical rope phases."""
+    """Same physical patch extent at two pixel sizes -> identical rope phases."""
     model = _model(pe_space="physical")
     g = 8
     rows = torch.tensor([0, 1, 2], dtype=torch.float32)
-    # p=16 @ 0.5 um/px and p=8 @ 1.0 um/px both give an 8 um token
+    # p=16 @ 0.5 um/px and p=8 @ 1.0 um/px both give an 8 um patch
     c1, s1 = axial_rope_cache(
         rows, rows, 3, 3, 8, patch_size=torch.tensor(16),
         pixel_size=torch.tensor(0.5), ref_um=32.0,
@@ -377,7 +377,7 @@ def test_crop_reader_to_model_with_variable_n_and_variable_p():
     mask[60:76, 60:76] = 1     # 16 px cell
     mask[100:132, 100:132] = 2  # 32 px cell
 
-    # two instruments: same physical token extent, different p
+    # two instruments: same physical patch extent, different p
     geom_a = CropGeometry.build(pixel_size=1.0, target_um=8.0, n_tokens=2)
     geom_b = CropGeometry.build(pixel_size=0.5, target_um=8.0, n_tokens=2)
     assert geom_a.patch_size == 8 and geom_b.patch_size == 16

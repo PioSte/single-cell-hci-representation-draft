@@ -193,7 +193,7 @@ class PatchReconstructionHead(nn.Module):
 
     * ``"area"`` (default) -- box-average when shrinking, bilinear when
       growing.  The physically consistent choice under this repo's contract:
-      tokens hold a constant *physical* extent, so a smaller ``p`` is a
+      patches hold a constant *physical* size, so a smaller ``p`` is a
       genuinely coarser sampling of the same field and the cross-``p`` relation
       is a low-pass, not a point-sample.
     * ``"bilinear"`` -- point-sampling both ways

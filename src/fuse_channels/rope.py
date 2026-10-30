@@ -2,7 +2,7 @@
 
 The encoder uses RoPE on **normalized** grid coordinates so that the positional
 signal describes layout only: a token at the same fractional location gets the
-same phase whether the grid is 4x4 or 32x32.  Physical token size belongs in
+same phase whether the grid is 4x4 or 32x32.  Physical patch size belongs in
 the scale conditioner, not in the rotary phase.
 
 The implementation follows the axial 2-D RoPE construction in RoPE-ViT

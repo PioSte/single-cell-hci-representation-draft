@@ -7,7 +7,7 @@ pixel-size/scale token, the intended division of labor is:
 
 - **PE carries layout** — where a token sits in the `(row, col)` grid, in a
   coordinate system that does not change when `p` or the grid size changes.
-- **Scale token carries physical scale** — how large a token is in pixels /
+- **Scale token carries physical scale** — how large a patch is in pixels /
   µm.
 
 This only works cleanly if the encoder PE is truly *layout-only*. Raw token
@@ -25,7 +25,7 @@ the paper never multiplies it by a physical scale. The quantities are:
 |---|---|---|
 | `pixel_size` | physical size of **one pixel** (µm/px), varies per instrument | dataset metadata → `ChannelSet.pixel_size` |
 | `p` | number of **pixels per patch edge**, a model hyperparameter | `patch_sizes` / FlexiViT |
-| `p · pixel_size` | physical extent of **one token** (µm) — **the invariant** | design synthesis, held ≈ constant |
+| `p · pixel_size` | physical size of **one patch** (µm) — **the invariant** | design synthesis, held ≈ constant |
 | `n_tokens · p · pixel_size` | physical extent of the **whole crop** (µm) | *not* an invariant; see §0.2 |
 
 There is exactly one name for the per-pixel quantity in this repo: **`pixel_size`**
@@ -33,8 +33,8 @@ in code and prose alike (physical size of one pixel, µm/px), and it is required
 metadata. Its logarithm is `log_pixel_size`. Unit spellings such as µm/px are
 units, not names.
 
-**Objective.** High-content data is acquired at different pixel sizes. To make a
-token mean the same physical thing on every instrument, hold `p · pixel_size` constant
+**Objective.** High-content data is acquired at different pixel sizes. To give a
+patch the same physical size on every instrument, hold `p · pixel_size` constant
 and let `p` absorb the variation:
 
 ```
@@ -42,12 +42,13 @@ p_b = round(target_um / pixel_size_b)   one p per fleet pixel size, no snapping
 ```
 
 **What is held constant is the patch, not the crop.** The invariant is the
-physical size of a single token (`p · pixel_size`). The physical extent of the
-*whole crop* is `n_tokens · p · pixel_size` and is free to vary — it is
-cell-sized in the variable-`N` mode (§0.2) and fixed only if you choose a fixed
-`n_tokens`. Do not confuse the two: a design can legitimately scale the number
-of tokens with the object being imaged while every token keeps the same
-physical footprint.
+physical size of a single **patch**, `p · pixel_size`. Patch, not token: a token
+is the *embedding* of a patch, so a physical size belongs to the patch. The
+physical extent of the *whole crop* is `n_tokens · p · pixel_size` and is free to
+vary — it is cell-sized in the variable-`N` mode (§0.2) and fixed only if you
+choose a fixed `n_tokens`. Do not confuse the two: a design can legitimately scale the number
+of patches (hence tokens) with the object being imaged while every patch keeps
+the same physical footprint.
 
 Two units traps when ingesting `pixel_size`: some tools report nanometres or
 pixels-per-µm instead of µm/px (a factor of 1000 or an inversion), and OME-TIFF
@@ -81,9 +82,9 @@ scalar and the kernel is square, so the options are the geometric mean with an
 accepted aspect-ratio error, or resampling — but no machinery is justified for
 it.
 
-The fleet spans only `0.703/0.598 = 1.18×`, so for a 12.8 µm token `p` takes
-three values, `{18, 20, 21}`, and the residual token-extent error is ≤ ~1.9 %
-(≈ 0.5/`p`; at an 8 µm token it is ~3 %). That narrow span is why this is a
+The fleet spans only `0.703/0.598 = 1.18×`, so for a 12.8 µm patch `p` takes
+three values, `{18, 20, 21}`, and the residual patch-extent error is ≤ ~1.9 %
+(≈ 0.5/`p`; at an 8 µm patch it is ~3 %). That narrow span is why this is a
 cheap problem: three `p` values on FlexiViT's axis, one PI-resized kernel and one
 reconstruction head per distinct `p` — while resampling every image to the finest
 pixel size instead costs `(0.703/0.598)² = 1.38×` in area, hence in tokens and
@@ -125,15 +126,15 @@ Consequences that are easy to get wrong:
   **Status: not implemented and not yet ablated.** Nothing in `data.py`/`crops.py`
   resamples; a runnable comparison needs a `--resample-to <µm/px>` transform in
   front of the existing loader (upsample `0.703 → 0.598 µm/px`, keep `p` fixed, and
-  mask out the `p`-selection entirely so the two arms see the same token extent).
+  mask out the `p`-selection entirely so the two arms see the same patch extent).
   Given the 0.598–0.703 fleet the resampling arm costs 1.38× the patches of the native
   arm, so the honest expectation is *not* that it is more accurate — only that it
-  pins the token extent exactly. It should be run before the design is called
+  pins the patch extent exactly. It should be run before the design is called
   settled, since it is the one ablation that could falsify the FlexiViT choice.
 - **PI-resize is a smooth operator across sampling density, not a physically
-  faithful resampling between instruments.** Tokens at the same physical extent
-  from two devices are comparable in representation space, not equal
-  (`references/flexivit/paper.md:309`, Appendix I).
+  faithful resampling between instruments.** Patches at the same physical extent
+  from two devices yield comparable tokens in representation space, not equal
+  ones (`references/flexivit/paper.md:309`, Appendix I).
 
 ## 0.1 Metric PE: the phase must encode micrometres, not grid fractions
 
@@ -184,7 +185,7 @@ A cell-sized window (`plan_patches(..., n_tokens="cell")`) makes the patch
 count a function of cell size: `n_tokens = ceil(cell_side_px / p)`, clamped.
 
 This is *consistent* with the §0 contract, not in tension with it. The invariant
-is the **per-token** physical extent `p · pixel_size ≈ target_um`, which is unchanged:
+is the **per-patch** physical size `p · pixel_size ≈ target_um`, which is unchanged:
 with constant `p · pixel_size`,
 
 ```
@@ -193,8 +194,8 @@ n_tokens = ceil(cell_side_px / p) ≈ ceil(cell_side_um / target_um)
 
 is essentially instrument-independent and tracks the cell, not the acquisition.
 Only the *crop* extent `n_tokens · p · pixel_size` varies, and it is meant to: it is
-cell size plus at most one token of slack. So `p` absorbs the instrument, `N`
-absorbs the cell, and tokens stay physically comparable everywhere.
+cell size plus at most one patch of slack. So `p` absorbs the instrument, `N`
+absorbs the cell, and patches stay physically comparable everywhere.
 
 The consequences below follow from the crop extent being variable. They are a
 correctness requirement of cell-sized windows, not a cost of a trade-off that
@@ -532,25 +533,25 @@ Tests: `test_fusion_is_content_scale_invariant`,
 The dozen names this used to carry are gone; use the code's names in prose too:
 
 ```text
-log_p           = log(p)                        # token size in pixels / sampling density
+log_p           = log(p)                        # patch size in pixels / sampling density
 log_pixel_size  = log(pixel_size)               # physical size of one pixel (µm/px)
-log_token_um    = log_p + log_pixel_size        # physical token extent (µm)
+log_patch_um    = log_p + log_pixel_size        # physical patch size (µm)
 ```
 
-`log_token_um` is a *derived* feature — it is the sum of the other two, so feeding
+`log_patch_um` is a *derived* feature — it is the sum of the other two, so feeding
 all three gives the MLP no information it cannot form itself. Feed **two**, and
 choose deliberately:
 
 - If only patch size varies and `pixel_size` is fixed, `log_p` alone tells the
   model the current token density; the missing constant is absorbed by the bias.
-- If both vary, feed `log_p` and `log_pixel_size` (`log_token_um` is redundant
-  with them), or feed `log_token_um` and `log_pixel_size` if you would rather
+- If both vary, feed `log_p` and `log_pixel_size` (`log_patch_um` is redundant
+  with them), or feed `log_patch_um` and `log_pixel_size` if you would rather
   have the physically meaningful combination explicit.
 - If the dataset has no `pixel_size` metadata, feed `log_p` and say so: the
   scalar is `log_p`, not physical scale.
 
 The shipped conditioner feeds `log_p` **and** `log_pixel_size`; the derived
-`log_token_um` is not supplied because it is exactly their sum.
+`log_patch_um` is not supplied because it is exactly their sum.
 
 **`pixel_size` is required metadata, not an optional field.** Every image has a
 physical pixel size, so there is no "unknown" state to encode: no presence flag,
