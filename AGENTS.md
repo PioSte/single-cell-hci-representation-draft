@@ -12,17 +12,31 @@ An HCI image is a set of per-channel embeddings {E_c ∈ R^D} where:
 
 The goal is a function f({E_1..E_C}) → [N, D] per sample whose size is independent of C, then **spatial pooling to fixed size latent** — `L = n_latents` learned latents per sample, `[L, D]`, with L a hyperparameter independent of both C and the patch count N — plus a pooled [D] descriptor — no concatenation blow-up, channel-identity-aware, permutation-invariant, with no padding tokens.
 
-Pixel size is a separate, orthogonal axis: `p` is a pixel count, not a physical size. Expected data has square pixels, and the **acquisition fleet** — the set of acquisition instruments/scanners and settings the model is trained and deployed on — has a finite table of pixel sizes (`FLEET_PIXEL_SIZES` in `src/fuse_channels/fleet.py`, currently `(0.598, 0.646, 0.650, 0.652, 0.703)` µm/px; the table, not the fleet itself, is what the code calls `fleet_pixel_sizes`), so pixel anisotropy is **not** a design case (`PhysicalSizeX ≠ PhysicalSizeY` is bad metadata to fix or reject, not something `p` absorbs). Each *patch* is kept at a comparable physical extent across instruments by choosing `p_b = round(p_target_um / pixel_size_b)` from the image's µm/px metadata; `p` is never snapped onto a lattice, and a pixel size outside the fleet is rejected at ingest rather than served with an untrained `p`. The invariant is the per-patch footprint `p · pixel_size`; the crop/window extent `n_tokens · p · pixel_size` is a separate, deliberately variable quantity (cell-sized grids are intended). See `README.md` §"Variable pixel size" and `FLEXIVIT.md` §0 before changing patch-size, scale-conditioning, or dataloading behaviour.
+Pixel size is a separate, orthogonal axis: `p` is a pixel count, not a physical size. Expected data has square pixels, and the **acquisition fleet** — the set of acquisition instruments/scanners and settings the model is trained and deployed on — has a finite table of pixel sizes. That table is the code constant `FLEET_PIXEL_SIZES` in `src/fuse_channels/fleet.py`; it is documented with the expected-data assumptions in `README.md` §"Variable pixel size" and `FLEXIVIT.md` §0, not duplicated here. Pixel anisotropy is **not** a design case (`PhysicalSizeX ≠ PhysicalSizeY` is bad metadata to fix or reject, not something `p` absorbs). Each *patch* is held at a target physical extent `target_um` by deriving `p` from the image's `pixel_size`; `p` is never snapped onto a lattice, and a pixel size outside the fleet is rejected at ingest rather than served with an untrained `p`. The per-patch footprint is the design invariant; integer rounding makes it approximate, and the realized value is recorded in the geometry. The crop/window extent is a separate, deliberately variable quantity (cell-sized grids are intended). Read those two sections before changing patch-size, scale-conditioning, or dataloading behaviour.
 
 ## Layout
 
-- `src/fuse_channels/` — library: `ops` (padding-free grouped attention), `container` (`ChannelSet`), `identity` (`ChannelEmbedding`), `patch_embed` (`ChannelTiedPatchEmbed`, `ChannelTokenizer`), `fusion` (`ChannelFusion`, `IdentityGatedSum`, `MultiheadAttentionPooling`), `encoder`, `decoder`, `masking` (DCP Eq. 1 + HCS), `losses`, `mae`, `data`
-- `tests/` — invariants and acceptance coverage (cardinality invariance, spatial pooling to fixed size latent independent of patch count, padding-free ≡ masked-padded, omission, permutation, identity routing, DCP/HCS, descriptor, losses, linear probe)
-- `examples/` — `train_mae.py` (synthetic variable-channel training), `linear_probe.py` (frozen-encoder probe), `benchmark_fusion.py`
-- `viz/` — visualizations (included in this repo)
-- `references/` — background papers
-- `docs/design.md` — design rationale and corrected reference claims
+- `src/fuse_channels/` — library modules; consult module docstrings and the file map in `README.md`.
+- `tests/` — invariants and acceptance coverage.
+- `examples/` — runnable training, probing, and benchmark examples.
+- `viz/` — visualizations.
+- `references/` — background papers.
+- `README.md`, `FLEXIVIT.md`, `docs/design.md` — usage overview, patch-size/pixel-size design, and design rationale.
 
-## Naming
+## Keep documentation at the right altitude
 
-`ChannelTokenizer` produces the channel-set tokens (tied patch embed + additive identity); `ChannelEmbedding` is the learned per-channel-id table; `IdentityGatedSum` is the marker-routed O(C) fusion ablation; `grouped_attention` means padding-free batching by group id, not grouped-query attention.
+- Code is the source of truth for mechanics, defaults, and exact formulas.
+  Module docstrings carry a stage's normative contract; README/design documents
+  explain intent, trade-offs, usage, and why a choice was made.
+- Do not restate implementation details in higher-level prose. If an exact
+  value or formula is needed there, generate it from code or state it once in
+  the owning module and link to it.
+- When behaviour changes, update the owning code doc/test and correct any prose
+  that has become false. Do not add new prose merely to mirror the
+  implementation.
+- Mention a default or an ablation only where it affects how the code should be
+  used; otherwise omit it.
+- For rounded or approximate quantities, distinguish target from realized value
+  once, in the owning description, rather than repeating the distinction
+  throughout the docs.
+

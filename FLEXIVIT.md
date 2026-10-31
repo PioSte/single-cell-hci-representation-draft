@@ -5,15 +5,18 @@
 With square patches, FlexiViT-style patch-embedding resizing, and an explicit
 pixel-size/scale token, the intended division of labor is:
 
-- **PE carries layout** — where a token sits in the `(row, col)` grid, in a
-  coordinate system that does not change when `p` or the grid size changes.
-- **Scale token carries physical scale** — how large a patch is in pixels /
-  µm.
+- **PE carries position** — where a token sits in the `(row, col)` grid, in a
+  coordinate system that is metric (physical micrometres) by default.
+- **Scale token carries sampling and physical scale** — `log(p)` and
+  `log(pixel_size)`, hence the realized physical patch extent.
 
-This only works cleanly if the encoder PE is truly *layout-only*. Raw token
-indices do **not** satisfy that: adjacent tokens are always one index apart,
-whether the patch is 8 px or 32 px. Use normalized coordinates in the encoder
-RoPE, or accept that raw-index RoPE also encodes sampling density.
+There are two PE coordinate modes. `pe_space="physical"` (default) uses token
+centres in micrometres, `(index + 0.5) * p * pixel_size`, so the phase encodes
+the realized physical separation and works for a variable window extent.
+`pe_space="grid"` is the fixed-window ablation: normalized coordinates make the
+encoder PE *layout-only* and leave physical scale to the scale token. Raw token
+indices satisfy neither: adjacent tokens are always one index apart, whether
+the patch is 8 px or 32 px, so raw-index RoPE also encodes sampling density.
 
 ## 0. Patch size vs pixel size: the contract
 
@@ -42,7 +45,8 @@ p_b = round(target_um / pixel_size_b)   one p per fleet pixel size, no snapping
 ```
 
 **What is held constant is the patch, not the crop.** The invariant is the
-physical size of a single **patch**, `p · pixel_size`. Patch, not token: a token
+physical size of a single **patch**, `p · pixel_size ≈ target_um` (equality is
+limited by integer rounding). Patch, not token: a token
 is the *embedding* of a patch, so a physical size belongs to the patch. The
 physical extent of the *whole crop* is `n_tokens · p · pixel_size` and is free to
 vary — it is cell-sized in the variable-`N` mode (§0.2) and fixed only if you
@@ -152,9 +156,10 @@ The identity that decides this (see §1) is
 relative RoPE phase  =  (physical separation d / window extent W) * ref_extent * theta
 ```
 
-* **Fixed physical window** (`n_tokens * target_um` constant): `W` is constant,
-  so `grid` coordinates are *already* metric. `physical` is then equivalent up
-  to the choice of `ref_um`; nothing is gained or lost.
+* **Fixed physical window** (`n_tokens * p * pixel_size ≈ n_tokens * target_um`
+  constant up to rounding): `W` is constant, so `grid` coordinates are
+  *already* metric. `physical` is then equivalent up to the choice of `ref_um`;
+  nothing is gained or lost.
 * **Cell-sized window** (variable `N`): `W` varies with cell size, so `grid`
   coordinates encode `d/W` — separation as a fraction of the cell. The same
   physical gap gets a different rotation in a small cell than in a large one.
@@ -263,9 +268,11 @@ clipping.
    embeds `log(p)` and `log(pixel_size)` with Fourier features and a
    small MLP, in both encoder and decoder.
 3. **Encoder RoPE** — `encoder_pos_embed="rope"` (default) applies 2-D axial
-   RoPE to q/k on normalized coordinates.  Fusion no longer owns a spatial
-   table (`fusion_pos_embed="none"`).  The old fixed-grid scheme is available
-   as `pos_embed="learned"` / `"sincos"` with `encoder_pos_embed="none"`.
+   RoPE to q/k; coordinates are metric by default (`pe_space="physical"`) or
+   normalized in the fixed-window ablation (`pe_space="grid"`).  Fusion no
+   longer owns a spatial table (`fusion_pos_embed="none"`).  The old fixed-grid
+   scheme is available as `pos_embed="learned"` / `"sincos"` with
+   `encoder_pos_embed="none"`.
 4. **FlexiViT per batch** — `patch_sizes=(...)` and `flexi_random=True` pick one
    `p` per training step; `forward(..., patch_sizes=p)` overrides it.  The
    canonical patch kernel is PI-resized, `n_patches`, masking, target
@@ -298,7 +305,7 @@ loss from interpolated, PSF-blurred input.
 
 ---
 
-## 1. Encoder — 2D axial RoPE on normalized coordinates
+## 1. Encoder — 2D axial RoPE
 
 ### Why RoPE
 
@@ -328,8 +335,16 @@ d_row = d_col = d / 2          # requires d % 4 == 0
 Use `d_row / 2` rotation pairs for the row axis and `d_col / 2` pairs for the
 column axis.
 
-Define normalized coordinates with a fixed reference extent `S` (e.g.
-`S = 32` or `S = 64`):
+The shipped default (`pe_space="physical"`) uses metric coordinates:
+
+```text
+r_norm = (r + 0.5) * p * pixel_size / ref_um
+c_norm = (c + 0.5) * p * pixel_size / ref_um
+```
+
+so the phase encodes the realized physical separation.  The normalized
+construction below is `pe_space="grid"`, the fixed-window ablation.  Define it
+with a fixed reference extent `S` (e.g. `S = 32` or `S = 64`):
 
 ```text
 r_norm = (r + 0.5) / n_h * S
@@ -364,13 +379,15 @@ Recommended defaults:
   Per-axis normalization removes aspect ratio; common-scale normalization
   preserves it.
 
-### Why normalized, not raw indices
+### Why not raw indices
 
 Raw-index RoPE needs no resampling, but it is not invariant to `p` or grid
 size. At `p = 8`, two adjacent tokens are 8 px apart; at `p = 32`, the same
 index delta is 32 px. The angular difference per index is identical, so the
-attention sees different physical geometry. Normalized coordinates make the
-encoder PE layout-only and leave physical scale to the scale token.
+attention sees different physical geometry. Both supported modes avoid this:
+metric coordinates (`pe_space="physical"`, default) encode physical distance
+directly, while normalized coordinates (`pe_space="grid"`) make the encoder PE
+layout-only in a fixed window and leave physical scale to the scale token.
 
 If raw token indices are used deliberately, state that the encoder PE also
 encodes sampling density and the scale token is partly redundant.
@@ -444,7 +461,7 @@ patch-embedding weights (`references/flexivit/paper.md:105`, `:168`, `:171`,
 |---|---|
 | Patch-embedding kernel `p×p` | **Yes** — PI-resize; bilinear is a simpler baseline |
 | Decoder reconstruction head | **Not defined by FlexiViT** — this repo uses per-`p` linear heads; an unseen `p` uses the nearest larger head with bilinear point-sampling, and `head_mode="canonical"` is the ablation |
-| Encoder RoPE | **No table / no resampling** — use normalized coordinates for layout-only PE |
+| Encoder RoPE | **No table / no resampling** — metric coordinates by default; normalized coordinates are the fixed-window layout-only ablation |
 | Decoder fractional PE | **No table / no resampling** |
 | Decoder PE table | **No table** (there isn’t one) |
 | Channel identity | **Not added to the patch token** — routing bias + pooled skip (see §3.1) |
@@ -477,9 +494,10 @@ of that same `p`.
 * `head_mode="shared"` (`p`-free): one canonical `dim -> p0²` head plus a fixed
 linear operator to the target grid. Resampling commutes with the linear head, so
 resampling the prediction and resampling the head's output rows are the same
-map. Because `p · pixel_size` is held constant, a smaller `p` is a genuinely
-coarser sampling of the *same* field, so the physically consistent cross-`p`
-relation is a low-pass: `head_resample="area"` (default) box-averages when
+map. Because `p · pixel_size` is held approximately constant (within the
+rounding residual, <=~2 % here), a smaller `p` is a genuinely coarser sampling
+of the *same* field, so the physically consistent cross-`p` relation is a
+low-pass: `head_resample="area"` (default) box-averages when
 shrinking and uses bilinear when growing. `"bilinear"` is the same-`p`
 point-sampling operator extended across `p` (the ablation arm).
 * `head_mode="canonical"`: the legacy single head, bilinear, no upsampling.
@@ -562,7 +580,10 @@ choose deliberately:
   scalar is `log_p`, not physical scale.
 
 The shipped conditioner feeds `log_p` **and** `log_pixel_size`; the derived
-`log_patch_um` is not supplied because it is exactly their sum.
+`log_patch_um` is not supplied because it is exactly their sum. Consequently the
+conditioner sees the *realized* patch extent, not `target_um`: `p` is rounded,
+so `log_p + log_pixel_size` carries the <=~2 % residual exactly. That residual
+must not be "corrected" separately; it is already an input.
 
 **`pixel_size` is required metadata, not an optional field.** Every image has a
 physical pixel size, so there is no "unknown" state to encode: no presence flag,
@@ -633,11 +654,13 @@ patch tokens.
 ## 6. Pitfalls
 
 - **Don’t call raw-index RoPE “patch-size invariant.”** It needs no
-  resampling, but it encodes sampling density. Use normalized coordinates if
-  the encoder PE must be layout-only.
+  resampling, but it encodes sampling density. Use metric coordinates
+  (`pe_space="physical"`, the default) for a variable window, or normalized
+  coordinates (`pe_space="grid"`) if the encoder PE must be layout-only in a
+  fixed window.
 - **Don’t scale raw RoPE indices by `p`** and then claim scale is delegated to
-  the scale token. Choose one convention: raw indices (density-aware) or
-  normalized coordinates (layout-only).
+  the scale token. Choose one convention: raw indices (density-aware), metric
+  coordinates (physically meaningful), or normalized coordinates (layout-only).
 - **Don’t use plain bilinear resize as “the FlexiViT method.”** PI-resize is
   the proposed patch-embedding resampling; bilinear is the baseline.
 - **Don’t forget `d % 4 == 0`** for axial RoPE; each axis needs `d/4`

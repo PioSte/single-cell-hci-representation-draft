@@ -11,8 +11,11 @@ shared decoder can be used for all channels.
 
 The default decoder positional embedding is the factorized-fractional absolute
 PE from ``FLEXIVIT.md``: a function of ``(row, col, grid_h, grid_w)`` with no
-grid-sized table, defined for any patch size.  ``"learned"`` and ``"sincos"``
-remain as legacy fixed-grid tables/lookup maps.
+grid-sized table, defined for any patch size.  By default it is **metric**: the
+caller passes ``target_step_um = p * pixel_size``, so the PE uses the same
+realized physical frame as the encoder RoPE (and carries the rounding residual
+in ``p * pixel_size``).  ``"learned"`` and ``"sincos"`` remain as legacy
+fixed-grid tables/lookup maps.
 
 The reconstruction head has three modes:
 

@@ -101,6 +101,37 @@ def test_extent_error_is_bounded_across_the_fleet():
         assert abs(error) < 0.02  # <= ~1.9% at target_um=12.8
 
 
+def test_scale_features_encode_the_realized_extent_not_the_target():
+    """The conditioner's two inputs recover the actual p*pixel_size.
+
+    Because p is rounded, the realized extent differs from target_um by up to
+    ~2%; log(p) + log(pixel_size) is exactly log(extent_um), so that residual is
+    an input rather than a silently discarded error.
+    """
+    ps = fleet_patch_sizes(FLEET, target_um=12.8)
+    model = ChannelFusionMAE(
+        image_size=48,
+        patch_size=ps[-1],
+        patch_sizes=ps,
+        dim=16,
+        encoder_depth=1,
+        decoder_depth=1,
+        n_heads=4,
+        n_memory=2,
+        num_channel_ids=8,
+        flexi_random=False,
+        pixel_size=FLEET[0],
+    )
+    for q in FLEET:
+        geom = CropGeometry.build(q, 12.8, n_tokens=2, fleet_pixel_sizes=FLEET)
+        values = model._scale_values(
+            [geom.patch_size], [geom.pixel_size], torch.device("cpu")
+        )
+        realized = float(torch.exp(values[0, 0]) * torch.exp(values[0, 1]))
+        assert realized == pytest.approx(geom.extent_um)
+        assert realized == pytest.approx(geom.patch_size * geom.pixel_size)
+
+
 def test_derived_patch_sizes_drive_the_model_config():
     """The fleet, not a hand-written list, is the source of model patch_sizes."""
     ps = fleet_patch_sizes(FLEET, target_um=12.8)

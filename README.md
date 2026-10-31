@@ -10,9 +10,9 @@ Sizes*, [`references/flexivit/paper.md`](references/flexivit/paper.md)) supplies
 the patch-kernel resampling: a canonical channel-tied kernel is **PI-resized**
 (**p**seudo**i**nverse resize, Eq. 4) to a per-step or per-sample patch size.
 The PE and scale choices go beyond FlexiViT: the encoder uses 2-D axial
-RoPE on normalized grid coordinates, the decoder uses factorized-fractional
-absolute PE, and an optional scale conditioner carries ``log(p)`` and physical
-pixel size. The legacy fixed-grid learned/sine-cosine absolute PE remains
+RoPE (metric coordinates by default, with normalized grid coordinates as the
+fixed-window ablation), the decoder uses factorized-fractional absolute PE, and
+an optional scale conditioner carries ``log(p)`` and physical pixel size. The legacy fixed-grid learned/sine-cosine absolute PE remains
 available as an ablation. Design rationale, trade-offs, and deviations from the
 literature are in [`docs/design.md`](docs/design.md).
 
@@ -45,12 +45,12 @@ High-content images come from different instruments, so the **pixel size**
 micrometre differs across datasets. A patch must cover a comparable *physical*
 extent on every instrument, otherwise the same marker is a different object at
 different sites. The mechanism is: **choose the patch size per sample so that
-the patch extent in micrometres stays constant.**
+the patch extent in micrometres stays as constant as integer rounding allows.**
 
 ```
 p               patch edge in PIXELS (a model knob; FlexiViT's axis, never a physical size)
 pixel_size      micrometres per pixel (dataset metadata, varies per instrument)
-p * pixel_size  physical patch size in micrometres (the quantity held constant)
+p * pixel_size  physical patch size in micrometres (held ~constant; rounding residual)
 
 p_b = round(target_um / pixel_size_b)     one p per pixel size, no snapping
 ```
@@ -186,16 +186,23 @@ per-channel tied Conv2d(1 -> D) patch embed, PI-resized to the current p
   `O(C)` marker-routed ablation:
   `joint = Σ_c softmax_c(MLP(channel_embed_c)) · V_c`.
 * **Encoder position: 2-D axial RoPE.** Fusion is position-agnostic. RoPE is
-  applied to encoder queries and keys from **normalized** coordinates
-  `(r + 0.5)/grid_h` and `(c + 0.5)/grid_w`, so the phase describes layout only;
-  the patch size/scale enters through `log(p)` conditioning instead. Memory
-  tokens get zero rotation. `head_dim = dim / n_heads` must be divisible by 4.
+  applied to encoder queries and keys from **metric** coordinates by default
+  (`pe_space="physical"`): `(r + 0.5) * p * pixel_size / ref_um` per token, so
+  the phase encodes the realized physical separation, not a fraction of the
+  grid. `pe_space="grid"` is the fixed-window ablation, where coordinates are
+  `(r + 0.5)/grid_h` and `(c + 0.5)/grid_w` (times a reference extent) and the
+  phase describes layout only; that mode stops being metric when the window
+  extent varies. Memory tokens get zero rotation. `head_dim = dim / n_heads`
+  must be divisible by 4.
 * **Decoder position: factorized-fractional absolute PE.** Target queries use
-  `g_row(v) + g_col(u)` with `u = (c + 0.5)/grid_w`, `v = (r + 0.5)/grid_h`.
-  This is a function, not a grid-sized table, so it is defined for any
-  `(grid_h, grid_w)` and needs no resampling when `p` changes. It is
-  load-bearing: masked patches of one channel share the mask token and channel
-  embedding, so position is what makes their predictions differ (MAE's
+  `g_row(v) + g_col(u)` with per-axis positions that are metric by default:
+  `u, v = (index + 0.5) * p * pixel_size / ref_um`, using the same
+  `target_step_um = p * pixel_size` as the encoder's frame. In the
+  `pe_space="grid"` ablation they are `u = (c + 0.5)/grid_w` and
+  `v = (r + 0.5)/grid_h`. This is a function, not a grid-sized table, so it is
+  defined for any `(grid_h, grid_w)` and needs no resampling when `p` changes.
+  It is load-bearing: masked patches of one channel share the mask token and
+  channel embedding, so position is what makes their predictions differ (MAE's
   `decoder_pos_embed` argument, `references/mae/paper.md:103`).
 * **Legacy absolute PE ablation.** `pos_embed="learned"` or `"sincos"` restores
   the old fixed-grid scheme: post-fusion table plus decoder target table, with
@@ -389,7 +396,7 @@ gated_out, present = gated(cs)
 | `src/fuse_channels/identity.py` | `ChannelEmbedding`: learned per-channel-id additive table |
 | `src/fuse_channels/patch_embed.py` | `ChannelTiedPatchEmbed`, `ChannelTokenizer` (content-only tokens; identity travels separately) |
 | `src/fuse_channels/fusion.py` | `ChannelFusion`, `IdentityGatedSum`, `MultiheadAttentionPooling`; `_dense_fusion_reference` (private, test/viz-only) |
-| `src/fuse_channels/rope.py` | 2-D axial RoPE on normalized grid coordinates |
+| `src/fuse_channels/rope.py` | 2-D axial RoPE; metric coordinates by default, normalized-grid ablation |
 | `src/fuse_channels/flexi.py` | FlexiViT PI- (pseudoinverse-) resize for the patch-embedding kernel |
 | `src/fuse_channels/pos_embed.py` | fractional absolute PE plus legacy learned/sincos tables |
 | `src/fuse_channels/encoder.py` | `TransformerEncoder` / `TransformerBlock` with memory tokens |

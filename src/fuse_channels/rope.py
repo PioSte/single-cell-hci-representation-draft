@@ -1,9 +1,13 @@
 """2-D axial rotary position embedding (RoPE) for vision token grids.
 
-The encoder uses RoPE on **normalized** grid coordinates so that the positional
-signal describes layout only: a token at the same fractional location gets the
-same phase whether the grid is 4x4 or 32x32.  Physical patch size belongs in
-the scale conditioner, not in the rotary phase.
+RoPE has two coordinate modes.  The shipped default is ``pe_space="physical"``:
+coordinates are token centres in micrometres, ``(index + 0.5) * p * pixel_size``,
+so the phase encodes the *realized* physical separation -- including the
+rounding residual between ``p * pixel_size`` and ``target_um``.  This is what
+keeps cell-sized (variable-``N``) grids metric.  ``pe_space="grid"`` is the
+fixed-window ablation: coordinates are normalized to ``(index + 0.5) / extent *
+ref_extent``, so the phase describes layout only and physical scale is left to
+the scale conditioner.
 
 The implementation follows the axial 2-D RoPE construction in RoPE-ViT
 (``references/rope-vit/paper.md:157-171``) and the original RoPE formulation

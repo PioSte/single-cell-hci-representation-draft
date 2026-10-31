@@ -19,12 +19,15 @@ Read from the raw image rather than from a pre-existing crop, so the box can
 always be made to tile exactly; nothing is padded and no border is discarded
 (the FlexiViT ``floor(H/p)`` contract never applies).
 
-``n_tokens`` is a **fixed design parameter** -- a physical window of
+``n_tokens`` is a **fixed design parameter** -- a window of approximately
 ``n_tokens * target_um`` micrometres per side -- not something derived from the
-cell's size. Cells genuinely differ in size; what is held constant is the
-observation window, so every sample yields exactly ``n_tokens**2`` tokens on
-every instrument while ``p_px`` absorbs the pixel-size variation. The
-consequences of a fixed window are deliberate:
+cell's size. The realized window is ``n_tokens * p_px * pixel_size``, which
+differs from ``n_tokens * target_um`` by the same rounding residual as one
+patch (<=~2 % at ``target_um=12.8``); record it with ``CropGeometry.extent_um``
+rather than assuming exact equality. Cells genuinely differ in size; what is
+held constant is the observation window, so every sample yields exactly
+``n_tokens**2`` tokens on every instrument while ``p_px`` absorbs the pixel-size
+variation. The consequences of a fixed window are deliberate:
 
 * a cell **smaller** than the window is surrounded by background (use
   ``min_valid_tokens`` to reject slivers);

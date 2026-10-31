@@ -128,10 +128,12 @@ positional offsets that cannot help distinguish channels. Fusion therefore
 stays position-free in the target architecture.
 
 **Encoder: 2-D axial RoPE.** Position enters the encoder as a rotation of
-queries and keys, not as an additive table. Coordinates are normalized to
-`(r + 0.5)/grid_h` and `(c + 0.5)/grid_w` (times a fixed reference extent), so
-the phase describes layout only and does not change meaning when the patch size
-changes. The head dimension is split into row and column halves, and each axis
+queries and keys, not as an additive table. The shipped default is
+`pe_space="physical"`: coordinates are token centres in micrometres,
+`(r + 0.5) * p * pixel_size / ref_um`, so the phase encodes the *realized*
+physical separation. This is what keeps cell-sized (variable-`N`) grids metric,
+and it carries the <=~2 % rounding residual in `p * pixel_size` rather than
+hiding it. The head dimension is split into row and column halves, and each axis
 gets `head_dim / 4` frequency pairs with base `100` by default
 (`references/rope-vit/paper.md:157-171`; RoFormer describes the rotation as
 absolute position with relative dependence in the dot product,
@@ -140,10 +142,14 @@ is the simple first choice; RoPE-Mixed is the stronger upgrade because axial
 frequencies cannot express diagonal directions
 (`references/rope-vit/paper.md:27`).
 
-Raw-index RoPE would need no resampling but would also encode sampling
+`pe_space="grid"` is the fixed-window ablation: coordinates are normalized to
+`(r + 0.5)/grid_h` and `(c + 0.5)/grid_w` (times a fixed reference extent), so
+the phase describes layout only and does not change meaning when the patch size
+changes. Raw-index RoPE would need no resampling but would also encode sampling
 density: adjacent tokens are one index apart at `p = 8` and at `p = 32`, even
-though the physical distance differs. Normalized coordinates avoid that and
-leave physical scale to the scale conditioner.
+though the physical distance differs. Grid-fraction coordinates avoid that and
+leave physical scale to the scale conditioner, but they are only metric when
+the window extent is fixed; do not confuse this ablation with the default.
 
 **Decoder: factorized-fractional absolute PE.** Mask tokens need an additive
 absolute anchor: without it every masked patch of a channel gets the same query
@@ -151,15 +157,19 @@ and predicts the same pixels (MAE's `decoder_pos_embed`,
 `references/mae/paper.md:103`). The decoder PE is
 
 ```
-u = (c + 0.5) / grid_w
-v = (r + 0.5) / grid_h
+u = (c + 0.5) * target_step_um / ref_um     target_step_um = p * pixel_size
+v = (r + 0.5) * target_step_um / ref_um
 PE_dec(r, c) = g_row(v) + g_col(u)
 ```
 
-where `g_row` / `g_col` are fixed multi-frequency sinusoids by default (a
-small learned MLP is available as `fractional_pe_mode="mlp"`). It is a function
-of fractional position, not a lookup on a fixed grid, so it is defined for any
-grid and needs no resampling when `p` changes.
+with grid fractions `u = (c + 0.5)/grid_w`, `v = (r + 0.5)/grid_h` in the
+`pe_space="grid"` ablation. `g_row` / `g_col` are fixed multi-frequency
+sinusoids by default (a small learned MLP is available as
+`fractional_pe_mode="mlp"`). It is a function of position, not a lookup on a
+fixed grid, so it is defined for any grid and needs no resampling when `p`
+changes. In the default metric mode the decoder uses the same realized
+`p * pixel_size` step as the encoder RoPE; mixing the two frames is a silent
+bug.
 
 **Legacy absolute-table ablation.** `pos_embed="learned"` or `"sincos"`
 restores the pre-FlexiViT scheme: a post-fusion `[1, N, D]` table (learned or
