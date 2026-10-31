@@ -113,8 +113,8 @@ So the expensive baselines are `O((C·N)²)` full joint attention, not a
 per-location `C×C` block. The repo's per-location pool is cheaper but does not
 let locations interact until the encoder; that is deliberate, and the encoder
 is where spatial mixing happens. A single query per location also means
-`ChannelFusion` has no `n_queries`; multi-query PMA is used at the encoder
-readout (`n_latents`) and the descriptor pooler instead.
+`ChannelFusion` has no `n_queries`; multi-query PMA is used for spatial
+pooling to fixed size latent (`n_latents`) and the descriptor pooler instead.
 
 `IdentityGatedSum` is the other `O(C)` option (Section 8). It is an ablation,
 not the default.
@@ -199,19 +199,38 @@ is zero-initialized, so it starts as a no-op and needs training to activate;
 `add` has an immediate effect. Keep `add` as the default until a real
 multi-instrument scale-sensitivity measurement says otherwise.
 
-## 4. Fixed-count encoder readout and trained descriptor
+## 4. Spatial pooling to fixed size latent, and the trained descriptor
 
 The encoder is a token-level transformer: its per-token output is
 `tok_out [Kf, D]`, where `Kf` is the number of present `(sample, patch)`
 locations. That size depends on the patch count. The model-level encoder
-representation is therefore a **second** `MultiheadAttentionPooling` readout
-over `tok_out`: `latents = latent_pooler(tok_out, group_id) -> [B, L, D]`,
-with `L = n_latents` learned queries (default 16). `L` is a hyperparameter, so
-the encoder output and the decoder KV are independent of both the channel
-count `C` and the patch count `N`.
+representation is therefore a **second** `MultiheadAttentionPooling`
+over `tok_out`: **spatial pooling to fixed size latent**, `latents =
+latent_pooler(tok_out, group_id) -> [B, L, D]`, with `L = n_latents` learned
+queries (default 16). `L` is a hyperparameter, so the encoder output and the
+decoder KV are independent of both the channel count `C` and the patch count
+`N`.
 
-This is deliberately a hybrid: token-level encoder attention followed by a
-fixed-size pooling readout ("Option 1"). It is **not** the Perceiver's
+**Terminology.** The phrase is deliberately compact but needs unpacking:
+
+- *spatial* — the pooled tokens are one per present `(sample, patch)`
+  location. Channel fusion has already collapsed the `C` channels at each
+  location, so this is not channel pooling; it is pooling over the spatial
+  token set. (If you prefer the more general wording: per-sample token-set
+  pooling.)
+- *fixed size* — fixed **cardinality** `L` and fixed width `D`. The output is
+  `[B, L, D]` for every `N`; `L` is not derived from the patch count. “Size”
+  here means the index dimension, not the flattened `L·D`.
+- *latent* — singular by convention. The tensor is `L` latents, `[B, L, D]`;
+  `L = 1` gives a single latent vector. It is **not** the `[B, D]` descriptor,
+  which is a separate pool used as a panel summary.
+- It is a **pooling stage**, not a second encoder: the encoder still runs over
+  the variable `Kf` per-location sequence. It is also not the Perceiver's
+  pool-before-processing latent bottleneck, and the Perceiver paper does not
+  ablate this placement.
+
+This is deliberately a hybrid: token-level encoder attention followed by
+spatial pooling to fixed size latent ("Option 1"). It is **not** the Perceiver's
 pool-before-processing architecture, and the Perceiver paper does not ablate
 this placement. Its Appendix B ablations are stacks of cross-attention with no
 latent transformer and the number/placement of cross-attends
@@ -230,14 +249,14 @@ attention block; it does not claim to be the fully canonical PMA.
 
 In `ChannelFusionMAE.forward` the descriptor is a **separate** pool over the
 encoder's **patch tokens** (`tok_out`, not the memory tokens or the latent
-readout), appended as one extra per-sample token to the decoder KV, and trained
+latents), appended as one extra per-sample token to the decoder KV, and trained
 by the reconstruction loss. Those tokens carry the fusion identity skip, so the
 descriptor can encode panel composition as well as content. That is intentional
 for MAE reconstruction: a fully dropped channel still needs a panel summary. It
 is not a claim that the descriptor is content-only.
 `encode(pool="attention")` returns the same descriptor;
 `encode(pool="mean")` is the mean-pool ablation; `encode(return_latents=True)`
-also returns the fixed `[B, L, D]` readout. `pool="memory"` does not exist. Use
+also returns the fixed `[B, L, D]` latent set. `pool="memory"` does not exist. Use
 `examples/descriptor_identity_probe.py` to measure identity leakage before
 considering a content/identity split.
 
@@ -315,8 +334,8 @@ Decoder blocks add grouped self-attention over the target queries of each
 sample before cross-attention. Targets of the same sample can therefore
 coordinate (e.g. correlated masked channel-patches) before attending to the
 encoder representation + memory + descriptor. The decoder never receives raw
-per-channel tokens; its KV is the encoder's fixed latent readout
-`[B, L, D]` plus memory and the trained descriptor, i.e.
+per-channel tokens; its KV is the fixed latent set `[B, L, D]` produced by
+spatial pooling to fixed size latent, plus memory and the trained descriptor, i.e.
 `[B·(n_memory + n_latents + 1), D]` for a given model.
 
 ## 7. Losses

@@ -4,12 +4,13 @@ Pipeline
 --------
 ``images`` -> DCP masking (token omission) -> channel-tied FlexiViT patch embed
 + additive channel embedding -> padding-free channel fusion -> encoder with
-2-D axial RoPE -> fixed-count PMA latent readout -> trained PMA descriptor ->
+2-D axial RoPE -> spatial pooling to fixed size latent (PMA) -> trained PMA descriptor ->
 channel-aware decoder with fractional absolute PE -> reconstruction loss.
 
 The encoder's per-token sequence is ``[Kf, D]`` (``Kf`` = number of present
 locations), but the representation the model exposes to the decoder is the
-pooled readout ``[B, n_latents, D]``.  ``n_latents`` is a hyperparameter, so
+pooled latent set ``[B, n_latents, D]`` from spatial pooling to fixed size
+latent.  ``n_latents`` is a hyperparameter, so
 the encoder output -- and therefore the decoder KV -- is independent of both
 the channel count ``C`` and the patch count ``N``.  The decoder still emits one
 prediction row per requested reconstruction target; that target set is the DCP
@@ -326,8 +327,8 @@ class ChannelFusionMAE(nn.Module):
             dropout=dropout,
             adaln=scale_conditioning == "adaln",
         )
-        # Fixed-count readout: the encoder's per-token output is pooled to
-        # ``[B, n_latents, D]`` with no dependence on the patch count.  This is
+        # Spatial pooling to fixed size latent: the encoder's per-token output is
+        # pooled to ``[B, n_latents, D]`` with no dependence on the patch count.
         # Option 1 from the design discussion (keep token-level encoder
         # attention, then pool to a fixed-size latent set); it is a hybrid, not
         # the Perceiver's pool-before-processing architecture.
@@ -606,7 +607,7 @@ class ChannelFusionMAE(nn.Module):
         mem_out, tok_out = self.encoder(
             enc_tokens, enc_group_id, B, rope=rope, cond=cond_enc
         )
-        # Fixed-count encoder readout.  ``tok_out`` stays available for the
+        # Spatial pooling to fixed size latent.  ``tok_out`` stays available for the
         # descriptor (and the encode() mean-pool ablation), but it is no longer
         # part of the decoder KV.
         latents = self.latent_pooler(tok_out, enc_group_id, B).reshape(
@@ -947,10 +948,11 @@ class ChannelFusionMAE(nn.Module):
         Returns ``(memory, pooled_descriptor)``, or
         ``(memory, latents, pooled_descriptor)`` when ``return_latents=True``.
 
-        ``memory`` is ``[B * n_memory, D]``, ``latents`` is the fixed-count
-        encoder readout ``[B, n_latents, D]`` (independent of the patch count),
+        ``memory`` is ``[B * n_memory, D]``, ``latents`` is the ``[B, n_latents, D]``
+        output of spatial pooling to fixed size latent (independent of the patch
+        count),
         and ``pooled_descriptor`` is ``[B, D]``.  The descriptor keeps the
-        trained PMA readout; ``pool="mean"`` is the mean-pool ablation.
+        trained PMA descriptor; ``pool="mean"`` is the mean-pool ablation.
 
         ``valid`` (per-sample ``[N_b]`` cell-token mask) drops off-cell patches
         from the encoder exactly as in :meth:`forward`.

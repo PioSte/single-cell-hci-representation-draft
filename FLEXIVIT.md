@@ -198,8 +198,9 @@ cell size plus at most one patch of slack. So `p` absorbs the instrument, `N`
 absorbs the cell, and patches stay physically comparable everywhere.
 
 `N` is variable in the **encoder input**, not in the model's representation.
-A post-encoder PMA readout pools the `Kf` present-location tokens to a fixed
-latent set `[B, L, D]` (`n_latents = L`), so the encoder output and decoder KV
+Post-encoder PMA implements **spatial pooling to fixed size latent**: it pools
+the `Kf` present-location tokens to `L` latents `[B, L, D]` (`n_latents = L`),
+so the encoder output and decoder KV
 have the same shape for every cell size. What grows with `N` is encoder compute
 (`O(Kf²)` per sample) and the fusion buffer, not the representation the decoder
 consumes. The decoder output still follows the reconstruction-target set
@@ -234,7 +235,7 @@ it works at `N = 10_000` and a model *constructed* with `image_size=32` happily
 processes a 320 px crop, because `image_size` only sizes legacy PE tables. A
 larger cell just costs more: encoder attention is `O((C·N)²)` per sample and the
 fusion buffer is `[B, max_b N_b, D]`, so the real limits are memory and time,
-not architecture. The fixed-count latent readout means a larger `N` does not
+not architecture. Spatial pooling to fixed size latent means a larger `N` does not
 grow the decoder KV or the inference representation: only the encoder pass gets
 more expensive. Consequently `plan_patches` does **not** clamp: `max_n` is an
 optional budget, and a cell that exceeds it is skipped and reported, never
@@ -691,8 +692,8 @@ Implementation map for the target architecture:
   per-sample patch count at call time.
 - `src/fuse_channels/mae.py` — resolves patch sizes (with optional
   `max_tokens`), builds scale features, routes RoPE/conditioning through the
-  encoder and decoder, pools the encoder tokens to the fixed `n_latents`
-  readout, and pads mixed-p targets with a validity mask.
+  encoder and decoder, applies spatial pooling to fixed size latent
+  (`n_latents`), and pads mixed-p targets with a validity mask.
 
 ## 8. References
 

@@ -147,7 +147,8 @@ def draw_joint_grid(ax, x0=79.0):
 
 def draw_encoded(ax, x=124.0):
     """``[B . (M + L + 1), D]`` -- the decoder KV: fixed memory rows, the
-    fixed-count latent readout, and the trained per-sample descriptor ``desc``.
+    latent set from spatial pooling to fixed size latent, and the trained
+    per-sample descriptor ``desc``.
 
     ``mae.py`` builds ``enc_all = cat([mem_out, latents, desc])``, so the
     descriptor row sits here as well as in the inference branch.

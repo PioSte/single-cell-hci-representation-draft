@@ -24,17 +24,19 @@ order is meaningless, and panels differ across labs. We need a representation
 whose size is independent of `C`:
 
 ```
-f({E_1 .. E_C}) -> [N, D] per sample -> [L, D] encoder readout -> [D] descriptor,
+f({E_1 .. E_C}) -> [N, D] per sample -> spatial pooling to fixed size latent [L, D] -> [D] descriptor,
 ```
 
 without concatenation blow-up, with channel identity preserved, and with **no
 padding tokens**. `C` appears only in the tokenizer input length `ΣC·N`; the
 fused output is `[B, N, D]` (`N = floor(H/p)·floor(W/p)` is set by the current
-patch size). The encoder readout is then pooled to the fixed-count latent set
-`[B, L, D]` (`n_latents = L` is a hyperparameter), so the model-level encoder
-output and the decoder KV are independent of both `C` and `N`; the pooled
-descriptor is `[B, D]`. The decoder still emits one prediction row per requested
-reconstruction target (the DCP mask complement), not per encoder token.
+patch size). **Spatial pooling to fixed size latent** then maps those encoder
+tokens to `L` latents per sample, `[B, L, D]` (`n_latents = L` is a
+hyperparameter), so the model-level encoder output and the decoder KV are
+independent of both `C` and `N`; the pooled descriptor is `[B, D]`. The decoder
+still emits one prediction row per requested reconstruction target (the DCP mask
+complement), not per encoder token. See “Naming this stage” below for the
+nuances of the phrase.
 
 ## Variable pixel size: `p` is a pixel count, not a physical size
 
@@ -136,7 +138,8 @@ per-channel tied Conv2d(1 -> D) patch embed, PI-resized to the current p
        + optional scale embedding
     -> padding-free transformer encoder over [present locations, D]
        with fixed-count memory tokens and 2-D axial RoPE on q/k
-    -> fixed-count PMA latent readout [B, L, D]  (L independent of C and N)
+    -> spatial pooling to fixed size latent (PMA) [B, L, D]
+       (L independent of C and N)
     -> trained PMA descriptor over encoder patch tokens [B, D]  (appended to KV)
     -> channel-aware shared decoder: target-identity + fractional target-position
        queries, target self-attention, cross-attention to memory + latents +
@@ -204,26 +207,27 @@ per-channel tied Conv2d(1 -> D) patch embed, PI-resized to the current p
   instead; `"none"` disables it. `add` is not erased by pre-LN: the additive
   vector remains in the unnormalized residual stream, and only its
   all-ones/mean component is removed from the normalized branch.
-* **Fixed-count encoder readout.** Standard pre-norm Q/K/V/O transformer blocks
-  run over the flattened real tokens (`[present locations, D]`) with
-  fixed-count memory tokens. A second PMA pooler then reads those tokens out to
-  `[B, L, D]` with `L = n_latents` learned queries (default 16). `L` is a
-  hyperparameter, so the encoder output and the decoder KV do not grow with `C`
-  or with the patch count `N`: varying `N` changes encoder compute, not the
-  representation size. This is a hybrid — token-level encoder attention
-  followed by a fixed-size pooling readout — not the Perceiver's
-  pool-before-processing architecture; the Perceiver paper does not ablate this
-  placement (`references/perceiver/paper.md:531-558`).
+* **Spatial pooling to fixed size latent.** Standard pre-norm Q/K/V/O
+  transformer blocks run over the flattened real tokens
+  (`[present locations, D]`) with fixed-count memory tokens. A second PMA
+  pooler then applies **spatial pooling to fixed size latent**: `L =
+  n_latents` learned queries pool the per-location tokens to `[B, L, D]`
+  (default 16). `L` is a hyperparameter, so the encoder output and the decoder
+  KV do not grow with `C` or with the patch count `N`: varying `N` changes
+  encoder compute, not the representation size. This is a hybrid — token-level
+  encoder attention followed by spatial pooling to fixed size latent — not the
+  Perceiver's pool-before-processing architecture; the Perceiver paper does not
+  ablate this placement (`references/perceiver/paper.md:531-558`).
 * **Encoder and descriptor.** The `[B, D]` descriptor is a separate PMA-style
-  pool over the encoder's *patch* tokens (not the memory tokens or the latent
-  readout); it therefore carries the identity skip, which the decoder can use
+  pool over the encoder's *patch* tokens (not the memory tokens or the latents
+  produced by spatial pooling); it therefore carries the identity skip, which the decoder can use
   as a panel-composition summary. It is trained through the MAE loss and
   appended as one token per sample to the decoder KV. The decoder KV is
   `[B·(n_memory + n_latents + 1), D]`, fixed for a given model.
 * **Decoder.** One decoder is shared across all channels. Each target query is
   `mask token + target spatial PE + target channel embedding`; queries
   self-attend within each sample, then cross-attend to the encoder's
-  memory + fixed latent readout + descriptor. A fully dropped channel has no encoder
+  memory + the fixed latent set + descriptor. A fully dropped channel has no encoder
   evidence, only its identity query, so identity acts as a **target
   specification** as well as an input feature. The reconstruction head has
   three modes. `head_mode="per_p"` (default) keeps a separate linear
@@ -264,6 +268,26 @@ parameters. Identity is not optional: ChannelViT's mean-embedding ablation
 full derivation, the Table 11 caveat, and the corrected reference claims are in
 [`docs/design.md`](docs/design.md).
 
+## Naming this stage
+
+The stage is called **spatial pooling to fixed size latent**. The name is
+literal, but each word carries weight:
+
+* **spatial** — it pools the per-`(sample, patch)` tokens produced after
+  channel fusion. It is not a second channel fusion: channel fusion already
+  ran over `C` at each patch, and this runs over patches for each sample.
+- **size** — the output is `[B, L, D]`: `L = n_latents` locations of width
+  `D`. The *cardinality* `L` and the *width* `D` are both fixed, so the stage
+  is called fixed size even though the encoder input length (`Kf`) varies.
+- **latent** — used in the singular as the name of the stage, but the tensor
+  is a set of `L` latents. `L = 1` gives one latent vector `[B, D]`; `L > 1`
+  gives `[B, L, D]`. This is **not** the descriptor, which is a separate
+  `[B, D]` pool over the same encoder tokens.
+* It is a **pooling step**, not a second encoder: the encoder still runs
+  token-level attention over every present location. It is also not the
+  Perceiver's pool-before-processing latent bottleneck, and the Perceiver paper
+  does not ablate this placement.
+
 ## Install
 
 Managed with [uv](https://docs.astral.sh/uv/):
@@ -282,7 +306,7 @@ from fuse_channels import ChannelFusionMAE
 model = ChannelFusionMAE(
     image_size=16, patch_size=8, dim=192,
     encoder_depth=4, decoder_depth=2, n_heads=6,
-    n_memory=4, n_latents=16,         # fixed-count encoder readout
+    n_memory=4, n_latents=16,         # spatial pooling to fixed size latent
     num_channel_ids=32,               # size of the learnable identity table
     fusion="attention",               # or "identity_gated" (ablation)
     loss="mae",                       # or "cha_maevit" (ablation)
@@ -303,7 +327,7 @@ ids = [torch.randint(0, 32, (3,)), torch.randint(0, 32, (7,))]
 out = model(images, ids)
 out["loss"].backward()
 
-# inference representation (no masking): fixed-count latents + trained descriptor
+# inference representation (no masking): fixed latent set + trained descriptor
 mem, latents, descriptor = model.encode(images, ids, return_latents=True)
 # memory: [B*n_memory, D], latents: [B, n_latents, D], descriptor: [B, D]
 _, mean_descriptor = model.encode(images, ids, pool="mean")  # ablation
@@ -416,8 +440,8 @@ Covered by `tests/`:
   conditioning is wired into both ends
 - encoder input length = number of present locations, with token count
   = visible channel-patches (`test_encoder_input_length_is_present_locations`)
-- encoder output / decoder KV is the fixed `n_latents` readout, not the
-  per-token sequence, and does not change when the patch count does
+- encoder output / decoder KV comes from spatial pooling to fixed size latent,
+  not from the per-token sequence, and does not change when the patch count does
   (`test_encoder_output_is_fixed_size_across_patch_counts`)
 - DCP Eq. 1 regions and HCS counts (`test_masking.py`); channels dropped by DCP
   are reconstruction targets (`test_dcp_dropped_channel_is_a_reconstruction_target`)

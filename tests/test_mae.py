@@ -118,7 +118,7 @@ def test_encoder_input_length_is_present_locations():
 
 
 def test_encoder_output_is_fixed_size_across_patch_counts():
-    """The decoder KV is the fixed latent readout, not the per-token sequence."""
+    """The decoder KV is the spatial-pooled latent set, not the token sequence."""
     model = _model(p_patch=1.0, p_channel=0.0)
     model.eval()
     B = 2

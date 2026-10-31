@@ -13,7 +13,8 @@ scale conditioning modulates the LayerNorms with a per-token condition vector.
 
 This module returns the per-token sequence, so its length depends on how many
 locations are present.  ``ChannelFusionMAE`` pools that sequence to the fixed
-``[B, n_latents, D]`` readout before anything downstream sees it, so the
+``[B, n_latents, D]`` latent set (spatial pooling to fixed size latent)
+before anything downstream sees it, so the
 model-level encoder output and the decoder KV do not depend on the patch count;
 the cost of this encoder still does.
 """
@@ -154,10 +155,10 @@ class TransformerEncoder(nn.Module):
         """Return ``(memory_out, tokens_out)``.
 
         ``memory_out`` is ``[n_samples * n_memory, D]`` and ``tokens_out`` keeps
-        the input ordering ``[T, D]``.  The model-level fixed-size readout is
-        applied outside this module (``ChannelFusionMAE._encode``), so callers
-        that need a patch-count-independent representation should use that
-        readout rather than this raw token sequence.
+        the input ordering ``[T, D]``.  The model-level spatial pooling to fixed size
+        latent is applied outside this module (``ChannelFusionMAE._encode``), so
+        callers that need a patch-count-independent representation should use
+        that pooled latent set rather than this raw token sequence.
         """
         device = tokens.device
         mem = self.memory.expand(n_samples, -1, -1).reshape(-1, self.memory.shape[-1])

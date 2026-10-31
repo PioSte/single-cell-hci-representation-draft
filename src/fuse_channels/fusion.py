@@ -218,7 +218,7 @@ class MultiheadAttentionPooling(nn.Module):
     so it is a real PMA readout rather than an inference-only artifact.
 
     ``ChannelFusionMAE`` uses it twice: with ``n_queries=n_latents`` as the
-    fixed-count encoder readout that becomes the decoder KV
+    spatial pooling to fixed size latent whose output becomes the decoder KV
     (``readout="flat"``, reshaped to ``[B, n_latents, D]``), and with
     ``n_queries`` learned descriptor queries (``readout="mean"``) for the
     per-sample ``[B, D]`` descriptor.  Both outputs are independent of the

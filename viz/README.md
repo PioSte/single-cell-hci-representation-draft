@@ -128,7 +128,8 @@ number of channels. Written to `viz/out/cardinality.{pdf,svg,png}`.
 * **A** — a filmstrip of consecutive steps for one sample: input channel set →
   tied embed; identity `z_c` carried alongside (no pre-LN add) → per-location channel fusion (the
   `C` tokens at each `(b,n)` collapse to one) → fixed `[B,N,D]` grid, fixed
-  `[B,L,D]` encoder readout, memory and descriptor. The variable-height channel
+  `[B,L,D]` latent set from spatial pooling to fixed size latent, memory and
+  descriptor. The variable-height channel
   axis is the thing you watch vanish.
 * **B** — the invariance itself: `C=1`, `C=3`, `C=5` token stacks (input length
   `ΣC·N`) all funnel through the *same* fusion and produce the *same*
@@ -152,7 +153,8 @@ memory `[B·M + Kf, D]` in between. The point the animation makes visually: `C`
 appears only in the input length and is **summed away** by the channel fusion,
 never padded to a `C_max`. One simplification: the DCP masking is drawn as
 location-level removal, whereas the real masker selects per channel-patch token
-*before* the fusion. `[B, L, D]` is the fixed `n_latents` encoder readout, so
+*before* the fusion. `[B, L, D]` is the fixed `n_latents` output of spatial
+pooling to fixed size latent, so
 the decoder KV no longer grows with `N`. `[B, D]` is the **trained** descriptor:
 the training forward pools `tok_out` (content tokens only) and appends it to the
 decoder KV; `encode(pool="attention")` returns the same vector.
