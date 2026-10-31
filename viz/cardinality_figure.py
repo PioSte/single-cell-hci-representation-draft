@@ -5,7 +5,7 @@ filmstrip of consecutive steps and makes the cardinality argument spatial:
 
 * the channel axis is a variable-height axis that grows with ``C``;
 * channel fusion consumes that axis **once per spatial location**, producing a
-  fixed ``[B, N, D]`` grid;
+  one ``[D]`` vector per present location;
 * everything downstream therefore has a shape and cost independent of ``C``.
 
 Outputs ``viz/out/cardinality.{pdf,svg,png}``.
@@ -130,7 +130,7 @@ def step4(ax, x0):
         for c in range(2):
             cell(ax, fx + c * pitch, fy + (1 - r) * pitch, s,
                  tint(RED, 0.82), RED, r=0.6)
-    label(ax, fx + pitch, fy - 1.8, "fused $[B,N,D]$", size=7.4,
+    label(ax, fx + pitch, fy - 1.8, "fused $[K_f,D]$", size=7.4,
           color=RED, weight="bold")
     for m in range(3):
         cell(ax, fx + m * 3.0, 42.0, 2.4, tint(SKY, 0.75), SKY, r=0.4)
@@ -200,7 +200,7 @@ def draw_invariance(ax):
     arrow(ax, (bus_x, 14.0), (52.0, 14.0), color=INK, lw=1.8, ms=11)
 
     node(ax, 52.5, 8.0, 30.0, 12.0,
-         "channel fusion", "PMA / identity-gated $\\to$ $[B,N,D]$",
+         "channel fusion", "PMA / identity-gated $\\to$ $[K_f,D]$",
          edge=RED, title_size=9.0, sub_size=7.2)
     arrow(ax, (82.7, 14.0), (86.0, 14.0), color=INK, lw=1.8, ms=11)
     node(ax, 86.5, 8.5, 23.0, 11.0,

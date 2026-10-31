@@ -87,7 +87,8 @@ substantially (`references/panopticon/paper.md:92,194,219`; the earlier
 `ChannelFusion` follows that recipe: one learned query is shared across every
 sample and every spatial location, the LayerNormed channel tokens go through
 learned `q_proj`/`k_proj`/`v_proj` into `attn_dim = 3·dim` by default, and
-`proj_out` maps the pooled vector back to `[B, N, D]`. `attn_dim=dim` is the
+`proj_out` maps the pooled vector back to `D`; the per-location results form
+the flat `[K_f, D]` output. `attn_dim=dim` is the
 narrow, parameter-matched ablation. The fusion group is `(sample, patch)`, so
 the softmax axis is the channel axis, never the patch axis.
 

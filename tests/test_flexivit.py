@@ -21,6 +21,14 @@ from fuse_channels import (
 )
 
 
+def _assert_every_row_is_p_squared(out, p):
+    """The flat pixel layout: one ``p**2``-pixel row per target."""
+    offsets = out["target_pixel_offset"]
+    counts = (offsets[1:] - offsets[:-1]).tolist()
+    assert set(counts) == {p * p}
+    assert out["pred"].numel() == out["target"].numel() == sum(counts)
+
+
 # --------------------------------------------------------------------------- #
 # encoder: 2-D axial RoPE on normalized coordinates
 # --------------------------------------------------------------------------- #
@@ -252,11 +260,11 @@ def test_per_batch_patch_size_changes_token_count_and_head_dim():
         visible[1][0, 0] = True
         out = model(images, ids, visible=visible, patch_sizes=p)
         assert out["patch_sizes"] == [p, p]
-        assert out["target"].shape[-1] == p * p
+        _assert_every_row_is_p_squared(out, p)
         assert out["loss"].backward() is None
 
 
-def test_per_sample_variable_patch_size_pads_predictions_and_masks_loss():
+def test_per_sample_variable_patch_size_keeps_each_rows_own_pixels():
     model = _model(patch_sizes=(4, 8))
     model.eval()
     images, ids = _batch()
@@ -269,12 +277,14 @@ def test_per_sample_variable_patch_size_pads_predictions_and_masks_loss():
     visible[1][0, 0] = True
     with torch.no_grad():
         out = model(images, ids, visible=visible, patch_sizes=[4, 8])
-    assert out["pred_mask"] is not None
-    assert out["pred"].shape[-1] == 8 * 8
+    # mixed p: rows keep exactly their own p**2 pixels, contiguous -- no
+    # padded [K, max(p)**2] block and no validity mask
+    counts = (
+        out["target_pixel_offset"][1:] - out["target_pixel_offset"][:-1]
+    ).tolist()
+    assert set(counts) == {16, 64}
     assert out["target"].shape == out["pred"].shape
-    assert torch.isfinite(out["loss"])
-    # padded columns are exactly zero
-    assert torch.all(out["pred"][out["target_patch_size"] == 4, 16:] == 0)
+    assert out["pred"].numel() == sum(counts)
     assert torch.isfinite(out["loss"])
 
 
@@ -365,8 +375,9 @@ def test_per_p_head_is_exact_and_does_not_resize():
     x = torch.randn(3, 32, generator=torch.Generator().manual_seed(0))
     head = model.decoder.head
     assert set(head.heads.keys()) == {"4", "8"}
-    assert torch.equal(head(x, 4), head.heads["4"](x))
-    assert torch.equal(head(x, 8), head.heads["8"](x))
+    # flat layout: the head's output is the per-p block, row-major
+    assert torch.equal(head(x, 4), head.heads["4"](x).reshape(-1))
+    assert torch.equal(head(x, 8), head.heads["8"](x).reshape(-1))
 
     images, ids = _batch()
     for p in (4, 8):
@@ -375,7 +386,7 @@ def test_per_p_head_is_exact_and_does_not_resize():
                 images, ids,
                 generator=torch.Generator().manual_seed(p), patch_sizes=p,
             )
-        assert out["pred"].shape[-1] == p * p
+        _assert_every_row_is_p_squared(out, p)
         assert torch.isfinite(out["loss"])
 
 
@@ -403,7 +414,7 @@ def test_canonical_head_mode_is_still_available():
                 images, ids,
                 generator=torch.Generator().manual_seed(p), patch_sizes=p,
             )
-        assert out["pred"].shape[-1] == p * p
+        _assert_every_row_is_p_squared(out, p)
         assert torch.isfinite(out["loss"])
 
 
@@ -464,7 +475,7 @@ def test_non_divisible_border_is_cropped_not_rejected():
     )
     assert out["grid_h"].tolist() == [3]
     assert out["n_patches_per_sample"].tolist() == [9]
-    assert out["pred"].shape[-1] == 16
+    _assert_every_row_is_p_squared(out, 4)
     assert torch.isfinite(out["loss"])
     out["loss"].backward()
 
@@ -479,7 +490,7 @@ def test_max_tokens_explicit_patch_size_is_an_override():
             generator=torch.Generator().manual_seed(0), patch_sizes=4,
         )
     assert out["patch_sizes"] == [4, 4]
-    assert out["pred"].shape[-1] == 16
+    _assert_every_row_is_p_squared(out, 4)
 
 
 def test_canonical_head_rejects_unseen_upsampling():
@@ -501,5 +512,5 @@ def test_unseen_p_uses_nearest_larger_head_without_upsampling():
     head = model.decoder.head
     x = torch.randn(2, 32, generator=torch.Generator().manual_seed(0))
     out = head(x, 6)
-    assert out.shape == (2, 36)
+    assert out.shape == (2 * 36,)  # two rows of 6**2 pixels, contiguous
     assert torch.isfinite(out).all()

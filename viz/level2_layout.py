@@ -2,16 +2,16 @@
 
 The hero figure: a left-to-right diagram of literal, axis-labelled array stacks
 in the Perceiver-IO Fig 2 / Perceiver Fig 1 idiom, showing where the variable
-channel count ``C`` appears (input ragged list length only) and how it is
-summed away by fusion to produce a fixed-size ``[B, N, D]`` fused embedding.
+channel count ``C`` appears (input token list length only) and how it is
+summed away by fusion to produce one fixed-size fused vector per location.
 
 Shows:
 
-1. input set ``[ΣC, 1, H, W]`` (ragged: height = C_b, colour per channel)
+1. input set ``[ΣC, 1, H, W]`` (uneven: height = C_b, colour per channel)
 2. post-mask visible token list ``[V, D]`` with the ``(b, c, n)`` index triple
    annotated; one omitted row is drawn as an external dashed callout
 3. the per-patch grouping highlighted: one row per channel at the same ``n``
-4. fused ``[B, N, D]`` grid after channel fusion
+4. the fused vectors on the ``[B, N]`` location grid, after channel fusion
 5. encoder module ``[B·M, D]`` memory (gold) + ``[K_f, D]`` visible tokens
 6. decoder target queries ``[K_t, D]`` -> predicted pixels ``[K_t, P²]``
 7. inference branch: trained descriptor ``[B, D]``, pooled from encoder patch
@@ -77,7 +77,7 @@ def axis_text(ax, x, y, text, color=INK, size=7.5, rotation=0, ha="center",
 # Array stacks
 # --------------------------------------------------------------------------- #
 def draw_input_images(ax):
-    """Ragged set of single-channel images [ΣC, 1, H, W].
+    """Set of single-channel images [ΣC, 1, H, W].
 
     Tiles use ``channel_color(i)`` with the level-1 vertical order (channel 0 at
     the top); the variable axis is the stack height.
@@ -133,7 +133,7 @@ def _visible_specs():
     return specs
 
 
-def draw_ragged_tokens(ax):
+def draw_token_list(ax):
     """Post-mask visible token list [V, D] with (b,c,n) annotation."""
     x, w, h, pitch, n = 11.5, 9.0, 2.0, 2.3, 8
     y0, top = _token_column(ax, x, w, h, pitch, n, _visible_specs())
@@ -147,7 +147,7 @@ def draw_ragged_tokens(ax):
     axis_text(ax, x - 1.7, y0 + 0.30 * (top - y0), "$V$", rotation=90)
     h_bracket(ax, x, x + w, top + 0.6, color=MUTED, down=True)
     axis_text(ax, x + w / 2, top + 1.6, "$D$", size=7.5)
-    ax.text(x + w / 2, y0 - 1.1, "ragged tokens $[V,D]$", ha="center",
+    ax.text(x + w / 2, y0 - 1.1, "visible tokens $[V,D]$", ha="center",
             va="center", fontsize=7.8, fontweight="bold", color=INK)
     ax.text(x + w / 2, y0 - 2.6,
             "full list $[\\sum_b C_b{\\cdot}N_b,D]$ $\\to$ DCP omits rows",
@@ -198,7 +198,7 @@ def draw_channel_grouping(ax):
 
 
 def draw_fused_grid(ax):
-    """Fused [B, N, D] grid (FUSED blue)."""
+    """Fused vectors on the [B, N] location grid (FUSED blue)."""
     x0, cw, pitch = 42.5, 2.4, 2.7
     B, N = 4, 5
     gh = (B - 1) * pitch + cw
@@ -215,7 +215,7 @@ def draw_fused_grid(ax):
     axis_text(ax, right + 0.9, top - 0.5, "$D$", ha="left", size=7.5)
     ax.text(right + 0.9, top - 1.7, "no fusion PE", ha="left",
             fontsize=5.6, color=FUSION)
-    ax.text((x0 + right) / 2, y0 - 1.1, "fused $[B,N,D]$", ha="center",
+    ax.text((x0 + right) / 2, y0 - 1.1, "fused $[K_f,D]$", ha="center",
             va="center", fontsize=7.8, fontweight="bold", color=INK)
 
 
@@ -401,7 +401,7 @@ def draw_legends(ax):
          ("channel fusion", FUSION, "fill"),
          ("encoder (TransformerEncoder)", ENCODER, "fill"),
          ("memory / register tokens", MEMORY, "cross"),
-         ("fused tokens $[B,N,D]$", FUSED, "cross"),
+         ("fused vectors $[K_f,D]$", FUSED, "cross"),
          ("descriptor pool $[B,D]$", POOL, "cross"),
          ("decoder / targets", VIOLET, "fill"),
          ("omitted row (masked)", LOSS, "omit")],
@@ -418,9 +418,9 @@ def draw_legends(ax):
             "Channel count $C$ lives only in the input length $\\sum_b C_b{\\cdot}N_b$.\n"
             "Fusion pools the visible channel tokens at each present $(b,n)$ with\n"
             "one shared learned query: $O(C{\\cdot}D)+D^2$ per location; no fusion PE.\n"
-            "Only $fused[present]\\to[K_f,D]$ reaches the encoder; the zero-initialised\n"
-            "absent rows in $[B,N,D]$ are dropped, never encoded.\n"
-            "Output is fixed-size $[B,N,D]$, independent of $C$.",
+            "Fusion returns $[K_f,D]$ directly: one vector per present location,\n"
+            "so no $[B,N,D]$ buffer is built and nothing is dropped later.\n"
+            "The vector size is fixed, independent of $C$ and of $N$.",
             ha="center", va="center", fontsize=6.0, color=MUTED, style="italic",
             linespacing=1.35,
             bbox=dict(boxstyle="round,pad=0.5", facecolor="white",
@@ -446,12 +446,12 @@ def build() -> plt.Figure:
             ha="left", va="center", fontsize=12.2, fontweight="bold", color=INK)
     ax.text(1, 45.0,
             "The output shape is independent of the channel count $C$. "
-            "Omitted rows are absent from the ragged list (dashed); the ragged list is the only token container.",
+            "Omitted rows are absent from the token list (dashed); the token list is the only token container.",
             ha="left", va="center", fontsize=7.0, color=MUTED, style="italic")
 
     # ---- array stacks ----------------------------------------------------- #
     draw_input_images(ax)
-    draw_ragged_tokens(ax)
+    draw_token_list(ax)
     draw_omitted_callout(ax)
     draw_channel_grouping(ax)
     draw_fused_grid(ax)

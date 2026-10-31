@@ -311,3 +311,46 @@ class ChannelTokenizer(nn.Module):
             F.unfold(im.to(images[0].device), p, stride=p)
             for im, p in zip(images, ps)
         ]
+
+    @staticmethod
+    def gather_patches(
+        images: Sequence[torch.Tensor],
+        sample_idx: torch.Tensor,
+        channel_idx: torch.Tensor,
+        patch_idx: torch.Tensor,
+        patch_sizes,
+        grid_w,
+    ) -> List[torch.Tensor]:
+        """Per-sample ``[k_b, p_b**2]`` pixels for the *requested* patches only.
+
+        Unlike :meth:`extract_patches_list`, which materialises every patch of
+        every channel (``O(ΣC · N · p**2)``), this touches only the requested
+        ``(channel, patch)`` pairs, so the cost is proportional to the request
+        (for an MAE target set, the masked complement, not the image).
+        ``Tensor.unfold`` returns strided views, so the window extraction itself
+        allocates nothing.
+
+        ``grid_w`` is the per-sample grid width (``N_b = grid_h·grid_w``).
+        """
+        ps = (
+            [patch_sizes] * len(images)
+            if isinstance(patch_sizes, int)
+            else [int(p) for p in patch_sizes]
+        )
+        device = images[0].device
+        out: List[torch.Tensor] = []
+        for b, im in enumerate(images):
+            im = im.to(device)
+            p = int(ps[b])
+            windows = im.unfold(2, p, p).unfold(3, p, p)  # [C,1,gh,gw,p,p]
+            sel = (sample_idx == b).nonzero(as_tuple=True)[0]
+            if sel.numel() == 0:
+                out.append(im.new_zeros(0, p * p))
+                continue
+            gw = int(grid_w[b])
+            ids = patch_idx[sel]
+            rows = ids // gw
+            cols = ids % gw
+            block = windows[channel_idx[sel], 0, rows, cols]
+            out.append(block.reshape(sel.numel(), p * p))
+        return out

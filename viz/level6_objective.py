@@ -1,11 +1,11 @@
 """L6 -- MAE objective: encoder-decoder asymmetry and channel-aware reconstruction.
 
 Shows the two-branch objective with:
-* Encoder branch: the tokenizer emits the ragged visible channel-patches
-  [V, D] (masked rows are omitted, never zeroed). Channel fusion pools each
-  present (b, n) location and ``enc_tokens = fused[present]`` selects the
-  [Kf, D] channel-agnostic fused location tokens fed to the encoder
-  (``Kf <= V``). A PMA pooler over ``tok_out`` (content tokens only) produces
+* Encoder branch: the tokenizer emits the visible channel-patches
+  [V, D] (masked rows are omitted, never zeroed). Channel fusion pools the
+  channels at each present (b, n) location and returns those rows as
+  ``enc_tokens`` directly: [Kf, D] channel-agnostic location tokens, Kf <= V.
+  A PMA pooler over ``tok_out`` (content tokens only) produces
   the fixed latent set [B, L, D] from spatial pooling to fixed size latent
   (``L = n_latents``), and a second PMA
   pooler produces the trained descriptor [B, D].
@@ -59,7 +59,7 @@ DFRAME_X0, DFRAME_X1 = 79.5, 151.5
 # Array stacks
 # --------------------------------------------------------------------------- #
 def draw_channel_patches(ax, x=6.5, y0=47.5, w=9.0):
-    """Ragged visible channel-patches [V, D] with the DCP-omitted row below.
+    """Visible channel-patches [V, D] with the DCP-omitted row below.
 
     Row 0 (bottom) is the omitted channel-patch -- dashed, LOSS red, outside
     the [V, D] bracket (absent, never zeroed). Rows 1-4 are the visible
@@ -227,7 +227,7 @@ def build() -> plt.Figure:
     draw_fused_locations(ax, x=23.2, y0=51.3)
     draw_enc_all(ax, x=57.0, y0=41.0)
 
-    # Channel fusion: pool the [V, D] ragged list per (b, n) -> [Kf, D] fused.
+    # Channel fusion: pool the [V, D] token list per (b, n) -> [Kf, D] fused.
     # Readable stage label sits in the open corridor between the two stacks,
     # just below the orange arrow (replaces the old unreadable tiny box).
     arrow(ax, (15.5, 58.5), (23.2, 58.5), color=FUSION, lw=1.5)

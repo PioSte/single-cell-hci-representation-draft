@@ -8,7 +8,7 @@ grammar the reference architecture figures in ``references/`` use:
 * rounded module boxes with a title + shape/role annotation,
 * dashed stage / shared-weight frames,
 * shapes written on the edges,
-* the ragged token list as the primary object and the padded tensor as a ghost.
+* the token list as the primary object and the padded tensor as a ghost.
 
 Import from a figure script::
 
@@ -31,7 +31,7 @@ so the L0-L8 set reads as one authored system:
     DECODER   violet  channel-aware decoder + reconstruction head
     MEMORY    gold    fixed memory / register token rows
     LOSS      red     objective / waste / -inf mask / omitted-row accent
-    FUSED     blue    fixed-size fused tokens [B, N, D]
+    FUSED     blue    fused vectors, one [D] row per present location
     POOL      sky     pooling / descriptor reduction
     GHOST     muted   geometry, brackets, never-allocated padded tensor
 

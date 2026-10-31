@@ -1,4 +1,4 @@
-"""Variable-N (cell-sized) token grids: metric PE, off-cell dropping, ragged loss.
+"""Variable-N (cell-sized) token grids: metric PE, off-cell dropping, mixed-N loss.
 
 These cover the three things that a cell-sized patch grid changes relative to
 the fixed-window design:
@@ -246,9 +246,12 @@ def test_variable_n_batch_builds_targets_and_loss():
     out = model(images, ids, patch_sizes=8)
     assert torch.isfinite(out["loss"])
     assert out["n_patches_per_sample"].tolist() == [4, 8]
-    # ragged targets are padded to max(p^2) with a validity mask
-    assert out["pred"].shape[0] > 0
-    assert out["target"].shape[0] == out["pred"].shape[0]
+    # one pixel row per target, p**2 pixels each, whatever N is: the flat
+    # layout needs no validity mask even when the patch counts differ
+    offsets = out["target_pixel_offset"]
+    assert set((offsets[1:] - offsets[:-1]).tolist()) == {8 * 8}
+    assert out["target_channel_id"].numel() > 0
+    assert out["target"].shape == out["pred"].shape
 
 
 def test_variable_n_with_grid_pe_warns_about_non_metric_coordinates():
@@ -266,12 +269,35 @@ def test_variable_n_with_grid_pe_warns_about_non_metric_coordinates():
         model(images, ids, patch_sizes=8)
 
 
-def test_extract_patches_rejects_a_ragged_batch_loudly():
+def test_extract_patches_rejects_a_mixed_n_batch_loudly():
+    """The all-channels tensor needs one shape; targets use gather_patches."""
     from fuse_channels import ChannelTokenizer
 
     images, _ = _variable_n_batch()
     with pytest.raises(ValueError, match="variable-N"):
         ChannelTokenizer.extract_patches(images, 8)
+
+
+def test_gather_patches_matches_the_full_unfold():
+    """Requesting patches costs ``K·p**2`` and returns the same pixels."""
+    from fuse_channels import ChannelTokenizer
+
+    g = torch.Generator().manual_seed(0)
+    images = [torch.randn(2, 1, 16, 16, generator=g), torch.randn(3, 1, 32, 32, generator=g)]
+    ps = [8, 16]
+    grid_w = [2, 2]  # N_b = grid_h * grid_w, so 4 patches per sample
+    sample_idx = torch.tensor([0, 0, 0, 1, 1])
+    channel_idx = torch.tensor([1, 1, 0, 2, 0])
+    patch_idx = torch.tensor([3, 1, 0, 2, 3])
+    got = ChannelTokenizer.gather_patches(
+        images, sample_idx, channel_idx, patch_idx, ps, grid_w
+    )
+    full = ChannelTokenizer.extract_patches_list(images, ps)
+    for b in range(2):
+        sel = (sample_idx == b).nonzero(as_tuple=True)[0]
+        expected = full[b][channel_idx[sel], :, patch_idx[sel]]
+        assert got[b].shape == (sel.numel(), ps[b] ** 2)
+        assert torch.equal(got[b], expected)
 
 
 def _visible_two_samples():
@@ -456,11 +482,11 @@ def test_token_reduction_weights_by_target_count_sample_does_not():
     assert counts == [4, 64]  # the large cell has 16x the target rows
     pred, target = out["pred"], out["target"]
 
+    tp = out["target_patch_size"]
     per_sample = [
         float(
             model._loss_on(
-                pred, target, out["target_patch_size"], out["pred_mask"],
-                (gid == g).nonzero(as_tuple=True)[0],
+                pred, target, tp, (gid == g).nonzero(as_tuple=True)[0]
             ).detach()
         )
         for g in (0, 1)
@@ -470,14 +496,14 @@ def test_token_reduction_weights_by_target_count_sample_does_not():
     # token reduction IS the count-weighted mean: the big cell takes ~94%
     assert float(weights[1]) > 0.9
     torch.testing.assert_close(
-        model._loss_on(pred, target, out["target_patch_size"], out["pred_mask"]),
+        model._loss_on(pred, target, tp),
         torch.tensor(per_sample) @ weights,
         rtol=1e-5,
         atol=1e-6,
     )
     # sample reduction is the unweighted mean, i.e. 50/50
     torch.testing.assert_close(
-        model._sample_mean_loss(pred, target, out["pred_mask"], gid),
+        model._sample_mean_loss(pred, target, tp, gid),
         torch.tensor(per_sample).mean(),
         rtol=1e-5,
         atol=1e-6,
@@ -488,14 +514,9 @@ def test_token_reduction_weights_by_target_count_sample_does_not():
 def test_vectorised_sample_reduction_matches_the_per_sample_loop(mixed_p):
     """The one-pass reduction must equal the loop it replaced."""
     model, out, gid, _ = _reduction_setup()
-    pred, target, tp, pm = (
-        out["pred"],
-        out["target"],
-        out["target_patch_size"],
-        out["pred_mask"],
-    )
+    pred, target, tp = out["pred"], out["target"], out["target_patch_size"]
     if mixed_p:
-        # mixed-p padding introduces pred_mask; build such a batch explicitly
+        # a mixed-p batch: rows keep their own p**2 pixels, still no mask
         images = [torch.randn(2, 1, 16, 16), torch.randn(2, 1, 64, 64)]
         ids = [torch.tensor([0, 1]), torch.tensor([0, 1])]
         model = _model(
@@ -510,23 +531,20 @@ def test_vectorised_sample_reduction_matches_the_per_sample_loop(mixed_p):
             [torch.full((int((~v).sum()),), b, dtype=torch.long)
              for b, v in enumerate(visible)]
         )
-        pred, target, tp, pm = (
-            out["pred"],
-            out["target"],
-            out["target_patch_size"],
-            out["pred_mask"],
-        )
-        assert pm is not None
+        pred, target, tp = out["pred"], out["target"], out["target_patch_size"]
+        offsets = out["target_pixel_offset"]
+        counts = (offsets[1:] - offsets[:-1]).tolist()
+        assert set(counts) == {64, 256}  # two patch sizes, no padded columns
+        assert pred.numel() == sum(counts)
 
     groups = torch.unique(gid)
     loop = pred.new_zeros(())
     for g in groups.tolist():
         loop = loop + model._loss_on(
-            pred, target, tp, pm, (gid == g).nonzero(as_tuple=True)[0]
+            pred, target, tp, (gid == g).nonzero(as_tuple=True)[0]
         )
     loop = loop / groups.numel()
-    vec = model._sample_mean_loss(pred, target, pm, gid)
-    # exact without padding; float32 summation order otherwise
+    vec = model._sample_mean_loss(pred, target, tp, gid)
     torch.testing.assert_close(vec, loop, rtol=1e-6, atol=1e-6)
 
 
@@ -538,14 +556,14 @@ def test_vectorised_sample_reduction_gradient_matches_the_loop():
         pred = out["pred"].detach().clone().requires_grad_(True)
         if vectorised:
             loss = model._sample_mean_loss(
-                pred, out["target"], out["pred_mask"], gid
+                pred, out["target"], out["target_patch_size"], gid
             )
         else:
             loss = pred.new_zeros(())
             for g in groups.tolist():
                 loss = loss + model._loss_on(
                     pred, out["target"], out["target_patch_size"],
-                    out["pred_mask"], (gid == g).nonzero(as_tuple=True)[0],
+                    (gid == g).nonzero(as_tuple=True)[0],
                 )
             loss = loss / groups.numel()
         loss.backward()

@@ -61,7 +61,7 @@ def dim_extent(ax, x, y, w, text="$D$", color=MUTED):
 # Array stacks  (all vertically centred on YMID)
 # --------------------------------------------------------------------------- #
 def draw_input_set(ax):
-    """Ragged set of single-channel images -- the variable axis is the height."""
+    """Set of single-channel images -- the variable axis is the height."""
     cw, pitch, x = 6.8, 5.6, 3.0
     n = len(CHANNEL_COLORS)
     y0 = YMID - (n - 1) * pitch / 2 - cw / 2
@@ -86,7 +86,7 @@ def draw_input_set(ax):
             fontsize=10, color=MUTED)
 
 
-def draw_ragged_tokens(ax):
+def draw_token_list(ax):
     """Flattened ``[V, D]`` visible token set -- one row per visible channel-patch.
 
     Row colours follow the input channel colours; the DCP-omitted row is drawn
@@ -115,13 +115,13 @@ def draw_ragged_tokens(ax):
             ha="left", va="center", fontsize=8.0, color=INK)
     ax.text(x + w + 1.6, top - 2.1, "$V \\leq \\Sigma C\\cdot N$",
             ha="left", va="center", fontsize=6.0, color=MUTED, style="italic")
-    ax.text(x + w / 2, top + 2.6, "ragged token set", ha="center", va="center",
+    ax.text(x + w / 2, top + 2.6, "visible token set", ha="center", va="center",
             fontsize=8.4, fontweight="bold", color=INK)
     dim_extent(ax, x, y0 - 1.8, w)
 
 
 def draw_joint_grid(ax, x0=79.0):
-    """``[B, N, D]`` fused per-patch embeddings after channel fusion."""
+    """Fused embeddings: one ``[D]`` vector per present ``(b, n)``."""
     cell, pitch = 2.9, 3.3
     B, N = 3, 4
     gh = (B - 1) * pitch + cell
@@ -258,12 +258,12 @@ def build() -> plt.Figure:
     ax.text(2.0, 68.2,
             "The encoder only ever sees visible tokens; the decoder is conditioned on "
             "the target channel's identity and fractional position — one shared decoder; "
-            "tokens stay ragged, with no inserted mask tokens.",
+            "no mask tokens are ever inserted.",
             ha="left", va="center", fontsize=7.2, color=MUTED, style="italic")
 
     # ---- arrays ----------------------------------------------------------- #
     draw_input_set(ax)
-    draw_ragged_tokens(ax)
+    draw_token_list(ax)
     grid_right = draw_joint_grid(ax)
     enc_x, enc_y0, enc_top, desc_y, tok_y = draw_encoded(ax)
 
@@ -298,10 +298,10 @@ def build() -> plt.Figure:
     arrow(ax, (119.0, YMID), (124.0, YMID))
     arrow(ax, (134.5, YMID), (138.0, YMID))
 
-    # ---- DCP masker chip feeds the ragged token list ---------------------- #
+    # ---- DCP masker chip feeds the visible token list --------------------- #
     box(ax, 15, 57.0, 22, 6.2, "DCP visibility sampler", "Eq. 1 · token omission (never zero)",
         edge=TOKENIZER, title_size=7.2, sub_size=6.0)
-    # elbow into the omitted row of the ragged stack (right of the embed box)
+    # elbow into the omitted row of the token stack (right of the embed box)
     ax.plot([37.0, 39.5, 39.5], [60.1, 60.1, 38.5], color=TOKENIZER, lw=1.3,
             zorder=5)
     arrow(ax, (39.5, 38.5), (41.0, 38.5), color=TOKENIZER, lw=1.3)

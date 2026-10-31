@@ -21,7 +21,7 @@ They share one design system so they read as one authored set:
 
 | level | file | what it shows | reference idiom |
 | --- | --- | --- | --- |
-| **L0** | `level0_positioning.py` | single padding-free path: ragged tokens → per-(b,n) fusion → `[B,N,D]` | ChAda-ViT Fig 13 idiom |
+| **L0** | `level0_positioning.py` | single padding-free path: token list → per-(b,n) fusion → `[K_f,D]` | ChAda-ViT Fig 13 idiom |
 | **L1** | `level1_system.py` | end-to-end system: training path + `encode()` branch | Panopticon Fig 1 / Perceiver-IO Fig 2 |
 | **L2** | `level2_layout.py` | axis-labelled tensor layout (the hero figure) | Perceiver-IO Fig 2 |
 | **L3** | `level3_tokenizer.py` | PI-resized tied patch embed; channel identity carried separately (fusion routing bias + output skip); no tokenizer/fusion PE (encoder RoPE, decoder fractional PE) | ChannelViT Fig 1 / ChAda-ViT Fig 2 |
@@ -41,7 +41,7 @@ uv run --extra viz python viz/level9_flexivit.py               # FlexiViT patch-
 uv run --extra viz python viz/level4_fusion.py --formats pdf svg
 ```
 
-Two visual rules carry the paper's thesis across every level: the ragged token
+Two visual rules carry the paper's thesis across every level: the token
 list `[ΣC·N, D]` is always the solid primary object, and the padded tensor
 `[B, C_max, N, D]` only ever appears as a dashed **ghost** marked
 *never allocated* (no dense tensor is built). The shared grammar also encodes
@@ -68,7 +68,7 @@ modules and recomputes every number when you move a control:
 
 Panels: a live measurements table, a per-location **attention heatmap over
 channels**, a **fused-token mean vs. C** curve, and a **masked-channel
-reconstruction** grid. The curve is the mean of the fused `[B,N,D]` tokens — a
+reconstruction** grid. The curve is the mean of the fused `[K_f,D]` rows — a
 shape proxy, **not** the trained `[B,D]` descriptor returned by
 `encode(pool="attention")`.
 
@@ -107,7 +107,7 @@ colour-blind-safe Okabe-Ito palette, and annotates every module with its tensor
 shape. Two panels:
 
 * **A** — the end-to-end padding-free channel-fusion tokenizer.
-* **B** — the set-native token layout (ragged grid, `(b,n)` attention groups,
+* **B** — the set-native token layout (uneven token stacks, `(b,n)` attention groups,
   an omitted row, the padded tensor that is never materialised) plus the
   interchangeable fusion options and the DCP masking rule.
 
@@ -126,14 +126,14 @@ A step-by-step, spatial explanation of *why* the output does not depend on the
 number of channels. Written to `viz/out/cardinality.{pdf,svg,png}`.
 
 * **A** — a filmstrip of consecutive steps for one sample: input channel set →
-  tied embed; identity `z_c` carried alongside (no pre-LN add) → per-location channel fusion (the
-  `C` tokens at each `(b,n)` collapse to one) → fixed `[B,N,D]` grid, fixed
-  `[B,L,D]` latent set from spatial pooling to fixed size latent, memory and
-  descriptor. The variable-height channel
+  tied embed; identity `z_c` carried alongside (no pre-LN add) → per-location
+  channel fusion (the `C` tokens at each `(b,n)` collapse to one `[D]` vector,
+  so the present locations form `[K_f,D]`), then the fixed `[B,L,D]` latent set
+  from spatial pooling to fixed size latent, memory and descriptor. The variable-height channel
   axis is the thing you watch vanish.
 * **B** — the invariance itself: `C=1`, `C=3`, `C=5` token stacks (input length
   `ΣC·N`) all funnel through the *same* fusion and produce the *same*
-  `[B,N,D] → [B,D]` output.
+  `[K_f,D] → [B,D]` output.
 
 ```bash
 uv run python viz/cardinality_figure.py
@@ -147,8 +147,8 @@ of `ChannelFusionMAE`. A grid of cells is a literal picture of the tensor
 axes (rows = channels grouped by sample, columns = spatial patches, `D` = depth)
 and the channel axis is the thing you watch collapse:
 
-`[C_b, 1, H, W]` → `[ΣC, 1, H, W]` → `[ΣC, N, D]` → `[B, N, D]` → `[B, L, D]`
-→ `[B, D]` → `[Kt, P²]`, with the DCP masking `[B, N, D] → [Kf, D]` and the
+`[C_b, 1, H, W]` → `[ΣC, 1, H, W]` → `[ΣC, N, D]` → `[Kf, D]` → `[B, L, D]`
+→ `[B, D]` → `[Σ p²]`, with the DCP masking `[Kf, D]` and the
 memory `[B·M + Kf, D]` in between. The point the animation makes visually: `C`
 appears only in the input length and is **summed away** by the channel fusion,
 never padded to a `C_max`. One simplification: the DCP masking is drawn as
@@ -179,7 +179,7 @@ its channel tokens through every operation, one at a time:
 
 `x_c` → `LayerNorm` → `W_K`/`W_V` → per-head `q_h · k_{c,h} / √D_h` → `softmax`
 over the `C` channels → `Σ_c α_c v_c` → `concat` heads → `proj_out` Linear →
-scatter into `[B, N, D]` → add the post-fusion spatial PE. `ChannelFusion` is
+one row per present location `[Kf, D]` → add the post-fusion spatial PE. `ChannelFusion` is
 single-query (one learned `[1,1,D]` query for every location) and follows
 Panopticon's Q/K/V recipe: `W_Q/W_K/W_V` project into `D_attn = 3D` by default,
 and `proj_out` projects back to `D`.

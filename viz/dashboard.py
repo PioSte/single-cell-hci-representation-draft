@@ -243,7 +243,7 @@ def _(
 
     # padding-free vs masked-padded dense reference
     ref = dense_fusion_reference(fusion, cs_full)
-    padfree_diff = (fused_full - ref).abs().max().item()
+    padfree_diff = (fused_full - ref[present_full]).abs().max().item()
 
     # permutation invariance
     if permute_check.value and C > 1:
@@ -259,9 +259,9 @@ def _(
     if C > 1:
         keep[drop_idx] = False
     cs_drop = select_channels(cs_full, keep)
-    fused_drop, _ = fusion(cs_drop)
+    fused_drop, present_drop = fusion(cs_drop)
     ref_drop = dense_fusion_reference(fusion, cs_drop)
-    omission_diff = (fused_drop - ref_drop).abs().max().item()
+    omission_diff = (fused_drop - ref_drop[present_drop]).abs().max().item()
 
     # identity ablation: same tokens, identity removed
     cs_noid = make_set(C, seed=7, include_identity=False)
@@ -345,8 +345,8 @@ def _(fusion, go, make_set, mo, np, select_channels, torch):
     with torch.no_grad():
         for c in range(1, 41):
             sub = select_channels(base, torch.arange(60) < c)
-            fused, _ = fusion(sub)
-            fused_means.append(fused.mean(dim=1).squeeze(0))
+            fused, _ = fusion(sub)  # [K_f, D]: one row per present location
+            fused_means.append(fused.mean(dim=0))
     mean_vecs = torch.stack(fused_means)  # [40, DIM]
 
     # 2-D PCA for a readable trajectory

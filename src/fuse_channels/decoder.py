@@ -45,6 +45,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from .losses import patch_offsets
 from .ops import grouped_attention, grouped_projected_self_attention
 from .pos_embed import FractionalSpatialPE, add_spatial_pos
 
@@ -294,34 +295,44 @@ class PatchReconstructionHead(nn.Module):
         return self.heads[str(source)], True, source
 
     def forward(self, x: torch.Tensor, patch_sizes) -> torch.Tensor:
-        """Return ``[K, p**2]`` for uniform ``p`` or padded ``[K, max(p**2)]``.
+        """Return ``[Σ p**2]`` pixels: row ``i`` is contiguous, ``p_i**2`` long.
 
-        In the mixed case the caller also needs a validity mask; :meth:`mask`
-        provides it.
+        The layout is the one :func:`~fuse_channels.losses.patch_offsets`
+        describes, so a mixed-``p`` batch needs no padded ``[K, max(p)**2]``
+        block and no validity mask: each patch-size group is predicted in one
+        call and scattered into its rows' slots.
         """
         if patch_sizes is None:
             patch_sizes = self.canonical_patch_size
         if isinstance(patch_sizes, int):
             head, resize, source = self._head_for(patch_sizes)
             pred = head(x)
-            return self._resize(pred, patch_sizes, source) if resize else pred
+            pred = self._resize(pred, patch_sizes, source) if resize else pred
+            return pred.reshape(-1)
         ps = torch.as_tensor(patch_sizes, device=x.device, dtype=torch.long)
         if ps.numel() == 0:
             head, _, _ = self._head_for(self.canonical_patch_size)
-            return head(x)
+            return head(x).reshape(-1)
         uniq = torch.unique(ps)
         if uniq.numel() == 1:
             return self(x, int(uniq.item()))
-        max_p = int(ps.max().item())
-        out = x.new_zeros(x.shape[0], max_p * max_p)
+        offsets = patch_offsets(ps)
+        out = x.new_zeros(int(offsets[-1]))
         for p in uniq.tolist():
             idx = (ps == p).nonzero(as_tuple=True)[0]
             head, resize, source = self._head_for(p)
             pred = head(x[idx])
-            out[idx, : p * p] = (
-                self._resize(pred, p, source) if resize else pred
+            pred = self._resize(pred, p, source) if resize else pred
+            slots = offsets[idx].unsqueeze(1) + torch.arange(
+                p * p, device=x.device
             )
+            out[slots.reshape(-1)] = pred.reshape(-1)
         return out
+
+    @staticmethod
+    def pixel_offsets(patch_sizes) -> torch.Tensor:
+        """Row boundaries of the flat pixel layout (see :func:`patch_offsets`)."""
+        return patch_offsets(patch_sizes)
 
     def _resize(
         self, pred: torch.Tensor, patch_size: int, source_patch_size: int
@@ -364,17 +375,6 @@ class PatchReconstructionHead(nn.Module):
                 x, size=(target_p, target_p), mode="bilinear", align_corners=False
             )
         return x.reshape(pred.shape[0], target_p * target_p)
-
-    @staticmethod
-    def mask(patch_sizes, device=None) -> torch.Tensor | None:
-        """Return ``[K, max_p**2]`` validity mask, or ``None`` if all p equal."""
-        ps = torch.as_tensor(patch_sizes, device=device, dtype=torch.long)
-        if ps.numel() == 0 or torch.unique(ps).numel() == 1:
-            return None
-        max_p = int(ps.max().item())
-        idx = torch.arange(max_p * max_p, device=ps.device)
-        return idx[None, :] < (ps * ps)[:, None]
-
 
 class ChannelAwareDecoder(nn.Module):
     """Channel-aware shared decoder.
@@ -504,9 +504,9 @@ class ChannelAwareDecoder(nn.Module):
     ) -> torch.Tensor:
         """Predict pixels for the requested (sample, channel, patch) targets.
 
-        ``target_patch_size`` may be a scalar or per-target tensor.  With mixed
-        target patch sizes the returned tensor is padded to ``max(p)**2``;
-        :meth:`PatchReconstructionHead.mask` gives the validity mask.
+        ``target_patch_size`` may be a scalar or per-target tensor.  The return
+        is the flat ``[Σ p**2]`` layout of
+        :func:`~fuse_channels.losses.patch_offsets` for either form.
         """
         q = (
             self.mask_token

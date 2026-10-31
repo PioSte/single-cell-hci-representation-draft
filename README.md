@@ -29,8 +29,9 @@ f({E_1 .. E_C}) -> [N, D] per sample -> spatial pooling to fixed size latent [L,
 
 without concatenation blow-up, with channel identity preserved, and with **no
 padding tokens**. `C` appears only in the tokenizer input length `ΣC·N`; the
-fused output is `[B, N, D]` (`N = floor(H/p)·floor(W/p)` is set by the current
-patch size). **Spatial pooling to fixed size latent** then maps those encoder
+fused output is `[K_f, D]`, one vector per *present* `(b, n)` location
+(`N = floor(H/p)·floor(W/p)` per sample is set by the current patch size, and
+absent locations own no row). **Spatial pooling to fixed size latent** then maps those encoder
 tokens to `L` latents per sample, `[B, L, D]` (`n_latents = L` is a
 hyperparameter), so the model-level encoder output and the decoder KV are
 independent of both `C` and `N`; the pooled descriptor is `[B, D]`. The decoder
@@ -170,12 +171,14 @@ per-channel tied Conv2d(1 -> D) patch embed, PI-resized to the current p
   magnitude, so the identity/content balance cannot drift when the patch size
   changes (a fixed-scale vector summed into a variable-scale token before a
   LayerNorm would drift with `p`; see `FLEXIVIT.md` §3.1).
-* **Padding-free.** Tokens from the tokenizer are flattened `[ΣC·N, D]` with integer
-  group ids; no `[B, C_max, N, D]` tensor and no attention masks for
-  cardinality are ever materialised. Masking is token *omission*, never
-  zeroing. The encoder receives one token per **present** `(sample, patch)`
-  location, so its input length is the number of present locations, not the
-  number of visible channel-patches.
+* **Padding-free at every stage.** Tokens from the tokenizer are flattened
+  `[ΣC·N, D]` with integer group ids; no `[B, C_max, N, D]` tensor and no
+  attention masks for cardinality are ever materialised. Masking is token
+  *omission*, never zeroing, so nothing downstream has to undo a pad row.
+  Fusion returns one vector per **present** `(sample, patch)` location as
+  `[K_f, D]` (not a `[B, N, D]` grid), and the decoder's reconstruction rows
+  concatenate each target's `p²` pixels (`[Σ p²]`), so a mixed-`p` batch needs
+  no padded pixel block either.
 * **Per-location fusion.** `ChannelFusion` reduces the `C` channels at each
   `(sample, patch)` location with one shared learned query, costing `O(C)` per
   location. It follows Panopticon's recipe: LayerNormed tokens go through
@@ -216,7 +219,8 @@ per-channel tied Conv2d(1 -> D) patch embed, PI-resized to the current p
   all-ones/mean component is removed from the normalized branch.
 * **Spatial pooling to fixed size latent.** Standard pre-norm Q/K/V/O
   transformer blocks run over the flattened real tokens
-  (`[present locations, D]`) with fixed-count memory tokens. A second PMA
+  (`[present locations, D]`, the fusion output as-is) with fixed-count memory
+  tokens. A second PMA
   pooler then applies **spatial pooling to fixed size latent**: `L =
   n_latents` learned queries pool the per-location tokens to `[B, L, D]`
   (default 16). `L` is a hyperparameter, so the encoder output and the decoder
@@ -364,7 +368,7 @@ fusion = ChannelFusion(192, n_heads=6)
 fusion_learned = ChannelFusion(192, n_heads=6, n_patches=4, pos_embed="learned")
 
 cs: ChannelSet = tokenizer(images, ids)   # real tokens only; cs.channel_embed is [ΣC·N, 192]
-fused, present = fusion(cs)              # [B, 4, 192]; no channel padding
+fused, present = fusion(cs)              # [K_f, 192]; one row per present location
 
 # the O(C) marker-routed ablation
 gated = IdentityGatedSum(192)
@@ -402,7 +406,7 @@ gated_out, present = gated(cs)
 | `src/fuse_channels/encoder.py` | `TransformerEncoder` / `TransformerBlock` with memory tokens |
 | `src/fuse_channels/decoder.py` | `ChannelAwareDecoder` / `DecoderBlock` |
 | `src/fuse_channels/masking.py` | `DCPVisibilitySampler` (Eq. 1) and `HierarchicalChannelSampler` (HCS) |
-| `src/fuse_channels/losses.py` | `normalized_patch_mse`, `cha_maevit_recon_loss` |
+| `src/fuse_channels/losses.py` | `normalized_patch_mse`, `cha_maevit_recon_loss`, flat-layout `patch_offsets` / `patch_row_terms` |
 | `src/fuse_channels/mae.py` | `ChannelFusionMAE` end-to-end |
 | `src/fuse_channels/data.py` | `SyntheticChannelDataset` and `collate_fn` for examples/tests |
 | `examples/linear_probe.py` | frozen-encoder linear probe on a synthetic channel-presence label |

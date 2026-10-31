@@ -314,7 +314,7 @@ def build() -> plt.Figure:
 
     # ---- footer note ------------------------------------------------------ #
     ax.text(2.0, 31.3,
-            "Grouped attention over ragged tokens: one equal-length batch at a time, "
+            "Grouped attention over uneven token groups: one equal-length batch at a time, "
             "$O(T \\cdot D)$ working memory.",
             ha="left", va="center", fontsize=7.0, color=MUTED, style="italic")
 

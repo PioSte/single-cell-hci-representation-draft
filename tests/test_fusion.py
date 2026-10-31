@@ -33,7 +33,7 @@ def test_cardinality_invariance():
     for C in (1, 3, 6, 20, 60):
         cs = make_channel_set([2, C], N, D)
         fused, present = fusion(cs)
-        assert fused.shape == (2, N, D)
+        assert fused.shape == (2 * N, D)  # one row per present location
         assert present.all()
         assert torch.isfinite(fused).all()
         shapes.add(tuple(fused.shape))
@@ -46,9 +46,9 @@ def test_padding_free_equivalence():
     fusion.eval()
     # mixed channel counts
     cs = make_channel_set([1, 3, 6, 2], N, D)
-    fused, _ = fusion(cs)
+    fused, present = fusion(cs)
     ref = _dense_fusion_reference(fusion, cs)
-    assert torch.allclose(fused, ref, atol=1e-5, rtol=1e-4)
+    assert torch.allclose(fused, ref[present], atol=1e-5, rtol=1e-4)
 
 
 def test_omission_equivalence():
@@ -90,7 +90,7 @@ def test_omission_equivalence():
 
     # Omitting a channel must equal running attention over the reduced set.
     ref = _dense_fusion_reference(fusion, red)
-    assert torch.allclose(out_rem, ref, atol=1e-6, rtol=1e-5)
+    assert torch.allclose(out_rem, ref[present_rem], atol=1e-6, rtol=1e-5)
 
 
 def test_permutation_invariance():
@@ -160,11 +160,11 @@ def test_pooling_query_is_shared_across_locations():
         channel_embed=torch.zeros(C * N, D),
         channel_group_id=torch.arange(C).repeat_interleave(N),
     )
-    fused, _ = fusion(cs)
+    fused, _ = fusion(cs)  # one sample, every location present -> [N, D]
     # The default target architecture has no post-fusion PE; when it is
     # enabled the PE is deliberately position-dependent and must be removed
     # before checking that the pooling itself is position-agnostic.
-    centered = fused[0] - (fusion.spatial_pos[0] if fusion.has_spatial_pos else 0)
+    centered = fused - (fusion.spatial_pos[0] if fusion.has_spatial_pos else 0)
     for n in range(1, N):
         assert torch.allclose(centered[0], centered[n], atol=1e-6)
 
@@ -236,12 +236,12 @@ def test_channel_fusion_uses_panopticon_qkv_projections():
     assert narrow.attn_dim == D
     cs = make_channel_set([1, 3, 6, 2], N, D)
     with torch.no_grad():
-        got, _ = fusion(cs)
+        got, present = fusion(cs)
         ref = _dense_fusion_reference(fusion, cs)
         got_narrow, _ = narrow(cs)
         ref_narrow = _dense_fusion_reference(narrow, cs)
-    assert torch.allclose(got, ref, atol=1e-5, rtol=1e-4)
-    assert torch.allclose(got_narrow, ref_narrow, atol=1e-5, rtol=1e-4)
+    assert torch.allclose(got, ref[present], atol=1e-5, rtol=1e-4)
+    assert torch.allclose(got_narrow, ref_narrow[present], atol=1e-5, rtol=1e-4)
 
     with pytest.raises(AssertionError, match="divisible"):
         ChannelFusion(D, n_heads=HEADS, attn_dim=D + 1)
@@ -254,7 +254,7 @@ def test_channel_fusion_is_single_query():
     assert not hasattr(fusion, "n_queries")
     cs = make_channel_set([1, 4], N, D)
     fused, present = fusion(cs)
-    assert fused.shape == (2, N, D)
+    assert fused.shape == (2 * N, D)
     assert present.all()
 
     # The descriptor pooler still supports the k>1 research ablation.
@@ -272,7 +272,7 @@ def test_identity_gated_sum():
     net.eval()
     cs = make_channel_set([2, 5, 9], N, D)
     out, present = net(cs)
-    assert out.shape == (3, N, D)
+    assert out.shape == (3 * N, D)
     assert torch.isfinite(out).all()
     assert present.all()
 
@@ -322,7 +322,10 @@ def test_identity_gated_sum_unsorted_locations():
                 content + net.identity_skip(ident)
             )
 
-    expected = ref + (net.spatial_pos if net.has_spatial_pos else 0)
+    dense = ref + (net.spatial_pos if net.has_spatial_pos else 0)
+    # the flat output follows the sorted present locations, like the mask
+    _, present = net(shuffled)
+    expected = dense[present]
     assert torch.allclose(out, expected, atol=1e-6)
 
 
@@ -340,7 +343,7 @@ def test_identity_gated_sum_channel_mlp_once_per_channel():
         out, _ = net(cs)
     finally:
         handle.remove()
-    assert out.shape == (3, N, D)
+    assert out.shape == (3 * N, D)
     assert calls == [(16, D)]
 
 
@@ -367,7 +370,7 @@ def test_fusion_rejects_patch_count_mismatch():
 
 
 def test_no_pad_artifacts():
-    """Fusion is a real-token [B, N, D] tensor with an exact presence mask."""
+    """Fusion emits one row per present location, with an exact presence mask."""
     fusion = _fusion(seed=6)
     fusion.eval()
     cs = make_channel_set([3, 10], N, D)
@@ -387,7 +390,10 @@ def test_no_pad_artifacts():
     )
     fused, present = fusion(sparse)
 
-    assert fused.shape == (2, N, D)  # spatial axis, never a padded channel axis
+    # 2N locations, one of which has no channel left -> 2N - 1 real rows.  No
+    # row is allocated for the absent location, on either axis.
+    assert fused.shape == (2 * N - 1, D)
+    assert fused.shape[0] == int(present.sum())
     assert torch.isfinite(fused).all()
     assert not torch.isneginf(fused).any()
     assert not torch.isnan(fused).any()
@@ -458,11 +464,11 @@ def test_sincos_pos_embed_is_fixed_and_padding_free_equivalent():
 
     cs = make_channel_set([1, 3, 6, 2], N, D)
     with torch.no_grad():
-        fused, _ = fusion(cs)
+        fused, present = fusion(cs)
         again, _ = fusion(cs)
         ref = _dense_fusion_reference(fusion, cs)
     assert torch.equal(fused, again)
-    assert torch.allclose(fused, ref, atol=1e-5, rtol=1e-4)
+    assert torch.allclose(fused, ref[present], atol=1e-5, rtol=1e-4)
 
 
 def test_sincos_pos_embed_keeps_invariants():
@@ -473,7 +479,7 @@ def test_sincos_pos_embed_keeps_invariants():
     with torch.no_grad():
         fused, present = fusion(cs)
         permuted, _ = fusion(permute_channels(cs))
-    assert fused.shape == (2, N, D)
+    assert fused.shape == (2 * N, D)
     assert present.all()
     assert torch.allclose(fused, permuted, atol=1e-5, rtol=1e-4)
 
@@ -484,7 +490,7 @@ def test_identity_gated_sincos_pos_embed():
     assert "spatial_pos" not in dict(gated.named_parameters())
     cs = make_channel_set([2, 3], N, D)
     out, _ = gated(cs)
-    assert out.shape == (2, N, D)
+    assert out.shape == (2 * N, D)
     assert torch.isfinite(out).all()
     with torch.no_grad():
         before = gated.spatial_pos.clone()

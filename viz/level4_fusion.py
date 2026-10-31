@@ -6,13 +6,14 @@ Panopticon's recipe: LayerNormed tokens pass through learned ``q_proj`` /
 ``k_proj`` / ``v_proj`` into an attention width ``D_attn`` (3·D by default),
 attention runs there, and ``proj_out`` maps back to ``D``.  One learned query
 is shared by every location, and there is no ``n_queries`` axis: the fused
-tensor is ``[B, N, D]``, one token per present ``(b, n)`` location.
+tensor is ``[K_f, D]``, one vector per present ``(b, n)`` location.
 
 It adds **no positional table**: the encoder owns layout through 2-D axial
-RoPE, so the fused ``[B, N, D]`` carries content only.  The module consumes the
-visible tokens only (``ChannelSet``), returns ``fused: [B, N, D]`` plus
-``present: [B, N]``, and the encoder consumes ``fused[present] -> [K_f, D]``.
-``C`` lives only in the ragged input length ``sum C * N``.
+RoPE, so the fused ``[K_f, D]`` carries content only.  The module consumes the
+visible tokens only (``ChannelSet``) and returns ``fused: [K_f, D]`` plus
+``present: [B, N]``, which is both the index of those rows and the source of
+their grid coordinates.
+``C`` lives only in the input token count ``sum C * N``.
 
 Usage::
 
@@ -41,8 +42,8 @@ OUT = Path(__file__).resolve().parent / "out"
 
 # Short-hand role colours (the figure is built entirely from role colours).
 FUS = FUSION          # orange: every ChannelFusion operation / module box
-OUT_C = FUSED         # blue: the fused output vector [B, N, D]
-TOK = TOKENIZER       # green: the data tokens (ragged input, keys/values)
+OUT_C = FUSED         # blue: the fused output vector, one per location
+TOK = TOKENIZER       # green: the data tokens (flat input, keys/values)
 
 
 # --------------------------------------------------------------------------- #
@@ -105,10 +106,10 @@ def draw_fusion(ax):
     CTR = [cx + CW / 2 for cx in CX]  # column centres
     GC = (GX0 + GX1) / 2
 
-    # ---- ragged token list: the solid primary object ---------------------- #
+    # ---- token list: the solid primary object ----------------------------- #
     rrect(ax, GX0, 76.6, GX1 - GX0, 3.0, edge=TOK, face=tint(TOK, 0.86),
           lw=1.5, rounding=0.5, crossed=True)
-    ax.text(GC, 78.1, "ragged $[V, D]$", ha="center", va="center",
+    ax.text(GC, 78.1, "$[V, D]$ token list", ha="center", va="center",
             fontsize=7.0, color=INK, fontweight="bold", zorder=5,
             bbox=dict(boxstyle="round,pad=0.14", facecolor="white",
                       edgecolor="none", alpha=0.85))
@@ -216,8 +217,8 @@ def draw_fusion(ax):
             "$D_{attn}=3D$ by default", **n_kw)
     ax.text(60.0, 62.0, "no positional table; encoder owns layout via 2-D "
             "axial RoPE", ha="left", va="center", fontsize=6.0, color=OUT_C)
-    ax.text(84.0, 56.6, "scatter $\\rightarrow$ $[B, N, D]$; one token per "
-            "present $(b,n)$", ha="left", va="center", fontsize=6.0,
+    ax.text(84.0, 56.6, "one vector per present $(b,n)$: $[K_f, D]$",
+            ha="left", va="center", fontsize=6.0,
             color=OUT_C, fontweight="bold")
     ax.text(84.0, 54.0, "$\\alpha_c$ weights each channel's value",
             **n_kw)
@@ -251,9 +252,9 @@ def draw_legends(ax):
             ha="left", va="top", fontsize=6.0, color=MUTED, style="italic",
             linespacing=1.55, zorder=5)
     ax.text(4.0, 15.0,
-            "ChannelFusion consumes visible tokens only and emits $[B, N, D]$;\n"
-            "$C$ lives only in the ragged length $\\Sigma C\\cdot N$. The encoder\n"
-            "consumes $fused[present] \\rightarrow [K_f, D]$.",
+            "ChannelFusion consumes visible tokens only and emits $[K_f, D]$:\n"
+            "one vector per present location. $C$ lives only in the input length\n"
+            "$\\Sigma C\\cdot N$; $N$ never enters a tensor.",
             ha="left", va="top", fontsize=6.0, color=MUTED, style="italic",
             linespacing=1.55, zorder=5)
 
@@ -324,9 +325,9 @@ def build() -> plt.Figure:
 
     # footnote
     ax.text(2.0, 0.7,
-            "ChannelFusion consumes visible tokens and produces $[B, N, D]$ "
+            "ChannelFusion consumes visible tokens and produces $[K_f, D]$ "
             "fused embeddings (no positional table); $C$ lives only in the "
-            "ragged input length $\\Sigma C\\cdot N$.",
+            "input token count $\\Sigma C\\cdot N$.",
             ha="left", va="bottom", fontsize=6.8, color=MUTED,
             style="italic")
 

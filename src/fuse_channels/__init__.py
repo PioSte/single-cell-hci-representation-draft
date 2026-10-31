@@ -34,7 +34,12 @@ from .fusion import (
     MultiheadAttentionPooling,
 )
 from .identity import ChannelEmbedding
-from .losses import cha_maevit_recon_loss, normalized_patch_mse
+from .losses import (
+    cha_maevit_recon_loss,
+    normalized_patch_mse,
+    patch_offsets,
+    patch_row_terms,
+)
 from .mae import ChannelFusionMAE
 from .masking import DCPVisibilitySampler, HierarchicalChannelSampler
 from .ops import (
@@ -111,6 +116,8 @@ __all__ = [
     "HierarchicalChannelSampler",
     "ChannelFusionMAE",
     "normalized_patch_mse",
+    "patch_offsets",
+    "patch_row_terms",
     "cha_maevit_recon_loss",
     "grouped_attention",
     "grouped_cross_attention",

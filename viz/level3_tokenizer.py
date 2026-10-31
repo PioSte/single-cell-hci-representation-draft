@@ -11,7 +11,7 @@ content token instead of being added to it.  Emphasizes:
 - `z_c` is indexed by the dataset-level `channel_id`, not the panel position.
 - DCP-omitted tokens are rejected at flatten as absent rows; they have no
   content token and no `z_c` entry.
-- The output is one concatenated ragged token list `[V, D]` (`V <= sum C * N_b`).
+- The output is one concatenated token list `[V, D]` (`V <= sum C * N_b`).
 
 Usage::
 
@@ -111,7 +111,7 @@ def build() -> plt.Figure:
             fontweight="bold")
     ax.text(2, 67.9,
             "Shapes:  $[1,H,W]$  \u2192  Conv2d($P \\to p_b$, PI-resized)  \u2192  "
-            "$[N_b, D]$ content  +  $z_c$ $[D]$ carried  \u2192  ragged "
+            "$[N_b, D]$ content  +  $z_c$ $[D]$ carried  \u2192  flat "
             "$[V,D]$ tokens + $[V,D]$ channel_embed,  $V \\leq \\Sigma C \\cdot N_b$",
             ha="left", va="center", fontsize=6.8, color=INK)
 
@@ -176,8 +176,8 @@ def build() -> plt.Figure:
         ax.text(out_x + stack_w / 2, top + 1.9, "$[N_b, D]$",
                 ha="center", va="center", fontsize=6.8, color=MUTED)
 
-    # ---- Merged ragged output object -------------------------------------- #
-    # The two per-channel [N_b, D] blocks concatenate into ONE ragged list
+    # ---- Merged output object --------------------------------------------- #
+    # The two per-channel [N_b, D] blocks concatenate into ONE token list
     # ChannelSet.tokens [V, D] (V <= sum C * N_b) with omitted rows dropped.
     br_x = out_x + stack_w + 1.4
     y_lo = lane_yc[1] - stack_htot / 2
@@ -187,7 +187,7 @@ def build() -> plt.Figure:
     sq_bracket_mirror(ax, br_x, y_lo, y_hi, color=INK, lw=1.3, tick=0.9)
     ax.text(br_x + 1.4, (y_lo + y_hi) / 2 + 1.6, "$[V, D]$", ha="left",
             va="center", fontsize=8.6, fontweight="bold", color=INK)
-    ax.text(br_x + 1.4, (y_lo + y_hi) / 2 - 1.2, "ragged content tokens", ha="left",
+    ax.text(br_x + 1.4, (y_lo + y_hi) / 2 - 1.2, "content tokens", ha="left",
             va="center", fontsize=6.4, color=MUTED)
     ax.text(br_x + 1.4, (y_lo + y_hi) / 2 - 3.6,
             "+ channel_embed $[V,D]$ (parallel)", ha="left", va="center",
@@ -277,7 +277,7 @@ def build() -> plt.Figure:
             "DCP omission = absent row", ha="left", va="center", fontsize=7.8,
             fontweight="bold", color=INK, zorder=4)
 
-    # mini ragged stack: omitted row dashed red, absent from the list
+    # mini token stack: omitted row dashed red, absent from the list
     mini_specs = [(GREEN, False), (RED, True), (GREEN, False), (GREEN, False)]
     token_rows(ax, strip_x + 2.0, strip_y + 4.4, 6.0, 1.3, 1.8, mini_specs,
                rounding=0.3, z=4)
@@ -285,7 +285,7 @@ def build() -> plt.Figure:
             fontsize=5.7, color=RED, style="italic", zorder=4, linespacing=1.4)
 
     ax.text(strip_x + 12.5, strip_y + 11.2,
-            "Masked channel-patch tokens are removed from the ragged list "
+            "Masked channel-patch tokens are removed from the token list "
             "$[V, D]$.", ha="left", va="center", fontsize=6.4, color=INK,
             zorder=4)
     ax.text(strip_x + 12.5, strip_y + 8.4,
@@ -338,7 +338,7 @@ def build() -> plt.Figure:
         "\u2022 Decoder = fractional absolute PE (no grid table)",
         "\u2022 $z_c$ = Embedding(channel_id), not panel position",
         "\u2022 DCP omission \u2192 row absent from the list",
-        "\u2022 $C$ lives only in the ragged length $V \\leq \\Sigma C \\cdot N_b$",
+        "\u2022 $C$ lives only in the list length $V \\leq \\Sigma C \\cdot N_b$",
     ]
     bullet_y = leg_y + leg_h - 6.0
     for bullet in bullets:
@@ -356,10 +356,10 @@ def build() -> plt.Figure:
     channel_legend(ax, 131.0, 49.0, n=2, title="channel identity",
                    pitch=2.4, sw=1.4, fontsize=6.2)
 
-    # Ragged-output note (fills the lower-right quadrant, reinforces [V, D])
+    # Output-object note (fills the lower-right quadrant, reinforces [V, D])
     rrect(ax, 110.0, 26.0, 38.0, 14.0, edge=INK, face=tint(INK, 0.97),
           lw=1.3, rounding=0.6, z=2)
-    ax.text(129.0, 37.4, "Ragged output object", ha="center", va="center",
+    ax.text(129.0, 37.4, "One flat token list", ha="center", va="center",
             fontsize=8.0, fontweight="bold", color=INK)
     ax.text(112.0, 34.4, "one concatenated ChannelSet.tokens list",
             ha="left", va="center", fontsize=6.3, color=INK)

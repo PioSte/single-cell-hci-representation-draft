@@ -208,7 +208,7 @@ def shape_flow(s: k.Scene):
     s.play(*[f.to(opacity=1.0) for f in fused.values()], duration=0.4)
     cap(
         "a learned query pools the channels at each location, then + spatial pos",
-        "[B, N, D] = [2, 16, 192]",
+        "[Kf, D] = [32, 192]  (one row per present location)",
         k.YELLOW,
     )
     s.play(*[k.indicate(f) for f in fused.values()], duration=0.7)
@@ -222,7 +222,7 @@ def shape_flow(s: k.Scene):
     s.play(k.fade_out(fused[omitted[0]], fused[omitted[1]]), duration=0.5)
     cap(
         "DCP masking omits tokens, so the encoder sees Kf ≤ B·N locations",
-        "[B, N, D]  →  [Kf, D]   (Kf = visible locations)",
+        "[Kf, D]  →  [Kf', D]   (omitted rows never exist)",
         k.RED,
     )
     s.wait(0.5)
@@ -343,7 +343,7 @@ def shape_flow(s: k.Scene):
     chain = [
         ("[ΣC, 1, H, W]", k.BLUE),
         ("[ΣC, N, D]", k.BLUE),
-        ("[B, N, D]", k.YELLOW),
+        ("[Kf, D]", k.YELLOW),
         ("[B, D]", k.PINK),
         ("[Kt, P²]", k.GREEN),
     ]

@@ -51,7 +51,7 @@ def test_shared_head_serves_any_p(p):
     head = _head()
     x = torch.randn(5, 16, generator=torch.Generator().manual_seed(0))
     out = head(x, p)
-    assert out.shape == (5, p * p)
+    assert out.shape == (5 * p * p,)  # flat: five contiguous p**2 rows
     assert torch.isfinite(out).all()
 
 
@@ -61,27 +61,29 @@ def test_shared_head_upsamples_where_per_p_refuses():
     with pytest.raises(ValueError, match="cannot upsample"):
         _head(patch_sizes=(4, 8), mode="per_p")(x, 16)
     out = _head(patch_sizes=(4, 8))(x, 16)
-    assert out.shape == (2, 256)
+    assert out.shape == (2 * 256,)
 
 
 def test_shared_head_is_exact_at_the_canonical_p():
     head = _head()
     x = torch.randn(4, 16, generator=torch.Generator().manual_seed(0))
-    assert torch.equal(head(x, 8), head.head(x))
+    assert torch.equal(head(x, 8), head.head(x).reshape(-1))
 
 
-def test_mixed_patch_sizes_are_padded_and_masked():
+def test_mixed_patch_sizes_are_concatenated_not_padded():
     head = _head()
     x = torch.randn(3, 16, generator=torch.Generator().manual_seed(0))
     ps = [4, 8, 5]
     out = head(x, ps)
-    mask = head.mask(ps)
-    assert out.shape == mask.shape == (3, 64)
-    assert mask[0].sum() == 16 and mask[2].sum() == 25
-    assert mask[1].all()
-    # padded tail of the shorter rows is zero and will be masked out of the loss
-    assert out[0, 16:].abs().sum() == 0
-    assert out[2, 25:].abs().sum() == 0
+    offsets = head.pixel_offsets(ps)
+    assert offsets.tolist() == [0, 16, 80, 105]
+    assert out.shape == (105,)  # 16 + 64 + 25: exact, no padded columns
+    # each row is its own per-p head block, in row-major order
+    for i, p in enumerate(ps):
+        block = out[offsets[i] : offsets[i + 1]]
+        expected = head._head_for(p)[0](x[i : i + 1])
+        expected = head._resize(expected, p, head._head_for(p)[2]) if head._head_for(p)[1] else expected
+        assert torch.equal(block, expected.reshape(-1))
 
 
 # --------------------------------------------------------------------------- #
@@ -176,7 +178,8 @@ def test_mae_shared_head_runs_at_an_unseen_p_end_to_end():
         out = model(
             images, ids, generator=torch.Generator().manual_seed(0), patch_sizes=16
         )
-    assert out["pred"].shape[-1] == 16 * 16
+    offsets = out["target_pixel_offset"]
+    assert set((offsets[1:] - offsets[:-1]).tolist()) == {16 * 16}
     assert torch.isfinite(out["loss"])
 
 

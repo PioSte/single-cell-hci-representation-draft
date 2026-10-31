@@ -114,7 +114,8 @@ descriptor; see below), never on `ChannelFusion`.
 ## Channel fusion — `fusion.py` (L2, L4)
 
 Both shipped fusions consume a `ChannelSet` (real tokens only) and emit
-`fused: [B, N, D]`. The default target adds no positional table; the legacy
+`fused: [Kf, D]`, one row per present location -- absent locations own no row.
+The default target adds no positional table; the legacy
 `pos_embed="learned"`/`"sincos"` ablation adds `spatial_pos: [1, N, D]`.
 They also return `present: [B, N]` (a location exists if it had at least one
 visible channel token).
@@ -132,8 +133,8 @@ visible channel token).
 - `grouped_pool_attention(q, k, v, lookup, Kf)` → `[Kf, 1, H, Dh]`
   (**separate learned `W_Q/W_K/W_V` projections**, Panopticon's channel
   cross-attention recipe).
-- `proj_out: Linear(D_attn, D)` maps back → `[Kf, D]`; scatter to
-  `[B, N, D]`; add `spatial_pos` only in legacy mode.
+- `proj_out: Linear(D_attn, D)` maps back → `[Kf, D]` (returned as-is);
+  add `spatial_pos` only in legacy mode.
 - Cost: `O(C·D·D_attn)` per `(b,n)` location plus `O(D·D_attn)` for
   `proj_out` — **`O(C)` scaling**, not a dense `C×C` per-location block.
   ChannelViT and ChAda-ViT attend over the full `C·N` sequence
@@ -149,7 +150,7 @@ visible channel token).
   patches: `logits: [V]`.
 - Values `= out_norm(value_proj(tokens)): [V, D]`.
 - `weights = grouped_softmax(logits, location_group_id, Kf)` over the channel
-  axis at each `(b,n)`; `Σ_c w_c · V_c` via `index_add_` → `[B, N, D]`;
+  axis at each `(b,n)`; `Σ_c w_c · V_c` via `index_add_` → `[Kf, D]`;
   then `+ spatial_pos` only in legacy mode.
 - Cost: `O(C·D²)` per location (one value projection per token) plus one small
   MLP per channel; `O(C)` scaling.
@@ -186,8 +187,9 @@ attention mask. It is **not** in the model path.
 
 ## Encoder — `encoder.py` (L2, L6)
 
-- `enc_tokens = fused[present]` → `[Kf, D]`; `enc_group_id` is one group per
-  sample (`torch.arange(B).repeat_interleave(present.sum(1))`).
+- `enc_tokens` is the fusion output `[Kf, D]` directly (no gather);
+  `enc_group_id` is one group per sample
+  (`torch.arange(B).repeat_interleave(present.sum(1))`).
 - `memory: [1, M, D]` expanded `[B, M, D]` → `[B·M, D]`, with per-sample
   group ids.
 - `x = cat([mem, tokens])` → `[B·M + Kf, D]`.
@@ -224,15 +226,19 @@ attention mask. It is **not** in the model path.
      `grouped_attention`;
   3. MLP.
 - `norm` then the per-`p` head: `Linear(D, p²)` for configured `p`; an unseen
-  `p` uses the nearest larger head + bilinear point-sampling → `[Kt, p²]`
-  (padded with a mask for mixed per-sample p).
-- Target `= extract_patches(images)[gidx, :, tgt_patch]` → `[Kt, p²]`
-  (padded/validity-masked in the mixed-p case).
+  `p` uses the nearest larger head + bilinear point-sampling. The output is the
+  flat `[Σ p²]` pixel array: row `i` is `p_i²` contiguous pixels
+  (`losses.patch_offsets`), so mixed per-sample `p` needs no padded block and
+  no validity mask.
+- Target `= ChannelTokenizer.gather_patches(...)` → flat `[Σ p²]`, the same
+  layout, reading only the requested patches.
 
 ## Loss — `losses.py` (L6)
 
-- Default `normalized_patch_mse(pred, target)`: standardise each target patch
-  (`(t - mean) / std`), then MSE. No per-channel normalisation.
+- Default objective: standardise each target patch (`(t - mean) / std`), then
+  MSE. No per-channel normalisation. The model path uses `patch_row_terms` on
+  the flat pixel layout (per-row segment sums, no mask);
+  `normalized_patch_mse` is the `[K, p²]` reference form of the same math.
 - Ablation `cha_maevit_recon_loss(pred, target, lambda_f=0.01)`:
   `(1-λ)·MSE(raw pixels) + λ·L1(|rFFT₂(pred)|, |rFFT₂(target)|)` —
   ChA-MAEViT Eq. 2. Selected with `loss="cha_maevit"`.
@@ -250,7 +256,9 @@ attention mask. It is **not** in the model path.
 ## The claim the figures must carry
 
 - The only place `C` appears is the input length `ΣC·N`; fusion **sums it away**
-  at each `(b,n)` to `[B, N, D]`. Output shape/size is independent of `C`.
+  at each `(b,n)`, emitting one `[D]` vector per present location (`[Kf, D]`).
+  Output vector size is independent of `C`; the row count is the number of
+  present locations, so `N` never enters a tensor either.
 - The encoder's token sequence is `[Kf, D]`, but the model applies spatial
   pooling to fixed size latent, giving `[B, L, D]` (`L = n_latents`). The decoder KV
   `[B·(M + L + 1), D]` is independent of both `C` and the patch count `N`.

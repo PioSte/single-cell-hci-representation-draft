@@ -120,7 +120,7 @@ def build() -> plt.Figure:
             bbox=dict(boxstyle="round,pad=0.12", facecolor="white",
                       edgecolor="none", alpha=0.9), zorder=7)
 
-    # --- bottom row: image -> conv; z_c carried -> ragged ------------------- #
+    # --- bottom row: image -> conv; z_c carried -> flat list --------------- #
     i_top, i_right = grid_cells(ax, 8.0, 59.4, 3, 3, cw=2.2, pitch=2.6,
                                 edge=BLUE, crossed=True)
     ax.text(11.7, 68.3, "single-channel image  $[1,H,W]$", ha="center",
@@ -142,13 +142,13 @@ def build() -> plt.Figure:
         r"not added to token",
         edge=TOKENIZER, title_size=8.2, sub_size=5.5)
 
-    # ragged, crossed token column -- the primary object
+    # crossed token column -- the primary object
     specs = [(channel_color(1), False), (channel_color(2), False),
              (channel_color(0), False), (channel_color(3), False)]
     rx, ry0, rw, rh, rpitch = 78.5, 58.3, 8.5, 2.3, 2.9
     r_top = token_rows(ax, rx, ry0, rw, rh, rpitch, specs, crossed=True)
     sq_bracket_mirror(ax, rx + rw + 0.8, ry0, r_top)
-    ax.text(rx + rw / 2, r_top + 2.1, "ragged  $[\\Sigma C\\cdot N,\\,D]$",
+    ax.text(rx + rw / 2, r_top + 2.1, "$[\\Sigma C\\cdot N,\\,D]$",
             ha="center", va="center", fontsize=7.0, fontweight="bold",
             color=INK)
     ax.text(rx + rw / 2, r_top + 0.7, "visible channel-patches (primary)",
@@ -166,7 +166,7 @@ def build() -> plt.Figure:
                  shape=r"$[B,\,C_{\max},\,N,\,D]$",
                  note="never allocated / built")
     ax.text(121.0, 58.9,
-            "the ragged token list stays the solid primary object;"
+            "the token list stays the solid primary object;"
             " no padded tensor is built",
             ha="center", va="center", fontsize=5.8, color=MUTED,
             style="italic")

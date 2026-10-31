@@ -179,7 +179,7 @@ def build_figure(card_results, perm_results, Cs_cost, cost_attn, cost_gated,
     x = np.arange(len(Cs))
 
     ax_a.plot(x, n_in, "o-", color=MUTED, linewidth=2.0, markersize=7,
-              label="ragged input list  $[\\Sigma C{\\cdot}N,\\ D]$  elements")
+              label="input token list  $[\\Sigma C{\\cdot}N,\\ D]$  elements")
     ax_a.axhline(D, color=POOL, ls="-", lw=2.6,
                  label=f"descriptor  $[B,\\ D]$  "
                        f"($B{{\\cdot}}D={D}$ at $B{{=}}1$, constant)")

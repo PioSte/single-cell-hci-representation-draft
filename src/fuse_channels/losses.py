@@ -1,7 +1,9 @@
 """Reconstruction losses for the channel-aware MAE.
 
-The default objective is :func:`normalized_patch_mse`, the standard MAE
-patch-normalized pixel MSE.  :func:`cha_maevit_recon_loss` implements
+The default objective is the standard MAE patch-normalized pixel MSE; the model
+path uses :func:`patch_row_terms`, which applies it to the flat, padding-free
+pixel layout (see :func:`patch_offsets`).  :func:`normalized_patch_mse` is the
+``[K, p**2]`` reference form of the same math.  :func:`cha_maevit_recon_loss` implements
 ChA-MAEViT Eq. 2 as an explicit ablation: raw-pixel L2 plus an L1 distance
 between Fourier amplitudes.  Neither loss applies per-channel normalization.
 """
@@ -14,11 +16,62 @@ import torch
 import torch.nn.functional as F
 
 
+def patch_offsets(patch_sizes) -> torch.Tensor:
+    """Row boundaries of the flat pixel layout: ``[K + 1]`` cumulative offsets.
+
+    Row ``i`` owns ``pixels[offsets[i]:offsets[i + 1]]``, i.e. ``p_i**2``
+    contiguous pixels.  Concatenating rows this way covers ``Σ p_i**2`` entries
+    with no padding and therefore no validity mask, whatever the mix of patch
+    sizes.
+    """
+    ps = torch.as_tensor(patch_sizes, dtype=torch.long)
+    if ps.numel() == 0:
+        return torch.zeros(1, dtype=torch.long, device=ps.device)
+    offsets = torch.zeros(
+        ps.numel() + 1, dtype=torch.long, device=ps.device
+    )
+    offsets[1:] = torch.cumsum(ps * ps, dim=0)
+    return offsets
+
+
+def patch_row_terms(
+    pred: torch.Tensor,
+    target: torch.Tensor,
+    patch_sizes,
+    eps: float = 1e-6,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Per-row ``(squared-error sum, pixel count)`` in the flat pixel layout.
+
+    ``pred``/``target`` follow :func:`patch_offsets`: ``Σ p_i**2`` pixels, row
+    ``i`` contiguous.  Each row is normalised by its own mean and standard
+    deviation, exactly as :func:`normalized_patch_mse` does on ``[K, p**2]``
+    inputs; the row terms come from segment sums, so a mixed-``p`` batch needs
+    no padded block and no validity mask.
+
+    Returns ``[K]`` error sums and ``[K]`` counts, so callers implement either
+    reduction from the same pass.
+    """
+    target = target.float()
+    offsets = patch_offsets(patch_sizes).to(pred.device)
+    counts = (offsets[1:] - offsets[:-1]).to(target.dtype)
+    rows = torch.repeat_interleave(
+        torch.arange(offsets.numel() - 1, device=pred.device), counts.long()
+    )
+    denom = counts.clamp_min(1.0)
+    mean = target.new_zeros(counts.shape).index_add_(0, rows, target) / denom
+    centred = target - mean[rows]
+    var = target.new_zeros(counts.shape).index_add_(0, rows, centred * centred)
+    var = var / denom
+    norm_target = centred / (var.clamp_min(0.0).sqrt() + eps)[rows]
+    err = (pred - norm_target) ** 2
+    row_err = pred.new_zeros(counts.shape).index_add_(0, rows, err)
+    return row_err, counts
+
+
 def normalized_patch_mse(
     pred: torch.Tensor,
     target: torch.Tensor,
     eps: float = 1e-6,
-    mask: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """MSE between predicted and per-patch-normalized target pixels.
 
@@ -26,25 +79,14 @@ def normalized_patch_mse(
     ----------
     pred, target:
         ``[K, patch_dim]`` predictions and raw target pixels for ``K`` masked
-        channel-patches.
+        channel-patches.  This is the reference form; the model path uses
+        :func:`patch_row_terms` on the flat pixel layout.
     """
     target = target.float()
-    if mask is None:
-        mean = target.mean(dim=-1, keepdim=True)
-        std = target.std(dim=-1, keepdim=True, unbiased=False)
-        norm_target = (target - mean) / (std + eps)
-        return F.mse_loss(pred, norm_target)
-    if mask.shape != pred.shape:
-        raise ValueError(
-            f"mask must match pred shape, got {tuple(mask.shape)} vs {tuple(pred.shape)}"
-        )
-    m = mask.to(dtype=target.dtype)
-    count = m.sum(dim=-1, keepdim=True).clamp_min(1.0)
-    mean = (target * m).sum(dim=-1, keepdim=True) / count
-    var = (((target - mean) ** 2) * m).sum(dim=-1, keepdim=True) / count
-    std = var.clamp_min(0.0).sqrt()
+    mean = target.mean(dim=-1, keepdim=True)
+    std = target.std(dim=-1, keepdim=True, unbiased=False)
     norm_target = (target - mean) / (std + eps)
-    return (((pred - norm_target) ** 2) * m).sum() / m.sum().clamp_min(1.0)
+    return F.mse_loss(pred, norm_target)
 
 
 def _fft_input(x: torch.Tensor) -> torch.Tensor:

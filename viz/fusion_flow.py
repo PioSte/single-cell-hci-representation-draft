@@ -6,7 +6,7 @@ patch) and follows its channel tokens through every operation:
 
     gather channels -> LayerNorm -> W_K/W_V -> per-head query · key / sqrt(Dh)
     -> softmax over the C channels -> sum(alpha * v) -> concat heads
-    -> proj_out -> scatter into [B, N, D] -> + post-fusion spatial PE
+    -> proj_out -> one [D] row per present location -> + post-fusion spatial PE
 
 The numbers come from a real ``ChannelFusion`` forward pass with an
 illustrative ``dim=4, n_heads=2`` (the model default is ``dim=192,
@@ -444,7 +444,7 @@ def fusion_flow(s: k.Scene):
     s.wait(0.3)
 
     # ===================================================================== #
-    # 10 -- scatter back into [B, N, D]: presence, not padding.
+    # 10 -- one row per present location: presence, not padding.
     # ===================================================================== #
     nxt("10 / 11")
     s.play(k.fade_out(Wm, cm, pm, e_W, e_c, e_p9, c_W, c_c, c_p9), duration=0.4)
@@ -482,7 +482,7 @@ def fusion_flow(s: k.Scene):
     )
     cap(
         "one fused vector per present location, then + post-fusion spatial pos",
-        "[ΣC, N, D]  →  [B, N, D]        present = any visible channel",
+        "[ΣC, N, D]  →  [Kf, D]        present = any visible channel",
         FUSEDCOL,
     )
     s.wait(0.3)
@@ -529,7 +529,7 @@ def fusion_flow(s: k.Scene):
     s.play(k.write(closing))
     cap(
         "variable channel count in, fixed-size fused tokens out",
-        "[C_b, 1, H, W] → [ΣC, N, D] → [B, N, D] (+ post-fusion pos)",
+        "[C_b, 1, H, W] → [ΣC, N, D] → [Kf, D] (+ post-fusion pos)",
         k.GREEN,
     )
     s.wait(1.0)

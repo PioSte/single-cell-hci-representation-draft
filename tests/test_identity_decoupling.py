@@ -285,5 +285,5 @@ def test_padding_free_matches_dense_reference():
     )
     fused, present = fusion(cs)
     dense = _dense_fusion_reference(fusion, cs)
-    assert torch.allclose(fused, dense, atol=1e-5)
+    assert torch.equal(fused, dense[present])
     assert present.shape == (2, N)

@@ -219,7 +219,7 @@ could instead be avoided by fixing the crop:
 |---|---|
 | Non-metric position phases | `pe_space="physical"` (§0.1); warning otherwise |
 | Small-cell MAE degeneracy (`N=1` disables patch masking) | `cell_n_tokens(min_n=2)`; `DCPVisibilitySampler` still falls back for `N=1` |
-| Ragged batches | `extract_patches` raises on mixed `N`; `_build_targets` takes the per-sample list path whenever `p` **or** `N` varies |
+| Mixed patch counts across a batch | one target path for every batch: `gather_patches` reads only the requested patches and the pixel rows concatenate, so mixed `N` and mixed `p` need no padding (`extract_patches` still raises, for the all-channels tensor) |
 | Token-count gradient weighting ∝ cell area | `loss_reduce="sample"` (default) gives each cell one vote |
 
 **Loss reduction.** `loss_reduce="sample"` (default) averages per cell;

@@ -13,7 +13,8 @@ Two interchangeable pooling mechanisms are provided:
   emits per-channel mixing weights from the channel embedding; it does not
   generate network weights.
 
-Both emit one ``[B, N, D]`` token per spatial location.  Under the FlexiViT
+Both emit one ``[D]`` vector per *present* spatial location, as a flat
+``[K_f, D]`` tensor plus the ``[B, N]`` presence index.  Under the FlexiViT
 target architecture they add no positional embedding: the encoder owns layout
 through 2-D RoPE and the decoder owns its absolute anchor through fractional
 PE.  ``pos_embed="learned"`` / ``"sincos"`` remain as the legacy fixed-grid
@@ -49,7 +50,7 @@ class ChannelFusion(nn.Module):
     """Single-query attention pooling of the channel axis at every location.
 
     Channels are fused *within* each ``(sample, patch)`` location into one
-    shared learned query; the result is scattered back to ``[B, N, D]`` and the
+    shared learned query; the per-location results form ``[K_f, D]`` and the
     spatial positional embedding is added when the legacy ``pos_embed`` table
     is enabled (``"learned"`` or ``"sincos"``; the default is ``"none"``).
 
@@ -57,7 +58,9 @@ class ChannelFusion(nn.Module):
     projected with learned ``q_proj`` / ``k_proj`` / ``v_proj`` into an attention
     dimension ``attn_dim`` (``3 * dim`` by default, matching Panopticon's
     ``D_attn = 3D``), attention runs there, and ``proj_out`` maps back to
-    ``dim``.  Panopticon's ablation found ``attn_dim > dim`` important
+    ``dim``.  The output is the flat ``[K_f, D]`` array the pooling already
+    produced, so no ``[B, N, D]`` buffer is ever materialised.  Panopticon's
+    ablation found ``attn_dim > dim`` important
     (``references/panopticon/paper.md:92,194,219``).  Set ``attn_dim=dim`` for
     the parameter-matched variant.
 
@@ -146,8 +149,11 @@ class ChannelFusion(nn.Module):
     def forward(self, cs: ChannelSet):
         """Return ``(fused, present)``.
 
-        ``fused`` is ``[B, N, D]`` (post-fusion PE added) and ``present`` is a
-        boolean mask marking locations that had at least one channel.
+        ``fused`` is ``[K_f, D]``: one vector per present ``(sample, patch)``
+        location, in the order of ``present.nonzero()``.  Absent locations cost
+        nothing -- no ``[B, N, D]`` buffer is allocated -- so ``N`` never enters
+        a tensor here.  ``present`` is the ``[B, N]`` index of which locations
+        exist; it is also where the per-location grid coordinates come from.
         """
         if self.n_patches is not None and cs.n_patches != self.n_patches and self.has_spatial_pos:
             raise ValueError(
@@ -190,16 +196,14 @@ class ChannelFusion(nn.Module):
         out = self.proj_out(out.reshape(n_groups, self.attn_dim))
         out = out + self.identity_skip(ident_pool)  # [n_groups, D]
 
-        fused = out.new_zeros(B, N, D)
         sample_of_group = uniq // N
         patch_of_group = uniq % N
-        fused[sample_of_group, patch_of_group] = out
         if self.has_spatial_pos:
-            fused = fused + self.spatial_pos
+            out = out + self.spatial_pos[0][patch_of_group]
 
         present = torch.zeros(B, N, dtype=torch.bool, device=cs.tokens.device)
         present[sample_of_group, patch_of_group] = True
-        return fused, present
+        return out, present
 
     # ------------------------------------------------------------------ #
     def extra_repr(self) -> str:
@@ -344,8 +348,9 @@ class IdentityGatedSum(nn.Module):
     MLP is evaluated **once per unique channel** (via
     ``ChannelSet.channel_group_id``) and broadcast to that channel's tokens.
 
-    The output is ``[B, N, D]`` with the post-fusion spatial positional
-    embedding added, matching :class:`ChannelFusion`.
+    The output is ``[K_f, D]``, one row per present location, with the
+    post-fusion spatial positional embedding added in legacy mode; it matches
+    :class:`ChannelFusion`.
 
     Channel identity is decoupled from content: ``cs.tokens`` holds patch
     content only, the gate still comes from ``channel_embed``, and the identity
@@ -425,17 +430,15 @@ class IdentityGatedSum(nn.Module):
         out = out + self.identity_skip(ident_pool)
 
         N = cs.n_patches
-        fused = out.new_zeros(cs.n_samples, N, self.dim)
         sample_of_group = uniq // N
         patch_of_group = uniq % N
-        fused[sample_of_group, patch_of_group] = out
         if self.has_spatial_pos:
-            fused = fused + self.spatial_pos
+            out = out + self.spatial_pos[0][patch_of_group]
         present = torch.zeros(
             cs.n_samples, N, dtype=torch.bool, device=cs.tokens.device
         )
         present[sample_of_group, patch_of_group] = True
-        return fused, present
+        return out, present
 
     def extra_repr(self) -> str:
         return f"dim={self.dim}, pos_embed={self.pos_embed}"

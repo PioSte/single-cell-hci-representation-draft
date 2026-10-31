@@ -122,7 +122,7 @@ def draw_schematic() -> None:
     box(2.9, y, 2.2, h, "channel-tied\npatch embed\n(shared conv)", "#e8f5e9", 8.5)
     box(5.8, y, 2.0, h, "tokens\n[ΣC·N, D]\ncarry z_c", "#fff8e1", 8.5)
     box(8.5, y, 2.4, h, "group by\n(sample, location)\nsingle-query PMA", "#fce4ec", 8.5)
-    box(11.6, y, 3.2, h, "fused [B, N, D]\n+ post-fusion pos\n(size independent of C)", "#ede7f6", 8.5)
+    box(11.6, y, 3.2, h, "fused [K_f, D]\n+ post-fusion pos\n(size independent of C)", "#ede7f6", 8.5)
     for a, b in ((2.2, 2.9), (5.1, 5.8), (7.8, 8.5), (10.9, 11.6)):
         arrow(a, y + h / 2, b, y + h / 2)
 

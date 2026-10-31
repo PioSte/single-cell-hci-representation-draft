@@ -70,7 +70,12 @@ from .decoder import (
 from .encoder import TransformerEncoder
 from .fusion import ChannelFusion, IdentityGatedSum, MultiheadAttentionPooling
 from .identity import ChannelEmbedding
-from .losses import cha_maevit_recon_loss, normalized_patch_mse
+from .losses import (
+    cha_maevit_recon_loss,
+    normalized_patch_mse,
+    patch_offsets,
+    patch_row_terms,
+)
 from .masking import DCPVisibilitySampler
 from .patch_embed import ChannelTokenizer
 from .rope import axial_rope_cache
@@ -282,6 +287,9 @@ class ChannelFusionMAE(nn.Module):
         self._warned_nonmetric = False
 
         self.loss_name = loss
+        # ``patch_row_terms`` implements the normalised-MSE objective on the flat
+        # pixel layout (see ``_loss_on``); ``_loss_fn`` is the per-square-patch
+        # form used by the ChA-MAEViT Fourier ablation.
         self._loss_fn = _LOSSES[loss]
         self.n_latents = int(n_latents)
         self.n_queries = n_queries
@@ -562,11 +570,16 @@ class ChannelFusionMAE(nn.Module):
         return cs, ps, ns, visible, target_valid, pixel_sizes
 
     def _encode(self, cs, ps, scale_emb=None):
-        fused, present = self.fusion(cs)  # [B, Nmax, D]
-        B, Nmax, D = fused.shape
-        device = fused.device
+        # fusion already returns one vector per present location: [Kf, D]
+        enc_tokens, present = self.fusion(cs)
+        B = cs.n_samples
+        device = enc_tokens.device
         present_bi = present.nonzero(as_tuple=False)  # [Kf, 2]
-        enc_tokens = fused[present]
+        # ``present`` indexes ``enc_tokens`` by construction (both count the
+        # present locations); check the count without a device sync.
+        assert present_bi.shape[0] == enc_tokens.shape[0], (
+            "fusion must emit one vector per present location"
+        )
 
         # normalized grid coordinates for present locations
         rows = present_bi[:, 1]
@@ -615,7 +628,7 @@ class ChannelFusionMAE(nn.Module):
         )
         desc = self.pooler(tok_out, enc_group_id, B)  # [B, D]
         return (
-            fused,
+            enc_tokens,
             present,
             mem_out,
             tok_out,
@@ -791,10 +804,10 @@ class ChannelFusionMAE(nn.Module):
             cond=cond_dec,
         )
 
-        target, pred_mask = self._build_targets(
-            images, ps, ns, tgt_group_id, tgt_ch, tgt_patch, tgt_p, pred, gidx
+        target = self._build_targets(
+            images, ps, ns, tgt_group_id, tgt_ch, tgt_patch, tgt_p, pred
         )
-        loss = self._compute_loss(pred, target, tgt_p, pred_mask, tgt_group_id)
+        loss = self._compute_loss(pred, target, tgt_p, tgt_group_id)
 
         target_cid = ids_per_ch[gidx]
         out = {
@@ -803,7 +816,8 @@ class ChannelFusionMAE(nn.Module):
             "target": target,
             "target_channel_id": target_cid,
             "target_patch_size": tgt_p,
-            "pred_mask": pred_mask,
+            # row boundaries of the flat pixel layout (``pred``/``target``)
+            "target_pixel_offset": patch_offsets(tgt_p),
             "descriptor": desc,
             "latents": latents,
             "visible": visible,
@@ -816,97 +830,95 @@ class ChannelFusionMAE(nn.Module):
             "pixel_size": cs.pixel_size,
             "pe_metric": self._use_metric_pe(cs),
         }
-        if pred_mask is not None:
-            out["pred"] = pred.masked_fill(~pred_mask, 0.0)
         return out
 
     def _build_targets(
-        self, images, ps, ns, tgt_group_id, tgt_ch, tgt_patch, tgt_p, pred, gidx
+        self, images, ps, ns, tgt_group_id, tgt_ch, tgt_patch, tgt_p, pred
     ):
-        device = pred.device
-        # The fast path concatenates per-sample unfold results along the channel
-        # axis, which requires a uniform patch count.  Cell-sized crops make N
-        # vary, so only take it when both p and N are uniform across samples.
-        if len(set(ps)) == 1 and len(set(ns)) == 1:
-            p = ps[0]
-            patch_targets = ChannelTokenizer.extract_patches(images, p)
-            target = patch_targets[gidx, :, tgt_patch]
-            return target, None
+        """Target pixels in the decoder's flat ``[Σ p**2]`` layout.
 
-        max_dim = int((tgt_p * tgt_p).max().item())
-        target = pred.new_zeros(pred.shape[0], max_dim)
-        patches = ChannelTokenizer.extract_patches_list(images, ps)
-        for b in range(len(images)):
+        One path for every batch: each row's ``p**2`` pixels come from
+        :meth:`ChannelTokenizer.gather_patches`, which touches only the
+        requested patches, so the cost is proportional to the target set rather
+        than to ``ΣC · N`` and no ``[K, max(p)**2]`` block or validity mask is
+        built regardless of how patch sizes or counts vary.
+        """
+        offsets = patch_offsets(tgt_p)
+        target = pred.new_zeros(int(offsets[-1]))
+        if tgt_group_id.numel() == 0:
+            return target
+        grid_w = [
+            ns[b] // (images[b].shape[-2] // ps[b]) for b in range(len(images))
+        ]
+        gathered = ChannelTokenizer.gather_patches(
+            images, tgt_group_id, tgt_ch, tgt_patch, ps, grid_w
+        )
+        for b, block in enumerate(gathered):
             sel = (tgt_group_id == b).nonzero(as_tuple=True)[0]
             if sel.numel() == 0:
                 continue
-            p2 = int(ps[b]) ** 2
-            target[sel, :p2] = patches[b][tgt_ch[sel], :, tgt_patch[sel]]
-        return target, PatchReconstructionHead.mask(tgt_p, device=device)
+            slots = offsets[sel].unsqueeze(1) + torch.arange(
+                block.shape[-1], device=pred.device
+            )
+            target[slots.reshape(-1)] = block.reshape(-1)
+        return target
 
-    def _loss_on(self, pred, target, tgt_p, pred_mask, sel=None):
-        if sel is not None:
-            pred = pred[sel]
-            target = target[sel]
-            tgt_p = tgt_p[sel]
-            pred_mask = None if pred_mask is None else pred_mask[sel]
-        if pred_mask is None:
-            return self._loss_fn(pred, target)
+    def _square_block(self, flat, tgt_p, rows, patch_size):
+        """Gather the flat pixel array into one ``[k, p**2]`` block.
+
+        Only the ChA-MAEViT Fourier term needs square patches; the flat layout
+        is sliced there, never padded.
+        """
+        offsets = patch_offsets(tgt_p)
+        p2 = int(patch_size) ** 2
+        slots = offsets[rows].unsqueeze(1) + torch.arange(p2, device=flat.device)
+        return flat[slots.reshape(-1)].reshape(-1, p2)
+
+    def _loss_on(self, pred, target, tgt_p, sel=None):
+        """Unreduced loss over all rows, or over the rows in ``sel``."""
+        rows = tgt_p if sel is None else tgt_p[sel]
         if self.loss_name == "mae":
-            return normalized_patch_mse(pred, target, mask=pred_mask)
+            row_err, row_count = self._row_loss_terms(pred, target, tgt_p)
+            if sel is not None:
+                row_err, row_count = row_err[sel], row_count[sel]
+            return row_err.sum() / row_count.sum().clamp_min(1.0)
         # ChA-MAEViT Fourier term is defined per square patch; evaluate each
         # patch-size group separately and weight by row count.
         total = pred.new_zeros(())
-        n = pred.shape[0]
-        for p in torch.unique(tgt_p).tolist():
-            idx = (tgt_p == p).nonzero(as_tuple=True)[0]
-            dim = int(p) ** 2
+        n = rows.numel()
+        for p in torch.unique(rows).tolist():
+            local = (rows == p).nonzero(as_tuple=True)[0]
+            idx = local if sel is None else sel[local]
             total = total + self._loss_fn(
-                pred[idx, :dim], target[idx, :dim]
+                self._square_block(pred, tgt_p, idx, p),
+                self._square_block(target, tgt_p, idx, p),
             ) * (idx.numel() / n)
         return total
 
-    def _row_loss_terms(self, pred, target, pred_mask):
-        """Per-row squared-error sums and valid-pixel counts for the MAE loss.
+    def _row_loss_terms(self, pred, target, tgt_p):
+        """Per-row squared-error sums and pixel counts for the MAE loss.
 
-        Splitting :func:`normalized_patch_mse` into ``(error, count)`` pairs is
-        what makes sample reduction a single vectorised pass instead of one
-        forward per sample.  Per-patch normalisation is computed per row, exactly
-        as :func:`normalized_patch_mse` does.
+        Splitting the normalised MSE into ``(error, count)`` pairs is what makes
+        sample reduction a single vectorised pass instead of one forward per
+        sample.  Per-patch normalisation is a segment sum over each row's
+        ``p**2`` pixels, so there is no mask and no padded block.
         """
-        target = target.float()
-        if pred_mask is None:
-            mean = target.mean(dim=-1, keepdim=True)
-            std = target.std(dim=-1, keepdim=True, unbiased=False)
-            norm_target = (target - mean) / (std + 1e-6)
-            err = (pred - norm_target) ** 2
-            count = torch.full(
-                (pred.shape[0],), pred.shape[-1], dtype=pred.dtype, device=pred.device
-            )
-            return err.sum(dim=-1), count
-        m = pred_mask.to(dtype=target.dtype)
-        count = m.sum(dim=-1)
-        denom = count.clamp_min(1.0).unsqueeze(-1)
-        mean = (target * m).sum(dim=-1, keepdim=True) / denom
-        var = (((target - mean) ** 2) * m).sum(dim=-1, keepdim=True) / denom
-        std = var.clamp_min(0.0).sqrt()
-        norm_target = (target - mean) / (std + 1e-6)
-        return (((pred - norm_target) ** 2) * m).sum(dim=-1), count
+        return patch_row_terms(pred, target, tgt_p)
 
-    def _sample_mean_loss(self, pred, target, pred_mask, tgt_group_id):
+    def _sample_mean_loss(self, pred, target, tgt_p, tgt_group_id):
         """Mean of per-sample losses, one vote per cell, in one pass.
 
         ``Σ_g (Σ_{i∈g} err_i) / (Σ_{i∈g} count_i) / G`` -- algebraically
         identical to looping over groups and calling the per-sample loss, but
         with no Python loop.
         """
-        row_err, row_count = self._row_loss_terms(pred, target, pred_mask)
+        row_err, row_count = self._row_loss_terms(pred, target, tgt_p)
         groups, inverse = torch.unique(tgt_group_id, return_inverse=True)
         num = pred.new_zeros(groups.numel()).index_add_(0, inverse, row_err)
         den = pred.new_zeros(groups.numel()).index_add_(0, inverse, row_count)
         return (num / den.clamp_min(1.0)).mean()
 
-    def _compute_loss(self, pred, target, tgt_p, pred_mask, tgt_group_id=None):
+    def _compute_loss(self, pred, target, tgt_p, tgt_group_id=None):
         """``loss_reduce="sample"`` (default) gives each cell one vote.
 
         ``"token"`` weights every reconstructed row equally, so a sample's
@@ -920,16 +932,16 @@ class ChannelFusionMAE(nn.Module):
         has_targets = tgt_group_id is not None and tgt_group_id.numel() > 0
         if self.loss_reduce == "sample" and has_targets:
             if self.loss_name == "mae":
-                return self._sample_mean_loss(pred, target, pred_mask, tgt_group_id)
+                return self._sample_mean_loss(pred, target, tgt_p, tgt_group_id)
             # The ChA-MAEViT Fourier term is an FFT over the whole batch, so it
             # is not row-decomposable; keep the exact per-sample loop there.
             groups = torch.unique(tgt_group_id)
             total = pred.new_zeros(())
             for g in groups.tolist():
                 sel = (tgt_group_id == g).nonzero(as_tuple=True)[0]
-                total = total + self._loss_on(pred, target, tgt_p, pred_mask, sel)
+                total = total + self._loss_on(pred, target, tgt_p, sel)
             return total / groups.numel()
-        return self._loss_on(pred, target, tgt_p, pred_mask)
+        return self._loss_on(pred, target, tgt_p)
 
     # ------------------------------------------------------------------ #
     @torch.no_grad()

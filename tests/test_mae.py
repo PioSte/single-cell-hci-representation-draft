@@ -36,7 +36,10 @@ def test_forward_smoke():
     images, ids = _batch()
     out = model(images, ids, generator=torch.Generator().manual_seed(1))
     assert torch.isfinite(out["loss"])
-    assert out["pred"].shape[-1] == 16  # patch_size**2
+    # flat pixel layout: one contiguous patch_size**2 row per target
+    offsets = out["target_pixel_offset"]
+    assert set((offsets[1:] - offsets[:-1]).tolist()) == {16}
+    assert out["pred"].numel() == 16 * out["target_channel_id"].numel()
     out["loss"].backward()
     assert any(p.grad is not None for p in model.parameters())
 
@@ -351,7 +354,7 @@ def test_dcp_dropped_channel_is_a_reconstruction_target():
     out = model(images, ids, visible=visible)
     target_ids = out["target_channel_id"]
     assert out["pred"] is not None
-    assert out["pred"].shape[0] == target_ids.numel()
+    assert out["pred"].numel() == model.n_patches**2 * target_ids.numel()
 
     # Every patch of a dropped channel is a target, and nothing else is.
     for c in dropped.nonzero(as_tuple=True)[0].tolist():

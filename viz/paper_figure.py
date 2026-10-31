@@ -139,9 +139,9 @@ def draw_pipeline(ax) -> None:
          "no spatial PE", GREEN),
         ("Channel identity", "$z_c$ routing bias\n+ output skip\nper channel id", ORANGE),
         ("Padding-free tokens", "$[\\,\\Sigma C\\cdot N,\\; D\\,]$ $+$ idx\n"
-         "$(b,c,n)$; ragged, no pad row", SKY),
+         "$(b,c,n)$; no pad row", SKY),
         ("Channel fusion (PMA)", "single query per $(b,n)$\n"
-         "$+$ post-fusion pos $\\to[B,N,D]$", RED),
+         "$+$ post-fusion pos $\\to[K_f,D]$", RED),
         ("Transformer encoder", "$+M$ memory tokens\n"
          "grouped self-attn\n$\\to[B{\\cdot}M{+}K_f,D]$", PURPLE),
         ("Channel-aware decoder", "target self-attn\n"
@@ -185,7 +185,7 @@ def draw_pipeline(ax) -> None:
 # --------------------------------------------------------------------------- #
 # Panel B -- token layout + interchangeable components
 # --------------------------------------------------------------------------- #
-def draw_ragged_grid(ax) -> None:
+def draw_token_grid(ax) -> None:
     cell, pitch = 5.4, 6.25
 
     # column labels
@@ -341,7 +341,7 @@ def draw_token_panel(ax) -> None:
     ax.set_ylim(0, 52)
     ax.axis("off")
     panel_header(ax, -1, 50.6, "B", "Set-native token layout and components")
-    draw_ragged_grid(ax)
+    draw_token_grid(ax)
     draw_components(ax)
 
 

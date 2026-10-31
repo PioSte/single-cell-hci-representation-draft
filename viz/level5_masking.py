@@ -7,11 +7,11 @@ channels is ``m ~ U{min(min_visible_channels, C)..C}``, then a uniform
 ``m``-subset), and their union -- the safety guards (never mask every token,
 keep >= min(min_visible_channels, C) channels with content, optional
 ``max_masked_channels_frac`` cap, resample rather than ever reveal a whole
-channel row), and the ragged token list before/after.  The combined region
+channel row), and the token list before/after.  The combined region
 requires ``p_patch + p_channel < 1``; at the defaults ``p_patch = p_channel =
 0.5`` the union is never sampled.
 
-Masked tokens are **omitted**: the dashed rows do not exist in the ragged
+Masked tokens are **omitted**: the dashed rows do not exist in the
 ``[V, D]`` token list.  Omitted rows are absent from that list, and no ``-inf``
 attention mask is built.  The ``[C_b, N_b]`` boolean mask decides which rows
 exist.
@@ -114,10 +114,10 @@ def draw_mask_grid(ax, x0, y0, C, N, mask, title, subtitle=""):
 
 
 # --------------------------------------------------------------------------- #
-# Ragged token stack with dashed omitted rows
+# Token stack with dashed omitted rows
 # --------------------------------------------------------------------------- #
-def draw_ragged_tokens(ax, x0, y0, specs, label="", width=9.0):
-    """Draw a ragged token list; omitted rows are dashed white (never zeroed).
+def draw_token_list(ax, x0, y0, specs, label="", width=9.0):
+    """Draw a token list; omitted rows are dashed white (never zeroed).
 
     ``specs``: list of ``(channel_color, visible)`` tuples.
     """
@@ -273,7 +273,7 @@ def build() -> plt.Figure:
         (CHANNEL_COLORS[0], True), (CHANNEL_COLORS[0], True),
     ]
     x_before, width = 3.0, 9.0
-    draw_ragged_tokens(ax, x_before, y_tokens, specs_before,
+    draw_token_list(ax, x_before, y_tokens, specs_before,
                        label="$[\\Sigma C \\cdot N, D]$\nall tokens", width=width)
     ax.text(x_before + width / 2, stack_top + 3.6, "Before DCP",
             ha="center", va="center", fontsize=7.4, fontweight="bold", color=INK)
@@ -288,7 +288,7 @@ def build() -> plt.Figure:
         (CHANNEL_COLORS[0], True), (CHANNEL_COLORS[0], True),
     ]
     x_after = 28.0
-    draw_ragged_tokens(ax, x_after, y_tokens, specs_after,
+    draw_token_list(ax, x_after, y_tokens, specs_after,
                        label="$[V, D]$\nvisible only", width=width)
     ax.text(x_after + width / 2, stack_top + 3.6, "After DCP",
             ha="center", va="center", fontsize=7.4, fontweight="bold", color=INK)
@@ -309,7 +309,7 @@ def build() -> plt.Figure:
 
     bx = COLS_RIGHT + 4.0
     ax.text(bx, e_top - 8.6,
-            "\u2022 masked tokens are omitted from the ragged list",
+            "\u2022 masked tokens are omitted from the token list",
             ha="left", va="center", fontsize=7.0, color=INK)
     ax.text(bx, e_top - 12.6,
             "\u2022 omitted rows are absent; visible rows only are passed on",
@@ -340,7 +340,7 @@ def build() -> plt.Figure:
             ha="left", va="bottom", fontsize=7.2, color=MUTED, style="italic")
     ax.text(2.0, 0.8,
             "DCP = Dynamic Channel-Patch masking. The $[C_b, N_b]$ boolean mask determines which tokens exist; "
-            "masked tokens are omitted, never zeroed; the ragged list is the only token container.",
+            "masked tokens are omitted, never zeroed; the token list is the only token container.",
             ha="left", va="bottom", fontsize=7.2, color=MUTED, style="italic")
 
     return fig
