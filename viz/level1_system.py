@@ -146,10 +146,10 @@ def draw_joint_grid(ax, x0=79.0):
 
 
 def draw_encoded(ax, x=124.0):
-    """``[B . M + K_f + B, D]`` -- the decoder KV: fixed memory rows, visible
-    fused tokens, and the trained per-sample descriptor ``desc``.
+    """``[B . (M + L + 1), D]`` -- the decoder KV: fixed memory rows, the
+    fixed-count latent readout, and the trained per-sample descriptor ``desc``.
 
-    ``mae.py`` builds ``enc_all = cat([mem_out, tok_out, desc])``, so the
+    ``mae.py`` builds ``enc_all = cat([mem_out, latents, desc])``, so the
     descriptor row sits here as well as in the inference branch.
     """
     w, h, pitch, gap = 10.5, 2.4, 3.0, 1.1
@@ -170,13 +170,13 @@ def draw_encoded(ax, x=124.0):
         rrect(ax, x, y_mem0 + j * pitch, w, h, edge=MEMORY,
               face=tint(MEMORY, 0.8), lw=1.2, crossed=True)
     top = y_mem0 + (n_mem - 1) * pitch + h
-    ax.text(x + w / 2, top + 2.1, "$[\\,B\\cdot M + K_f + B,\\; D\\,]$",
+    ax.text(x + w / 2, top + 2.1, "$[\\,B\\cdot(M + L + 1),\\; D\\,]$",
             ha="center", va="center", fontsize=7.4, color=INK)
-    ax.text(x + w / 2, top + 4.7, "encoder tokens = decoder KV", ha="center",
+    ax.text(x + w / 2, top + 4.7, "encoder latents = decoder KV", ha="center",
             va="center", fontsize=8.4, fontweight="bold", color=INK)
     ax.text(x - 0.8, y_mem0 + (n_mem - 1) * pitch / 2 + h / 2, "$M$",
             ha="right", va="center", fontsize=6.2, color=MEMORY)
-    ax.text(x - 0.8, y_tok0 + (n_tok - 1) * pitch / 2 + h / 2, "$K_f$",
+    ax.text(x - 0.8, y_tok0 + (n_tok - 1) * pitch / 2 + h / 2, "$L$",
             ha="right", va="center", fontsize=6.2, color=FUSED)
     dim_extent(ax, x, y0 - 1.8, w)
     # tap point for encode(): first content-token row, clear of the encoder box

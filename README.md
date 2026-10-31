@@ -24,13 +24,17 @@ order is meaningless, and panels differ across labs. We need a representation
 whose size is independent of `C`:
 
 ```
-f({E_1 .. E_C}) -> [N, D] per sample, then -> [D] descriptor,
+f({E_1 .. E_C}) -> [N, D] per sample -> [L, D] encoder readout -> [D] descriptor,
 ```
 
 without concatenation blow-up, with channel identity preserved, and with **no
 padding tokens**. `C` appears only in the tokenizer input length `ΣC·N`; the
 fused output is `[B, N, D]` (`N = floor(H/p)·floor(W/p)` is set by the current
-patch size) and the pooled descriptor is `[B, D]`.
+patch size). The encoder readout is then pooled to the fixed-count latent set
+`[B, L, D]` (`n_latents = L` is a hyperparameter), so the model-level encoder
+output and the decoder KV are independent of both `C` and `N`; the pooled
+descriptor is `[B, D]`. The decoder still emits one prediction row per requested
+reconstruction target (the DCP mask complement), not per encoder token.
 
 ## Variable pixel size: `p` is a pixel count, not a physical size
 
@@ -132,9 +136,11 @@ per-channel tied Conv2d(1 -> D) patch embed, PI-resized to the current p
        + optional scale embedding
     -> padding-free transformer encoder over [present locations, D]
        with fixed-count memory tokens and 2-D axial RoPE on q/k
+    -> fixed-count PMA latent readout [B, L, D]  (L independent of C and N)
     -> trained PMA descriptor over encoder patch tokens [B, D]  (appended to KV)
     -> channel-aware shared decoder: target-identity + fractional target-position
-       queries, target self-attention, cross-attention to encoder representation
+       queries, target self-attention, cross-attention to memory + latents +
+       descriptor
 ```
 
 * **Channel-tied projection.** One canonical `Conv2d(1, D, kernel_size=p0,
@@ -198,16 +204,26 @@ per-channel tied Conv2d(1 -> D) patch embed, PI-resized to the current p
   instead; `"none"` disables it. `add` is not erased by pre-LN: the additive
   vector remains in the unnormalized residual stream, and only its
   all-ones/mean component is removed from the normalized branch.
-* **Encoder and descriptor.** Standard pre-norm Q/K/V/O transformer blocks run
-  over the flattened real tokens with fixed-count memory tokens. The `[B, D]`
-  descriptor is a PMA-style pool over the encoder's *patch* tokens (not the
-  memory tokens); it therefore carries the identity skip, which the decoder can
-  use as a panel-composition summary. It is trained through the MAE loss and
-  appended as one token per sample to the decoder KV.
+* **Fixed-count encoder readout.** Standard pre-norm Q/K/V/O transformer blocks
+  run over the flattened real tokens (`[present locations, D]`) with
+  fixed-count memory tokens. A second PMA pooler then reads those tokens out to
+  `[B, L, D]` with `L = n_latents` learned queries (default 16). `L` is a
+  hyperparameter, so the encoder output and the decoder KV do not grow with `C`
+  or with the patch count `N`: varying `N` changes encoder compute, not the
+  representation size. This is a hybrid — token-level encoder attention
+  followed by a fixed-size pooling readout — not the Perceiver's
+  pool-before-processing architecture; the Perceiver paper does not ablate this
+  placement (`references/perceiver/paper.md:531-558`).
+* **Encoder and descriptor.** The `[B, D]` descriptor is a separate PMA-style
+  pool over the encoder's *patch* tokens (not the memory tokens or the latent
+  readout); it therefore carries the identity skip, which the decoder can use
+  as a panel-composition summary. It is trained through the MAE loss and
+  appended as one token per sample to the decoder KV. The decoder KV is
+  `[B·(n_memory + n_latents + 1), D]`, fixed for a given model.
 * **Decoder.** One decoder is shared across all channels. Each target query is
   `mask token + target spatial PE + target channel embedding`; queries
-  self-attend within each sample, then cross-attend to the encoder
-  representation + memory + descriptor. A fully dropped channel has no encoder
+  self-attend within each sample, then cross-attend to the encoder's
+  memory + fixed latent readout + descriptor. A fully dropped channel has no encoder
   evidence, only its identity query, so identity acts as a **target
   specification** as well as an input feature. The reconstruction head has
   three modes. `head_mode="per_p"` (default) keeps a separate linear
@@ -266,7 +282,8 @@ from fuse_channels import ChannelFusionMAE
 model = ChannelFusionMAE(
     image_size=16, patch_size=8, dim=192,
     encoder_depth=4, decoder_depth=2, n_heads=6,
-    n_memory=4, num_channel_ids=32,   # size of the learnable identity table
+    n_memory=4, n_latents=16,         # fixed-count encoder readout
+    num_channel_ids=32,               # size of the learnable identity table
     fusion="attention",               # or "identity_gated" (ablation)
     loss="mae",                       # or "cha_maevit" (ablation)
     patch_sizes=(4, 8, 16),           # FlexiViT; patch_size is canonical p0
@@ -286,8 +303,9 @@ ids = [torch.randint(0, 32, (3,)), torch.randint(0, 32, (7,))]
 out = model(images, ids)
 out["loss"].backward()
 
-# inference representation (no masking): the descriptor is the trained PMA pool
-mem, descriptor = model.encode(images, ids)               # descriptor: [B, D]
+# inference representation (no masking): fixed-count latents + trained descriptor
+mem, latents, descriptor = model.encode(images, ids, return_latents=True)
+# memory: [B*n_memory, D], latents: [B, n_latents, D], descriptor: [B, D]
 _, mean_descriptor = model.encode(images, ids, pool="mean")  # ablation
 ```
 
@@ -398,10 +416,14 @@ Covered by `tests/`:
   conditioning is wired into both ends
 - encoder input length = number of present locations, with token count
   = visible channel-patches (`test_encoder_input_length_is_present_locations`)
+- encoder output / decoder KV is the fixed `n_latents` readout, not the
+  per-token sequence, and does not change when the patch count does
+  (`test_encoder_output_is_fixed_size_across_patch_counts`)
 - DCP Eq. 1 regions and HCS counts (`test_masking.py`); channels dropped by DCP
   are reconstruction targets (`test_dcp_dropped_channel_is_a_reconstruction_target`)
-- descriptor is trained through the MAE loss, appended to the decoder KV, and
-  `encode(pool="attention")` matches the forward descriptor
+- `n_latents` and descriptor poolers are trained through the MAE loss; the
+  descriptor is appended to the decoder KV, and `encode(pool="attention")`
+  matches the forward descriptor
   (`test_descriptor_is_trained_by_the_mae_loss`,
   `test_decoder_consumes_the_descriptor`,
   `test_forward_and_encode_share_the_descriptor`)

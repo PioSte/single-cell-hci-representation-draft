@@ -4,8 +4,16 @@ Pipeline
 --------
 ``images`` -> DCP masking (token omission) -> channel-tied FlexiViT patch embed
 + additive channel embedding -> padding-free channel fusion -> encoder with
-2-D axial RoPE -> trained PMA descriptor -> channel-aware decoder with
-fractional absolute PE -> reconstruction loss.
+2-D axial RoPE -> fixed-count PMA latent readout -> trained PMA descriptor ->
+channel-aware decoder with fractional absolute PE -> reconstruction loss.
+
+The encoder's per-token sequence is ``[Kf, D]`` (``Kf`` = number of present
+locations), but the representation the model exposes to the decoder is the
+pooled readout ``[B, n_latents, D]``.  ``n_latents`` is a hyperparameter, so
+the encoder output -- and therefore the decoder KV -- is independent of both
+the channel count ``C`` and the patch count ``N``.  The decoder still emits one
+prediction row per requested reconstruction target; that target set is the DCP
+mask complement, not the encoder token count.
 
 The default positional scheme is the FlexiViT target from ``FLEXIVIT.md``:
 
@@ -141,6 +149,7 @@ class ChannelFusionMAE(nn.Module):
         decoder_depth: int = 2,
         n_heads: int = 6,
         n_memory: int = 4,
+        n_latents: int = 16,
         n_queries: int = 1,
         num_channel_ids: int = 16,
         fusion: str = "attention",
@@ -202,6 +211,8 @@ class ChannelFusionMAE(nn.Module):
             raise ValueError(
                 f"unknown loss_reduce '{loss_reduce}'; expected 'token' or 'sample'"
             )
+        if int(n_latents) < 1:
+            raise ValueError(f"n_latents must be >= 1, got {n_latents}")
 
         # ---- patch-size / positional-scheme resolution ------------------ #
         if patch_size is None:
@@ -271,6 +282,7 @@ class ChannelFusionMAE(nn.Module):
 
         self.loss_name = loss
         self._loss_fn = _LOSSES[loss]
+        self.n_latents = int(n_latents)
         self.n_queries = n_queries
 
         channel_embedding = ChannelEmbedding(dim, num_channel_ids)
@@ -313,6 +325,19 @@ class ChannelFusionMAE(nn.Module):
             n_memory=n_memory,
             dropout=dropout,
             adaln=scale_conditioning == "adaln",
+        )
+        # Fixed-count readout: the encoder's per-token output is pooled to
+        # ``[B, n_latents, D]`` with no dependence on the patch count.  This is
+        # Option 1 from the design discussion (keep token-level encoder
+        # attention, then pool to a fixed-size latent set); it is a hybrid, not
+        # the Perceiver's pool-before-processing architecture.
+        self.latent_pooler = MultiheadAttentionPooling(
+            dim,
+            n_heads=n_heads,
+            n_queries=self.n_latents,
+            dropout=dropout,
+            post_sab=self.n_latents > 1,
+            readout="flat",
         )
         self.pooler = MultiheadAttentionPooling(
             dim,
@@ -581,7 +606,23 @@ class ChannelFusionMAE(nn.Module):
         mem_out, tok_out = self.encoder(
             enc_tokens, enc_group_id, B, rope=rope, cond=cond_enc
         )
-        return fused, present, mem_out, tok_out, enc_group_id, present_bi
+        # Fixed-count encoder readout.  ``tok_out`` stays available for the
+        # descriptor (and the encode() mean-pool ablation), but it is no longer
+        # part of the decoder KV.
+        latents = self.latent_pooler(tok_out, enc_group_id, B).reshape(
+            B, self.n_latents, self.encoder.dim
+        )
+        desc = self.pooler(tok_out, enc_group_id, B)  # [B, D]
+        return (
+            fused,
+            present,
+            mem_out,
+            tok_out,
+            latents,
+            desc,
+            enc_group_id,
+            present_bi,
+        )
 
     def _target_step_um(self, cs, tgt_group_id, tgt_p, pixel_sizes):
         """``patch_size * µm_per_px`` per decoder target, or ``None``.
@@ -641,18 +682,29 @@ class ChannelFusionMAE(nn.Module):
         if self.scale_conditioning != "none":
             scale_values = self._scale_values(ps, pixel_sizes, device)
             scale_emb = self.scale_embed(scale_values)
-        fused, present, mem_out, tok_out, enc_group_id, present_bi = self._encode(
-            cs, ps, scale_emb
-        )
-        desc = self.pooler(tok_out, enc_group_id, B)  # [B, D]
+        (
+            fused,
+            present,
+            mem_out,
+            tok_out,
+            latents,
+            desc,
+            enc_group_id,
+            present_bi,
+        ) = self._encode(cs, ps, scale_emb)
 
-        enc_all = torch.cat([mem_out, tok_out, desc], dim=0)
+        enc_all = torch.cat(
+            [mem_out, latents.reshape(-1, latents.shape[-1]), desc], dim=0
+        )
         mem_group_id = torch.arange(B, device=device).repeat_interleave(
             self.encoder.n_memory
         )
+        latent_group_id = torch.arange(B, device=device).repeat_interleave(
+            self.n_latents
+        )
         desc_group_id = torch.arange(B, device=device)
         enc_all_group_id = torch.cat(
-            [mem_group_id, enc_group_id, desc_group_id], dim=0
+            [mem_group_id, latent_group_id, desc_group_id], dim=0
         )
 
         # -- decoder targets: the masked channel-patches ------------------ #
@@ -699,6 +751,7 @@ class ChannelFusionMAE(nn.Module):
                 "pred": None,
                 "target": None,
                 "descriptor": desc,
+                "latents": latents,
                 "visible": visible,
                 "present": present,
                 "patch_sizes": ps,
@@ -751,6 +804,7 @@ class ChannelFusionMAE(nn.Module):
             "target_patch_size": tgt_p,
             "pred_mask": pred_mask,
             "descriptor": desc,
+            "latents": latents,
             "visible": visible,
             "present": present,
             "patch_sizes": ps,
@@ -886,11 +940,17 @@ class ChannelFusionMAE(nn.Module):
         patch_sizes=None,
         pixel_sizes=None,
         valid=None,
+        return_latents: bool = False,
     ):
         """Inference-time representation (no masking).
 
-        Returns ``(memory, pooled_descriptor)`` where ``pooled_descriptor`` is
-        ``[B, D]`` -- the fixed-size joint embedding for the whole batch.
+        Returns ``(memory, pooled_descriptor)``, or
+        ``(memory, latents, pooled_descriptor)`` when ``return_latents=True``.
+
+        ``memory`` is ``[B * n_memory, D]``, ``latents`` is the fixed-count
+        encoder readout ``[B, n_latents, D]`` (independent of the patch count),
+        and ``pooled_descriptor`` is ``[B, D]``.  The descriptor keeps the
+        trained PMA readout; ``pool="mean"`` is the mean-pool ablation.
 
         ``valid`` (per-sample ``[N_b]`` cell-token mask) drops off-cell patches
         from the encoder exactly as in :meth:`forward`.
@@ -922,16 +982,25 @@ class ChannelFusionMAE(nn.Module):
         if self.scale_conditioning != "none":
             scale_values = self._scale_values(ps, pixel_sizes, device)
             scale_emb = self.scale_embed(scale_values)
-        _fused, present, mem_out, tok_out, enc_group_id, _bi = self._encode(
-            cs, ps, scale_emb
-        )
+        (
+            _fused,
+            present,
+            mem_out,
+            tok_out,
+            latents,
+            desc,
+            enc_group_id,
+            _bi,
+        ) = self._encode(cs, ps, scale_emb)
         D = tok_out.shape[-1]
         if pool == "attention":
-            pooled = self.pooler(tok_out, enc_group_id, B)
+            pooled = desc
         elif pool == "mean":
             pooled = tok_out.new_zeros(B, D)
             pooled.index_add_(0, enc_group_id, tok_out)
             pooled = pooled / present.sum(1).clamp_min(1).unsqueeze(-1)
         else:
             raise ValueError(f"unknown pool '{pool}'")
+        if return_latents:
+            return mem_out, latents, pooled
         return mem_out, pooled

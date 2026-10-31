@@ -10,6 +10,12 @@ Q/K/V projections, scaled dot-product attention, an output projection, then a
 residual MLP.  Spatial position enters only through optional 2-D axial RoPE
 applied to queries and keys; memory tokens get zero rotation.  Optional AdaLN
 scale conditioning modulates the LayerNorms with a per-token condition vector.
+
+This module returns the per-token sequence, so its length depends on how many
+locations are present.  ``ChannelFusionMAE`` pools that sequence to the fixed
+``[B, n_latents, D]`` readout before anything downstream sees it, so the
+model-level encoder output and the decoder KV do not depend on the patch count;
+the cost of this encoder still does.
 """
 
 from __future__ import annotations
@@ -148,7 +154,10 @@ class TransformerEncoder(nn.Module):
         """Return ``(memory_out, tokens_out)``.
 
         ``memory_out`` is ``[n_samples * n_memory, D]`` and ``tokens_out`` keeps
-        the input ordering ``[T, D]``.
+        the input ordering ``[T, D]``.  The model-level fixed-size readout is
+        applied outside this module (``ChannelFusionMAE._encode``), so callers
+        that need a patch-count-independent representation should use that
+        readout rather than this raw token sequence.
         """
         device = tokens.device
         mem = self.memory.expand(n_samples, -1, -1).reshape(-1, self.memory.shape[-1])

@@ -16,6 +16,7 @@ All shapes below are read from the code, not invented. Notation:
 | `c` | canonical reconstruction-head grid, `= head_patch_size or max(patch_sizes)` | `PatchReconstructionHead.canonical_patch_size` |
 | `D` | token/embedding dim | `dim` |
 | `M` | fixed memory/register tokens per sample | `n_memory` |
+| `L` | fixed latent tokens per sample in the encoder readout | `n_latents` |
 | `T` | real channel-patch tokens in a flattened token set (`T = V` after masking) | `cs.tokens.shape[0]` |
 | `V` | number of **visible** channel-patch tokens (`≤ Σ_b C_b·N_b`) | `keep.sum()` |
 | `Kf` | number of present `(b,n)` locations (`≤ B·N`) | `present.sum()` |
@@ -23,8 +24,9 @@ All shapes below are read from the code, not invented. Notation:
 | `C_u` | number of unique channel instances in the batch | `unique(channel_group_id)` |
 
 The fusion output is one token per location, so there is **no query-count
-axis** in the fused tensor. `n_queries` exists only on the descriptor pooler
-(see below), never on `ChannelFusion`.
+axis** in the fused tensor. `n_queries` exists only on the PMA poolers
+(`n_latents` for the encoder readout, `n_queries` for the descriptor; see
+below), never on `ChannelFusion`.
 
 ## Tokenizer — `patch_embed.py` (L3)
 
@@ -168,12 +170,17 @@ attention mask. It is **not** in the model path.
   - `grouped_pool_attention` over the real tokens of each **sample** group;
   - optional post-SAB over the `n_queries` outputs when `n_queries > 1`;
   - `readout="mean"` averages the query outputs → `[B, D]`.
-- In `ChannelFusionMAE.forward` the pooler is applied to `tok_out` (the
-  encoder's **content tokens only**, not the memory tokens):
-  `desc = pooler(tok_out, enc_group_id, B) → [B, D]`. It is appended as one
-  extra per-sample token to the decoder KV and therefore **trained** through
-  the reconstruction loss. `encode(pool="attention")` returns that same
-  descriptor.
+- `ChannelFusionMAE` applies PMA twice to `tok_out` (the encoder's **content
+  tokens only**, not the memory tokens):
+  - `latents = latent_pooler(tok_out, enc_group_id, B)` with
+    `n_queries = n_latents` and `readout="flat"` → `[B, L·D]`, reshaped to
+    `[B, L, D]`. This is the fixed-count encoder readout, independent of `C`
+    and `N`.
+  - `desc = pooler(tok_out, enc_group_id, B)` with `readout="mean"` →
+    `[B, D]`. It is appended as one extra per-sample token to the decoder KV
+    and therefore **trained** through the reconstruction loss.
+    `encode(pool="attention")` returns that same descriptor.
+- `encode(return_latents=True)` also returns the fixed `[B, L, D]` readout.
 - `pool="mean"` is the content-token mean ablation; `pool="memory"` does not
   exist.
 
@@ -191,9 +198,11 @@ attention mask. It is **not** in the model path.
   memory tokens get zero rotation. Default `scale_conditioning="add"` adds a
   Fourier embedding of `[log(p), log(pixel_size)]` to the encoder tokens;
   `"adaln"` instead modulates the LayerNorms. Final `LayerNorm`.
-- Returns `mem_out [B·M, D]`, `tok_out [Kf, D]`.
-- Final decoder KV is `enc_all = cat([mem_out, tok_out, desc])` →
-  `[B·M + Kf + B, D]`, with matching per-sample group ids.
+- Returns `mem_out [B·M, D]`, `tok_out [Kf, D]`; `tok_out` is then pooled
+  to `latents [B, L, D]` and `desc [B, D]`.
+- Final decoder KV is `enc_all = cat([mem_out, latents, desc])` →
+  `[B·(M + L + 1), D]`, with matching per-sample group ids. The KV length is
+  fixed for a given model and does not grow with the patch count.
 
 ## Decoder — `decoder.py` (L6)
 
@@ -211,7 +220,7 @@ attention mask. It is **not** in the model path.
   1. **target self-attention** over the queries of each sample
      (`grouped_projected_self_attention`, bucketed);
   2. **cross-attention** to the encoder representation
-     (`mem_out + tok_out + desc`) using the general grouped primitive
+     (`mem_out + latents + desc`) using the general grouped primitive
      `grouped_attention`;
   3. MLP.
 - `norm` then the per-`p` head: `Linear(D, p²)` for configured `p`; an unseen
@@ -234,12 +243,16 @@ attention mask. It is **not** in the model path.
 - `pool="attention"` (default) applies the trained descriptor pooler to
   `tok_out`; `pool="mean"` averages the content tokens. Both return a
   `[B, D]` descriptor; `encode` also returns `mem_out [B·M, D]`.
+- `encode(return_latents=True)` adds the fixed `latents [B, L, D]` readout.
 - There is no memory-pool readout.
 
 ## The claim the figures must carry
 
 - The only place `C` appears is the input length `ΣC·N`; fusion **sums it away**
   at each `(b,n)` to `[B, N, D]`. Output shape/size is independent of `C`.
+- The encoder's token sequence is `[Kf, D]`, but the model pools it to the
+  fixed `[B, L, D]` readout (`L = n_latents`). The decoder KV
+  `[B·(M + L + 1), D]` is independent of both `C` and the patch count `N`.
 - `[B, C_max, N, D]` is **never allocated/built** (never materialised) — draw it
   only as a dashed ghost.
 - Masking / missing channels are handled by **omitting rows**, not zeroing or

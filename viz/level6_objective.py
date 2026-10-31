@@ -6,8 +6,9 @@ Shows the two-branch objective with:
   present (b, n) location and ``enc_tokens = fused[present]`` selects the
   [Kf, D] channel-agnostic fused location tokens fed to the encoder
   (``Kf <= V``). A PMA pooler over ``tok_out`` (content tokens only) produces
-  the trained descriptor [B, D].
-* Decoder KV: ``enc_all = [mem_out; tok_out; desc]`` -> [B*M + Kf + B, D].
+  the fixed latent readout [B, L, D] (``L = n_latents``), and a second PMA
+  pooler produces the trained descriptor [B, D].
+* Decoder KV: ``enc_all = [mem_out; latents; desc]`` -> [B*(M + L + 1), D].
 * Decoder branch: target queries conditioned on the target channel embedding;
   each block runs target self-attention over a sample's queries, then
   cross-attention to ``enc_all``.
@@ -108,26 +109,26 @@ def draw_memory(ax, x=6.5, y0=35.5, w=9.0):
 
 
 def draw_enc_all(ax, x=54.5, y0=41.0, w=10.0):
-    """Decoder KV: ``enc_all = cat([mem_out, tok_out, desc])``.
+    """Decoder KV: ``enc_all = cat([mem_out, latents, desc])``.
 
     ``token_rows`` draws bottom-up, so the specs are listed bottom-to-top to
     give the same top-to-bottom order as the code: memory-out on top, then the
-    visible fused ``tok_out``, then the descriptor at the bottom.
+    fixed latent readout, then the descriptor at the bottom.
     """
     specs = [
         (POOL, False),                                                  # desc [B, D]
-        (FUSED, False), (FUSED, False), (FUSED, False), (FUSED, False),  # tok_out [Kf, D]
+        (FUSED, False), (FUSED, False), (FUSED, False), (FUSED, False),  # latents [B, L, D]
         (MEMORY, False), (MEMORY, False),                               # mem_out [B·M, D]
     ]
     top = token_rows(ax, x, y0, w, H, PITCH, specs)
     sq_bracket_mirror(ax, x + w + 1.0, y0, top)
-    ax.text(x + w / 2, top + 2.4, "$[B{\\cdot}M + K_f + B, D]$", ha="center",
+    ax.text(x + w / 2, top + 2.4, "$[B{\\cdot}M + L + B, D]$", ha="center",
             va="center", fontsize=7.2, color=INK, fontweight="bold")
     # Row-group labels on the right, centred on their actual row bands.
-    # Top band = memory-out, middle = visible fused tokens, bottom = descriptor.
+    # Top band = memory-out, middle = fixed latent readout, bottom = descriptor.
     ax.text(x + w + 1.2, y0 + 5.5 * PITCH + H / 2, "mem ($M$)", ha="left",
             va="center", fontsize=6.1, color=MEMORY, zorder=5)
-    ax.text(x + w + 1.2, y0 + 2.5 * PITCH + H / 2, "vis ($K_f$)", ha="left",
+    ax.text(x + w + 1.2, y0 + 2.5 * PITCH + H / 2, "latents ($L$)", ha="left",
             va="center", fontsize=6.1, color=FUSED, zorder=5)
     ax.text(x + w + 1.2, y0 + 0.5 * PITCH + H / 2, "desc ($B$)", ha="left",
             va="center", fontsize=6.1, color=POOL, zorder=5)

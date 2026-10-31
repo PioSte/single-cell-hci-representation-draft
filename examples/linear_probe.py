@@ -216,6 +216,7 @@ def main() -> None:
     p.add_argument("--depth", type=int, default=2)
     p.add_argument("--n-heads", type=int, default=4)
     p.add_argument("--n-memory", type=int, default=4)
+    p.add_argument("--n-latents", type=int, default=16)
     p.add_argument(
         "--fusion-attn-dim",
         type=int,
@@ -285,6 +286,7 @@ def main() -> None:
         decoder_depth=1,
         n_heads=args.n_heads,
         n_memory=args.n_memory,
+        n_latents=args.n_latents,
         fusion_attn_dim=args.fusion_attn_dim,
         num_channel_ids=args.channel_ids,
         pos_embed=args.pos_embed,

@@ -117,6 +117,56 @@ def test_encoder_input_length_is_present_locations():
     assert torch.isfinite(out["loss"])
 
 
+def test_encoder_output_is_fixed_size_across_patch_counts():
+    """The decoder KV is the fixed latent readout, not the per-token sequence."""
+    model = _model(p_patch=1.0, p_channel=0.0)
+    model.eval()
+    B = 2
+    kv_lengths = []
+    latents_shapes = []
+
+    def capture_kv(_module, args):
+        kv_lengths.append(args[0].shape[0])
+
+    handle = model.decoder.register_forward_pre_hook(capture_kv)
+    try:
+        for size in (8, 16):  # N = 4 vs N = 16 at patch_size=4
+            g = torch.Generator().manual_seed(size)
+            images = [
+                torch.randn(2, 1, size, size, generator=g),
+                torch.randn(3, 1, size, size, generator=g),
+            ]
+            ids = [torch.randint(0, 16, (2,), generator=g),
+                   torch.randint(0, 16, (3,), generator=g)]
+            with torch.no_grad():
+                out = model(
+                    images, ids, generator=torch.Generator().manual_seed(0)
+                )
+            assert out["pred"] is not None
+            assert out["latents"].shape == (B, model.n_latents, 32)
+            latents_shapes.append(tuple(out["latents"].shape))
+    finally:
+        handle.remove()
+
+    expected = B * (model.encoder.n_memory + model.n_latents + 1)
+    assert kv_lengths == [expected, expected]
+    assert latents_shapes[0] == latents_shapes[1]
+
+
+def test_encode_can_return_fixed_size_latents():
+    model = _model()
+    model.eval()
+    images, ids = _batch()
+    mem, latents, pooled = model.encode(images, ids, return_latents=True)
+    assert latents.shape == (3, model.n_latents, 32)
+    assert pooled.shape == (3, 32)
+    assert torch.isfinite(latents).all()
+    # Backwards-compatible two-tuple without the flag.
+    mem2, pooled2 = model.encode(images, ids)
+    assert torch.equal(mem, mem2)
+    assert torch.equal(pooled, pooled2)
+
+
 def test_overfit_single_batch():
     model = _model()
     images, ids = _batch(C_list=(2, 4, 3), seed=3)
@@ -181,10 +231,11 @@ def test_descriptor_is_trained_by_the_mae_loss():
     images, ids = _batch()
     out = model(images, ids, generator=torch.Generator().manual_seed(1))
     out["loss"].backward()
-    missing = [
-        name for name, p in model.pooler.named_parameters() if p.grad is None
-    ]
-    assert not missing, f"pooler parameters without gradients: {missing}"
+    for pooler in (model.pooler, model.latent_pooler):
+        missing = [
+            name for name, p in pooler.named_parameters() if p.grad is None
+        ]
+        assert not missing, f"pooler parameters without gradients: {missing}"
 
 
 def test_decoder_consumes_the_descriptor():
@@ -348,7 +399,12 @@ def test_attention_primitives_route_self_and_cross_attention(monkeypatch):
     out = model(images, ids, visible=visible)
 
     assert out["pred"] is not None
-    assert calls["encoder_self"] == len(model.encoder.blocks)
+    # Encoder blocks plus the latent pooler's post-SAB (it runs in the same
+    # module namespace); the one-query descriptor pooler has no post-SAB.
+    expected_encoder_self = len(model.encoder.blocks) + int(
+        model.latent_pooler.post_sab is not None
+    )
+    assert calls["encoder_self"] == expected_encoder_self
     assert calls["decoder_self"] == len(model.decoder.blocks)
     assert calls["decoder_cross"] == len(model.decoder.blocks)
 
