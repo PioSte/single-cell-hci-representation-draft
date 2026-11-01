@@ -275,6 +275,13 @@ The descriptor's `n_queries > 1` path builds a small post-SAB over the query
 outputs and averages back to `[B, D]`; it is an optional research ablation, not
 the default bottleneck. It is independent of `n_latents`.
 
+**Memory tokens: provenance.** The fixed-count memory tokens are ChA-MAEViT
+§3.2 (`references/cha-maevit/paper.md:109-113`), which credits register tokens
+(Darcet et al., *Vision Transformers Need Registers*; not in `references/`, so
+this repo cites the second-hand source). The padding-free layout, zero RoPE,
+zero scale condition, and separate-tensor return are this repo's divergences;
+`src/fuse_channels/encoder.py` is the normative contract for them.
+
 ## 5. Masking: DCP Eq. 1 and HCS overlap
 
 ChA-MAEViT Eq. 1 draws a selection value `s` and chooses one of three regions:
@@ -347,7 +354,10 @@ coordinate (e.g. correlated masked channel-patches) before attending to the
 encoder representation + memory + descriptor. The decoder never receives raw
 per-channel tokens; its KV is the fixed latent set `[B, L, D]` produced by
 spatial pooling to fixed size latent, plus memory and the trained descriptor, i.e.
-`[B·(n_memory + n_latents + 1), D]` for a given model.
+`[B·(n_memory + n_latents + 1), D]` for a given model. Which of those three
+components reach the decoder is selectable via `decoder_kv`; the default is all
+three, and an empty set (or dropping to nothing) gives a blind decoder that
+skips cross-attention.
 
 ## 7. Losses
 

@@ -5,9 +5,11 @@ past a handful of channels).  Each reconstruction query is conditioned on the
 **target channel's embedding** and the **target's fractional spatial
 position**, then runs grouped self-attention over the target queries of its
 sample (so correlated masked channel-patches can coordinate) before
-cross-attending to the encoder's memory + visible tokens + trained descriptor.
-This turns the additive channel embedding into a *target specification* so one
-shared decoder can be used for all channels.
+cross-attending to the encoder's memory + latents + trained descriptor.  Those
+KV components are selectable per model via ``decoder_kv`` (see
+``ChannelFusionMAE``); the default uses all three, and an empty KV skips
+cross-attention entirely.  This turns the additive channel embedding into a
+*target specification* so one shared decoder can be used for all channels.
 
 The default decoder positional embedding is the factorized-fractional absolute
 PE from ``FLEXIVIT.md``: a function of ``(row, col, grid_h, grid_w)`` with no
@@ -126,20 +128,26 @@ class DecoderBlock(nn.Module):
         )
         q = q + self.dropout(self.self_out_proj(self_attn))
 
-        # then to the encoder representation
-        hq = self._modulate(self.norm_q(q), self.mod_q if self.adaln else None, cond)
-        hkv = self.norm_kv(kv)
-        cross = grouped_attention(
-            self.q_proj(hq),
-            q_group_id,
-            self.k_proj(hkv),
-            self.v_proj(hkv),
-            kv_group_id,
-            n_groups,
-            self.n_heads,
-            dropout_p=self._attention_dropout(),
-        )
-        q = q + self.dropout(self.out_proj(cross))
+        # then to the encoder representation.  An empty KV (``decoder_kv=()``,
+        # or only a ``n_memory=0`` memory that contributed nothing) means there
+        # is no cross-attention source, so this is skipped: a blind decoder
+        # that reconstructs from the mask/position/channel query alone.
+        if kv.shape[0] > 0:
+            hq = self._modulate(
+                self.norm_q(q), self.mod_q if self.adaln else None, cond
+            )
+            hkv = self.norm_kv(kv)
+            cross = grouped_attention(
+                self.q_proj(hq),
+                q_group_id,
+                self.k_proj(hkv),
+                self.v_proj(hkv),
+                kv_group_id,
+                n_groups,
+                self.n_heads,
+                dropout_p=self._attention_dropout(),
+            )
+            q = q + self.dropout(self.out_proj(cross))
         hff = self._modulate(
             self.norm_ff(q), self.mod_ff if self.adaln else None, cond
         )

@@ -5,6 +5,29 @@ decoder) as a cardinality-independent long-term memory.  Attention is again
 padding-free: the sequence is flattened over real tokens with per-sample group
 ids.
 
+The mechanism follows ChA-MAEViT §3.2
+(``references/cha-maevit/paper.md:109-113``): ``n_memory`` learnable embeddings
+are prepended to the input sequence, processed by the encoder, and excluded
+from the final representation (the descriptor is pooled over patch tokens
+only).  ChA-MAEViT, in turn, credits the idea to register tokens (Darcet et
+al., *Vision Transformers Need Registers*); that primary paper is not in
+``references/``, so the citation here is the second-hand source.
+
+Divergences from ChA-MAEViT, which runs a dense ``C·N`` token layout with
+learned absolute positional embeddings:
+
+* Padding-free.  Memory tokens join each sample's *present-only* group
+  (``group_id``) instead of a dense ``C·N`` sequence.
+* Zero RoPE on memory queries/keys (``identity_rope_cache``).  Memory carries
+  no location, so it is not rotated; ChA-MAEViT has no RoPE to begin with.
+* Zero scale condition.  Memory is scale-invariant; under ``adaln`` it gets
+  zeros as its per-token condition, which is identity because the mod weights
+  initialise to zero.
+* Returned as a separate tensor.  The encoder returns ``memory_out``
+  (``[B·n_memory, D]``) alongside the patch tokens rather than leaving the
+  memory in the decoder sequence; the caller (``ChannelFusionMAE``) assembles
+  the decoder KV from it.
+
 Blocks are standard pre-norm transformer blocks: LayerNorm, explicit
 Q/K/V projections, scaled dot-product attention, an output projection, then a
 residual MLP.  Spatial position enters only through optional 2-D axial RoPE

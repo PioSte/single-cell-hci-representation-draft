@@ -157,6 +157,7 @@ class ChannelFusionMAE(nn.Module):
         n_memory: int = 4,
         n_latents: int = 16,
         n_queries: int = 1,
+        decoder_kv: Sequence[str] = ("memory", "latents", "descriptor"),
         num_channel_ids: int = 16,
         fusion: str = "attention",
         fusion_attn_dim: int | None = None,
@@ -206,6 +207,22 @@ class ChannelFusionMAE(nn.Module):
                 f"unknown head_mode '{head_mode}'; "
                 "expected 'per_p', 'canonical' or 'shared'"
             )
+        # Which components reach the decoder as cross-attention key/value.
+        # Default is all three (the shipped architecture).  Dropping entries is
+        # an ablation: it isolates what the decoder needs, and an empty set
+        # gives a blind decoder (self-attention only).  ``encode()`` is
+        # unaffected -- it always returns the representation.
+        allowed_kv = {"memory", "latents", "descriptor"}
+        if isinstance(decoder_kv, str):
+            decoder_kv = (decoder_kv,)
+        decoder_kv = tuple(dict.fromkeys(decoder_kv))  # dedupe, keep order
+        unknown_kv = set(decoder_kv) - allowed_kv
+        if unknown_kv:
+            raise ValueError(
+                f"unknown decoder_kv entries {sorted(unknown_kv)}; expected a "
+                f"subset of {sorted(allowed_kv)}"
+            )
+        self.decoder_kv = frozenset(decoder_kv)
         if max_tokens is not None and int(max_tokens) < 1:
             raise ValueError(f"max_tokens must be >= 1 or None, got {max_tokens}")
         if pe_space not in ("grid", "physical"):
@@ -707,18 +724,27 @@ class ChannelFusionMAE(nn.Module):
             present_bi,
         ) = self._encode(cs, ps, scale_emb)
 
-        enc_all = torch.cat(
-            [mem_out, latents.reshape(-1, latents.shape[-1]), desc], dim=0
-        )
-        mem_group_id = torch.arange(B, device=device).repeat_interleave(
-            self.encoder.n_memory
-        )
-        latent_group_id = torch.arange(B, device=device).repeat_interleave(
-            self.n_latents
-        )
-        desc_group_id = torch.arange(B, device=device)
-        enc_all_group_id = torch.cat(
-            [mem_group_id, latent_group_id, desc_group_id], dim=0
+        # Decoder KV = the selected components of the encoder representation
+        # (``self.decoder_kv``).  Each component is appended with its own
+        # per-sample group ids; the default (all three) is the shipped KV
+        # ``[B·(n_memory + n_latents + 1), D]``.
+        kv_parts, kv_groups = [], []
+        samples = torch.arange(B, device=device)
+        if "memory" in self.decoder_kv:
+            kv_parts.append(mem_out)
+            kv_groups.append(samples.repeat_interleave(self.encoder.n_memory))
+        if "latents" in self.decoder_kv:
+            kv_parts.append(latents.reshape(-1, latents.shape[-1]))
+            kv_groups.append(samples.repeat_interleave(self.n_latents))
+        if "descriptor" in self.decoder_kv:
+            kv_parts.append(desc)
+            kv_groups.append(samples)
+        D = latents.shape[-1]
+        enc_all = torch.cat(kv_parts, dim=0) if kv_parts else desc.new_zeros(0, D)
+        enc_all_group_id = (
+            torch.cat(kv_groups, dim=0)
+            if kv_groups
+            else torch.empty(0, dtype=torch.long, device=device)
         )
 
         # -- decoder targets: the masked channel-patches ------------------ #

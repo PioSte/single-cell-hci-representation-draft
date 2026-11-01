@@ -200,6 +200,41 @@ def test_memory_tokens_optional():
     assert torch.isfinite(out2["loss"])
 
 
+def test_decoder_kv_ablatable():
+    """Any subset of {memory, latents, descriptor} (and empty) is a valid KV."""
+    images, ids = _batch()
+    subsets = [
+        ("memory",),
+        ("latents",),
+        ("descriptor",),
+        ("memory", "latents"),
+        ("memory", "descriptor"),
+        ("latents", "descriptor"),
+        (),
+    ]
+    for kv in subsets:
+        model = _model(decoder_kv=kv)
+        out = model(images, ids, generator=torch.Generator().manual_seed(1))
+        assert torch.isfinite(out["loss"]), kv
+    # a string is accepted as a single component
+    out = _model(decoder_kv="latents")(
+        images, ids, generator=torch.Generator().manual_seed(1)
+    )
+    assert torch.isfinite(out["loss"])
+    # encode() is unaffected by decoder_kv
+    model = _model(decoder_kv=()).eval()
+    _mem, latents, pooled = model.encode(images, ids, return_latents=True)
+    assert pooled.shape == (3, 32)
+    assert latents.shape == (3, model.n_latents, 32)
+    # unknown component rejected
+    try:
+        _model(decoder_kv=("memory", "bogus"))
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("unknown decoder_kv entry should raise")
+
+
 def test_encode_inference():
     model = _model()
     model.eval()

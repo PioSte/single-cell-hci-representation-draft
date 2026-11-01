@@ -234,7 +234,9 @@ per-channel tied Conv2d(1 -> D) patch embed, PI-resized to the current p
   produced by spatial pooling); it therefore carries the identity skip, which the decoder can use
   as a panel-composition summary. It is trained through the MAE loss and
   appended as one token per sample to the decoder KV. The decoder KV is
-  `[B·(n_memory + n_latents + 1), D]`, fixed for a given model.
+  `[B·(n_memory + n_latents + 1), D]`, fixed for a given model; which of those
+  components reach the decoder is selectable via `decoder_kv` (default: all
+  three; empty = blind decoder, no cross-attention).
 * **Decoder.** One decoder is shared across all channels. Each target query is
   `mask token + target spatial PE + target channel embedding`; queries
   self-attend within each sample, then cross-attend to the encoder's
