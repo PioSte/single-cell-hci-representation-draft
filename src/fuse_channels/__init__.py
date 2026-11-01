@@ -52,6 +52,7 @@ from .ops import (
 )
 from .flexi import pi_resize_patch_embed
 from .patch_embed import ChannelTiedPatchEmbed, ChannelTokenizer
+from .tokenizer import ChannelFusionTokenizer
 from .pos_embed import (
     POS_EMBED_KINDS,
     FractionalSpatialPE,
@@ -89,6 +90,7 @@ __all__ = [
     "MultiheadAttentionPooling",
     "ChannelEmbedding",
     "ChannelTokenizer",
+    "ChannelFusionTokenizer",
     "ChannelTiedPatchEmbed",
     "POS_EMBED_KINDS",
     "FractionalSpatialPE",

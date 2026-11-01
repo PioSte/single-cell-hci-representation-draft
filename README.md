@@ -375,6 +375,29 @@ gated = IdentityGatedSum(192)
 gated_out, present = gated(cs)
 ```
 
+### The tokenizer stage as one module
+
+`ChannelFusionTokenizer` composes the two stages above into the single named
+stage `{per-channel planes, ids} -> ([K_f, D], present, ChannelSet)`, so callers
+that only need tokenization do not have to reproduce the wiring:
+
+```python
+from fuse_channels import ChannelEmbedding, ChannelFusionTokenizer
+
+cft = ChannelFusionTokenizer.build(
+    16, 8, 192, ChannelEmbedding(192, num_channel_ids=32),
+    n_heads=6, patch_sizes=(4, 8, 16),
+)
+fused, present, cs = cft(images, ids, pixel_sizes=0.65)
+```
+
+It owns the identity table and the two primitives; scale conditioning, the
+encoder, the latent/descriptor poolers, and the decoder are outside it. `build`
+is the convenience constructor — pass an already-built `ChannelTokenizer` and
+fusion to wrap the modules of an existing model instead (that is how the stage
+can be applied to `ChannelFusionMAE`'s weights without touching its state-dict
+keys).
+
 ### Identities and group ids
 
 * `ChannelSet.channel_id` is the **identity key**: a dataset-level channel id
@@ -400,6 +423,7 @@ gated_out, present = gated(cs)
 | `src/fuse_channels/identity.py` | `ChannelEmbedding`: learned per-channel-id additive table |
 | `src/fuse_channels/patch_embed.py` | `ChannelTiedPatchEmbed`, `ChannelTokenizer` (content-only tokens; identity travels separately) |
 | `src/fuse_channels/fusion.py` | `ChannelFusion`, `IdentityGatedSum`, `MultiheadAttentionPooling`; `_dense_fusion_reference` (private, test/viz-only) |
+| `src/fuse_channels/tokenizer.py` | `ChannelFusionTokenizer`: the tokenizer *stage* — `ChannelTokenizer` + channel fusion -> `[K_f, D]` (its docstring carries the stage contract) |
 | `src/fuse_channels/rope.py` | 2-D axial RoPE; metric coordinates by default, normalized-grid ablation |
 | `src/fuse_channels/flexi.py` | FlexiViT PI- (pseudoinverse-) resize for the patch-embedding kernel |
 | `src/fuse_channels/pos_embed.py` | fractional absolute PE plus legacy learned/sincos tables |
