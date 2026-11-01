@@ -346,6 +346,28 @@ mem, latents, descriptor = model.encode(images, ids, return_latents=True)
 _, mean_descriptor = model.encode(images, ids, pool="mean")  # ablation
 ```
 
+### Configuration and ablations
+
+`ChannelFusionMAE` also builds from a structured `ModelConfig`, and named
+ablations live in one registry so a run records *how* it differs from the
+default:
+
+```python
+from fuse_channels import ModelConfig, SharedCore, build_model
+
+cfg = ModelConfig(image_size=16, patch_size=8, core=SharedCore(dim=192, n_heads=6))
+model = ChannelFusionMAE.from_config(cfg)   # == ChannelFusionMAE(**cfg.to_kwargs())
+
+build_model("no_memory")       # cfg.encoder.n_memory = 0
+build_model("blind_decoder")   # no memory, empty decoder KV -> self-attention only
+build_model("no_scale_cond")   # scale_conditioning = "none"
+```
+
+Backbone invariants (`dim`, `n_heads`, `dropout`, `adaln`) live once in
+`SharedCore` and are handed to the encoder and decoder explicitly, so they
+cannot drift between modules. See `docs/design.md` §10 for the split and the
+ablation policy.
+
 ### Just the fusion module
 
 ```python
@@ -434,6 +456,7 @@ keys).
 | `src/fuse_channels/masking.py` | `DCPVisibilitySampler` (Eq. 1) and `HierarchicalChannelSampler` (HCS) |
 | `src/fuse_channels/losses.py` | `normalized_patch_mse`, `cha_maevit_recon_loss`, flat-layout `patch_offsets` / `patch_row_terms` |
 | `src/fuse_channels/mae.py` | `ChannelFusionMAE` end-to-end |
+| `src/fuse_channels/config.py` | `SharedCore` / `EncoderConfig` / `DecoderConfig` / `ModelConfig`, the ablation registry, and the shared-core split contract |
 | `src/fuse_channels/data.py` | `SyntheticChannelDataset` and `collate_fn` for examples/tests |
 | `examples/linear_probe.py` | frozen-encoder linear probe on a synthetic channel-presence label |
 | `examples/train_mae.py` | synthetic variable-channel MAE training loop |

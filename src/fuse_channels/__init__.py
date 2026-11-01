@@ -22,6 +22,15 @@ from .fleet import (
     fleet_patch_sizes,
     sorted_fleet_pixel_sizes,
 )
+from .config import (
+    ABLATIONS,
+    DecoderConfig,
+    EncoderConfig,
+    ModelConfig,
+    SharedCore,
+    ablated_config,
+    build_model,
+)
 from .decoder import (
     ChannelAwareDecoder,
     DecoderBlock,

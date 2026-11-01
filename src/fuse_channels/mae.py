@@ -62,6 +62,7 @@ from typing import Optional, Sequence
 import torch
 import torch.nn as nn
 
+from .config import DecoderConfig, EncoderConfig, ModelConfig, SharedCore
 from .decoder import (
     ChannelAwareDecoder,
     PatchReconstructionHead,
@@ -344,13 +345,16 @@ class ChannelFusionMAE(nn.Module):
         else:
             raise ValueError(f"unknown fusion '{fusion}'")
 
-        self.encoder = TransformerEncoder(
-            dim,
-            encoder_depth,
-            n_heads,
-            n_memory=n_memory,
+        # Backbone invariants shared by encoder and decoder, threaded explicitly
+        # (option "b").  ``adaln`` is derived from ``scale_conditioning``.
+        self.core = SharedCore(
+            dim=dim,
+            n_heads=n_heads,
             dropout=dropout,
             adaln=scale_conditioning == "adaln",
+        )
+        self.encoder = TransformerEncoder(
+            self.core, EncoderConfig(depth=encoder_depth, n_memory=n_memory)
         )
         # Spatial pooling to fixed size latent: the encoder's per-token output is
         # pooled to ``[B, n_latents, D]`` with no dependence on the patch count.
@@ -388,21 +392,20 @@ class ChannelFusionMAE(nn.Module):
         # p0 is explicit.
         canonical_patch_size = int(head_patch_size or max(self.patch_sizes))
         self.decoder = ChannelAwareDecoder(
-            dim,
-            decoder_depth,
-            n_heads,
-            patch_dim=canonical_patch_size**2,
+            self.core,
+            DecoderConfig(
+                depth=decoder_depth,
+                pos_embed=decoder_pos_embed,
+                fractional_pe_mode=fractional_pe_mode,
+                fractional_pe_base=fractional_pe_base,
+                pe_ref_um=pe_ref_um,
+                head_mode=head_mode,
+                head_resample=head_resample,
+            ),
+            # builder-resolved extras (not authored knobs)
             n_patches=base_n_patches,
-            dropout=dropout,
-            pos_embed=decoder_pos_embed,
             canonical_patch_size=canonical_patch_size,
-            fractional_pe_mode=fractional_pe_mode,
-            fractional_pe_base=fractional_pe_base,
-            pe_ref_um=pe_ref_um,
-            adaln=scale_conditioning == "adaln",
             patch_sizes=self.patch_sizes,
-            head_mode=head_mode,
-            head_resample=head_resample,
         )
         self.masker = DCPVisibilitySampler(
             base_n_patches,
@@ -427,6 +430,17 @@ class ChannelFusionMAE(nn.Module):
                 "axial encoder RoPE needs dim / n_heads divisible by 4; got "
                 f"head_dim={head_dim}"
             )
+
+    @classmethod
+    def from_config(cls, cfg: ModelConfig) -> "ChannelFusionMAE":
+        """Build from a :class:`~fuse_channels.config.ModelConfig`.
+
+        Thin adapter: it flattens the structured config to the constructor
+        keywords, so the encoder/decoder are still built from a
+        :class:`SharedCore` plus their subconfig.  Use
+        :func:`fuse_channels.config.build_model` to build a named ablation.
+        """
+        return cls(**cfg.to_kwargs())
 
     # ------------------------------------------------------------------ #
     def _tokens_for(self, im: torch.Tensor, p: int) -> int:

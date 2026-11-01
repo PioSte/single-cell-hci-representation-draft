@@ -136,29 +136,32 @@ class TransformerBlock(nn.Module):
 
 
 class TransformerEncoder(nn.Module):
-    """Pre-norm transformer over ``[T, D]`` real tokens grouped by sample."""
+    """Pre-norm transformer over ``[T, D]`` real tokens grouped by sample.
 
-    def __init__(
-        self,
-        dim: int,
-        depth: int,
-        n_heads: int,
-        n_memory: int = 4,
-        mlp_ratio: float = 4.0,
-        dropout: float = 0.0,
-        adaln: bool = False,
-    ) -> None:
+    Constructed as ``TransformerEncoder(core, cfg)``: the backbone invariants
+    (``dim``, ``n_heads``, ``dropout``, ``adaln``) come from a shared
+    :class:`~fuse_channels.config.SharedCore` -- the same object the decoder is
+    given -- and only the encoder-exclusive knobs (``depth``, ``n_memory``,
+    ``mlp_ratio``) come from :class:`~fuse_channels.config.EncoderConfig`.  This
+    is the "shared core passed explicitly" split (option *b*): no invariant is
+    duplicated across modules, and the memory ablation is
+    ``EncoderConfig(n_memory=0)``.
+    """
+
+    def __init__(self, core, cfg) -> None:
         super().__init__()
-        self.n_memory = n_memory
+        dim, n_heads = core.dim, core.n_heads
+        dropout, adaln = core.dropout, core.adaln
+        self.n_memory = cfg.n_memory
         self.dim = dim
         self.n_heads = n_heads
         self.adaln = adaln
-        self.memory = nn.Parameter(torch.zeros(1, n_memory, dim))
+        self.memory = nn.Parameter(torch.zeros(1, cfg.n_memory, dim))
         nn.init.trunc_normal_(self.memory, std=0.02)
         self.blocks = nn.ModuleList(
             [
-                TransformerBlock(dim, n_heads, mlp_ratio, dropout, adaln=adaln)
-                for _ in range(depth)
+                TransformerBlock(dim, n_heads, cfg.mlp_ratio, dropout, adaln=adaln)
+                for _ in range(cfg.depth)
             ]
         )
         self.norm = nn.LayerNorm(dim)

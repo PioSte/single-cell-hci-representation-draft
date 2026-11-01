@@ -407,3 +407,71 @@ for the cost/ablation comparison.
 | Every reference architecture uses an additive learned identity | Narrow to ChannelViT/ChAda-ViT/ChA-MAEViT; Panopticon uses fixed wavelength PE plus concatenation, and DOFA/HyperFree use hypernetwork conditioning. | `references/panopticon/paper.md:94-108` |
 | Panopticon's channel attention is projection-free (`k = v`, no K/V projections) | It uses learned Q/K/V projections into `D_attn`, with `D_attn = 3D` by default; Table 5 shows `D_attn > D` matters. | `references/panopticon/paper.md:92,194,219` |
 | `IdentityGatedSum` provides data-dependent weighting | It is marker-routed: weights depend on the channel embedding, not on token content; only the attention fusion is content-dependent. | `src/fuse_channels/fusion.py` (class `IdentityGatedSum`) |
+
+## 10. Configuration: shared core, subconfigs, and ablation
+
+`ChannelFusionMAE` takes ~40 flat keywords. That is fine for the constructor but
+bad for two things this repo cares about: reusing the same schema in the CLI /
+examples, and recording *how* a run differs from the default. `config.py`
+introduces a structured alternative without replacing the flat constructor.
+
+**Three categories, decided by parameter scope.** A parameter is placed by the
+LCA of the modules that consume it, and only the genuinely shared invariants are
+hoisted:
+
+- `SharedCore` — `dim`, `n_heads`, `dropout`, and the `adaln` wiring flag.
+  These must be *identical* in the encoder and decoder (they share the residual
+  stream and the `[B, L, D]` cross-attention), so a mismatch is a bug, not a
+  knob. They live once and are **passed explicitly** to each composite module:
+  `TransformerEncoder(core, cfg)`, `ChannelAwareDecoder(core, cfg, *,
+  n_patches, canonical_patch_size, patch_sizes)`. This is option "b": no
+  invariant is copied into a subconfig, and each module is still buildable
+  standalone or nested, with a *complete* recipe.
+- `EncoderConfig` / `DecoderConfig` — knobs exclusive to one module (`depth`,
+  `n_memory`, the decoder PE/head choice, …). These are what you change to
+  ablate one module without touching the other.
+- builder-resolved extras — facts only the composition root knows (`n_patches`
+  from the tokenizer, the realised `canonical_patch_size`, the fleet
+  `patch_sizes`). These are passed to the constructor, not stored in the
+  subconfig, because they are derived, not authored.
+
+`adaln` is derived from `scale_conditioning`; it travels in `SharedCore` so the
+encoder and decoder cannot disagree, but it is not a flat keyword. Prefer
+changing `scale_conditioning`, not `SharedCore.adaln` directly.
+
+**Why not inheritance or a full flat mirror.** Dataclass inheritance would make
+each subconfig a complete recipe but duplicates the core values in every leaf
+(they become copied fields, not a shared reference) and forces diamond
+duplication when two siblings share a knob. A full flat `ModelConfig` mirror
+makes the leaves incomplete again. The explicit `core` argument is the only
+split that is simultaneously non-duplicating, complete, and standalone — at the
+cost of one extra constructor parameter on the composite modules.
+
+**Boundary.** Only the composite encoder/decoder take `(core, cfg)`.
+`ChannelFusion`, `MultiheadAttentionPooling`, and `DCPVisibilitySampler` keep
+flat constructors: they are leaf modules, constructed directly in tests and
+benchmarks, and threading a core through a module that takes two width args buys
+nothing.
+
+**Ablation is a first-class, reviewable diff.** The registry in
+`config.ABLATIONS` maps a name to a `ModelConfig -> ModelConfig` transform, so an
+ablation names the exact subconfig it changes and tracks default changes instead
+of baking values:
+
+| name | diff |
+| --- | --- |
+| `no_memory` | `encoder.n_memory = 0` |
+| `blind_decoder` | `no_memory` and `decoder_kv = ()` (decoder self-attention only) |
+| `no_scale_cond` | `scale_conditioning = "none"` |
+| `grid_pe` | `pe_space = "grid"` |
+
+`build_model(name, base, **flat_overrides)` applies the transform then the flat
+escape-hatch overrides. **The implementation rule this encodes:** when adding a
+feature, decide *which subconfig it belongs to* so it is ablatable by a one-line
+registry entry; do not bury a switch in `forward` or special-case a module. A
+knob with no home in `EncoderConfig`/`DecoderConfig`/`ModelConfig` is a signal
+that the parameter's scope is unclear, not that it should be threaded ad hoc.
+
+`ModelConfig.to_kwargs()` is the single flattening point back to the flat
+constructor; `tests/test_config.py` asserts its key set equals the constructor's
+signature, so the two cannot drift.

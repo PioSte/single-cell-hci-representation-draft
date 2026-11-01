@@ -399,32 +399,28 @@ class ChannelAwareDecoder(nn.Module):
 
     def __init__(
         self,
-        dim: int,
-        depth: int,
-        n_heads: int,
-        patch_dim: int | None = None,
+        core,
+        cfg,
+        *,
         n_patches: int | None = None,
-        mlp_ratio: float = 4.0,
-        dropout: float = 0.0,
-        pos_embed: str = "fractional",
-        grid_size=None,
         canonical_patch_size: int | None = None,
-        fractional_pe_mode: str = "sincos",
-        fractional_pe_base: float = 10000.0,
-        pe_ref_um: float = 1.0,
-        adaln: bool = False,
         patch_sizes=None,
-        head_mode: str = "per_p",
-        head_resample: str = "area",
+        grid_size=None,
     ) -> None:
+        # Shared backbone invariants (core) vs decoder-exclusive knobs (cfg) vs
+        # builder-resolved extras (n_patches, canonical_patch_size, patch_sizes).
+        # See ``fuse_channels.config`` for why the split is drawn here.
         super().__init__()
+        dim, n_heads = core.dim, core.n_heads
+        dropout, adaln = core.dropout, core.adaln
+        pos_embed = cfg.pos_embed
         self.mask_token = nn.Parameter(torch.zeros(dim))
         self.pos_embed = pos_embed
-        self.pe_ref_um = float(pe_ref_um)
+        self.pe_ref_um = float(cfg.pe_ref_um)
         self.fractional_pe = None
         if pos_embed == "fractional":
             self.fractional_pe = FractionalSpatialPE(
-                dim, mode=fractional_pe_mode, base=fractional_pe_base
+                dim, mode=cfg.fractional_pe_mode, base=cfg.fractional_pe_base
             )
         elif pos_embed == "none":
             self.fractional_pe = None
@@ -438,8 +434,8 @@ class ChannelAwareDecoder(nn.Module):
         nn.init.trunc_normal_(self.mask_token, std=0.02)
         self.blocks = nn.ModuleList(
             [
-                DecoderBlock(dim, n_heads, mlp_ratio, dropout, adaln=adaln)
-                for _ in range(depth)
+                DecoderBlock(dim, n_heads, cfg.mlp_ratio, dropout, adaln=adaln)
+                for _ in range(cfg.depth)
             ]
         )
         self.norm = nn.LayerNorm(dim)
@@ -448,28 +444,18 @@ class ChannelAwareDecoder(nn.Module):
             self.mod_out = nn.Linear(dim, 2 * dim)
             nn.init.zeros_(self.mod_out.weight)
             nn.init.zeros_(self.mod_out.bias)
-        if canonical_patch_size is not None:
-            self.canonical_patch_size = int(canonical_patch_size)
-        elif patch_dim is not None:
-            side = math.isqrt(int(patch_dim))
-            if side * side != int(patch_dim):
-                raise ValueError(
-                    f"patch_dim must be a square patch size, got {patch_dim}"
-                )
-            self.canonical_patch_size = side
-        else:
-            self.canonical_patch_size = None
-        if self.canonical_patch_size is None:
+        if canonical_patch_size is None:
             raise ValueError(
-                "canonical_patch_size or patch_dim is required for the reconstruction head"
+                "canonical_patch_size is required for the reconstruction head"
             )
-        self.head_mode = head_mode
+        self.canonical_patch_size = int(canonical_patch_size)
+        self.head_mode = cfg.head_mode
         self.head = PatchReconstructionHead(
             dim,
             self.canonical_patch_size,
             patch_sizes=patch_sizes,
-            mode=head_mode,
-            resample=head_resample,
+            mode=cfg.head_mode,
+            resample=cfg.head_resample,
         )
 
     def _target_pe(self, target_patch, target_row=None, target_col=None,

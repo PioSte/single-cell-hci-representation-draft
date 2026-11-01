@@ -261,9 +261,10 @@ clipping.
 
 **Implemented.** The target architecture is now the default model path:
 
-1. **Fractional decoder PE** — `ChannelAwareDecoder(pos_embed="fractional")`
-   evaluates `g_row(v) + g_col(u)` from `(r, c, n_h, n_w)`; it has no grid-sized
-   table and works with non-square or changing grids.
+1. **Fractional decoder PE** — `pos_embed="fractional"` (in the decoder's
+   config, `DecoderConfig.pos_embed`) evaluates `g_row(v) + g_col(u)` from
+   `(r, c, n_h, n_w)`; it has no grid-sized table and works with non-square or
+   changing grids.
 2. **Scale conditioning** — `scale_conditioning="add"` (default) or `"adaln"`
    embeds `log(p)` and `log(pixel_size)` with Fourier features and a
    small MLP, in both encoder and decoder.
