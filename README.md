@@ -121,9 +121,14 @@ contract.
 **Positional embeddings must then be metric.** With a fixed crop extent the
 default grid-fraction PE is already metric, because its normalization
 denominator is constant. With cell-sized crops (variable patch count) it is not:
-the phase encodes `distance / crop_extent`, so an additive scale conditioner
-cannot recover the physical geometry. Use `pe_space="physical"` (encoder RoPE
-and decoder PE both evaluate `index * p * pixel_size / ref_um`) for cell-sized grids. The loader in `crops.py` produces exactly that layout:
+the phase encodes `distance / crop_extent`, not distance, so the same physical
+gap is rotated differently in differently sized cells. Use
+`pe_space="physical"` (encoder RoPE and decoder PE both evaluate
+`index * p * pixel_size / ref_um`) for cell-sized grids. The idea is published:
+world-coordinate RoPE in `references/muvit/paper.md:97` and GSD-scaled PE in
+`references/scale-mae/paper.md:91`. Whether a scale token could substitute for
+it is the part that is still an untested hypothesis — see `FLEXIVIT.md` §0.1.
+The loader in `crops.py` produces exactly that layout:
 `plan_patches` reads boxes straight out of the raw planes, so `crop_px` is an
 exact multiple of `p`, nothing is padded, and border cells get a shifted box
 instead of a lost border.

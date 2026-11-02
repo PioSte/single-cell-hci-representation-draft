@@ -134,7 +134,14 @@ queries and keys, not as an additive table. The shipped default is
 `(r + 0.5) * p * pixel_size / ref_um`, so the phase encodes the *realized*
 physical separation. This is what keeps cell-sized (variable-`N`) grids metric,
 and it carries the <=~2 % rounding residual in `p * pixel_size` rather than
-hiding it. The head dimension is split into row and column halves, and each axis
+hiding it. Published forms of the same idea are world-coordinate RoPE, which
+rotates by absolute world coordinates so a location encodes identically at any
+resolution (`references/muvit/paper.md:97,103`, with a per-crop-centred
+coordinate ablation at `:203,:233`), and the additive GSD-scaled PE
+`pos · g/G` (`references/scale-mae/paper.md:91-111`). What is *not* published,
+and is asserted here rather than measured, is that no content-side scale
+conditioner can substitute for the metric frame — that is the
+`pe_space="grid"` ablation. The head dimension is split into row and column halves, and each axis
 gets `head_dim / 4` frequency pairs with base `100` by default
 (`references/rope-vit/paper.md:157-171`; RoFormer describes the rotation as
 absolute position with relative dependence in the dot product,

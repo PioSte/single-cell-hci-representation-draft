@@ -146,7 +146,7 @@ Consequences that are easy to get wrong:
 fractional PE are evaluated in:
 
 ```
-grid      coord = (index + 0.5) / grid_extent * ref_extent     (default, back-compat)
+grid      coord = (index + 0.5) / grid_extent * ref_extent     (fixed-window ablation)
 physical  coord = (index + 0.5) * p * pixel_size / ref_um             (metric)
 ```
 
@@ -163,9 +163,15 @@ relative RoPE phase  =  (physical separation d / window extent W) * ref_extent *
 * **Cell-sized window** (variable `N`): `W` varies with cell size, so `grid`
   coordinates encode `d/W` — separation as a fraction of the cell. The same
   physical gap gets a different rotation in a small cell than in a large one.
-  An additive scale conditioner **cannot** repair this: the rotation is applied
-  to q/k before attention and a per-sample global vector does not rescale the
-  phase. Only `physical` coordinates make the phase proportional to `d`.
+  Only `physical` coordinates make the phase proportional to `d`.
+
+The stronger claim — that a scale conditioner cannot compensate for the grid
+frame — is an argument, not a measurement. The mechanism is that the
+conditioner is added to token *content* while RoPE rotates q/k before
+attention, and the frequencies do not depend on the sample, so no vector in the
+block can rescale the phase. The measurement is the `pe_space` ×
+`scale_conditioning` 2×2: the `pe_space="grid"` arm *is* the "scale token
+alone" configuration (§4), and it is still unrun here.
 
 Consequences:
 
@@ -183,6 +189,31 @@ Consequences:
   equivalence test).
 - `grid` coordinates with a variable patch count emit a warning rather than
   silently training with non-comparable position phases.
+
+**Published precedent.** Two papers carry the metric-coordinate idea and are
+the empirical support for the default:
+
+- **World-coordinate RoPE** (`references/muvit/paper.md:97,103`): axial RoPE
+  computed from absolute world coordinates, so "patches representing the same
+  spatial location receive identical positional encodings regardless of their
+  resolution level". The paper also reports the degenerate alternative —
+  per-crop centred coordinates collapse SYNTHETIC mDSC from 0.954 to 0.386
+  (`:203,:217`) and MOUSE from 0.883 to 0.793 (`:233`) — which is the same
+  failure mode as `pe_space="grid"` under a variable window extent, measured.
+  Its crops share one pixel size, so its world frame is the highest-resolution
+  pixel lattice: it supports *absolute frame rather than per-crop
+  normalisation*, and does not exercise per-sample `pixel_size` or
+  non-integer `p · pixel_size`.
+- **GSD-scaled positional encoding** (`references/scale-mae/paper.md:91-111`):
+  the additive ViT PE is evaluated at `pos · g/G` for pixel size `g` and
+  reference `G`, i.e. the coordinate is physical distance; `G` is the `ref_um`
+  analogue with a fixed physical unit. Ablated at `:247` (+2.6 / +0.7 kNN
+  points at 50 % / 100 % of native GSD). Resolution is held fixed there and
+  scale enters only through the PE, so it does not separate the two mechanisms
+  under test here.
+
+Neither paper tests the content-side-conditioner claim above; that remains the
+`grid` ablation.
 
 ## 0.2 Variable `N` (cell-sized grids)
 
@@ -586,6 +617,16 @@ conditioner sees the *realized* patch extent, not `target_um`: `p` is rounded,
 so `log_p + log_pixel_size` carries the <=~2 % residual exactly. That residual
 must not be "corrected" separately; it is already an input.
 
+Scale-MAE (`references/scale-mae/paper.md:91-111`) conditions on the same
+quantity — its ground sample distance — but folds it into the positional
+encoding instead of the token content: the PE coordinate becomes `pos · g/G`.
+That is the PE-side alternative to this section, not a competing design: with a
+metric PE frame already carrying physical position (§0.1), a second copy in the
+coordinate would duplicate it, so scale is injected as content-side conditioning
+instead. The paper is the precedent for pixel-size conditioning being worth the
+plumbing (+2.6 kNN points at 50 % of native GSD, `:247`), not for the injection
+point.
+
 **`pixel_size` is required metadata, not an optional field.** Every image has a
 physical pixel size, so there is no "unknown" state to encode: no presence flag,
 no filled placeholder, and no way for an absent value to be silently read as
@@ -729,7 +770,14 @@ Implementation map for the target architecture:
   frequency schedules, resolution extrapolation.
 - MAE: `references/mae/paper.md` — sparse encoder, mask tokens, absolute PE on
   both encoder and decoder.
+- MuViT: `references/muvit/paper.md` — 2-D axial RoPE from absolute world
+  coordinates, identical encoding per world position across resolution levels,
+  and the per-crop-centred-coordinate ablation.
+- Scale-MAE: `references/scale-mae/paper.md` — GSD-scaled positional encoding
+  (`pos · g/G`), physical-unit reference scale, GSDPE ablation.
 
-No canonical paper is provided for the “pixel-size token” as described here;
-the scale conditioning is a design synthesis. FlexiViT covers patch-size
-flexibility, not physical µm/pixel conditioning.
+FlexiViT covers patch-size flexibility and Scale-MAE covers pixel-size
+conditioning; no paper covers their *combination* — derived patch sizes from a
+fleet table plus a scale token alongside a metric PE. That composition is a
+design synthesis, and the division of labour between the scale token and the
+metric PE (§0.1) is the part that is still an untested hypothesis.
