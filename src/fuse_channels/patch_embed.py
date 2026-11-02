@@ -10,7 +10,7 @@ gets positions from RoPE and the decoder from fractional absolute PE.
 
 from __future__ import annotations
 
-from typing import List, Optional, Sequence, Tuple
+from collections.abc import Sequence
 
 import torch
 import torch.nn as nn
@@ -21,7 +21,7 @@ from .flexi import pi_resize_patch_embed
 from .identity import ChannelEmbedding
 
 
-def _hw(grid) -> Tuple[int, int]:
+def _hw(grid) -> tuple[int, int]:
     if isinstance(grid, int):
         return grid, grid
     h, w = grid
@@ -43,21 +43,19 @@ class ChannelTiedPatchEmbed(nn.Module):
         image_size,
         patch_size: int,
         dim: int,
-        patch_sizes: Optional[Sequence[int]] = None,
+        patch_sizes: Sequence[int] | None = None,
     ) -> None:
         super().__init__()
         self.image_h, self.image_w = _hw(image_size)
         self.image_size = image_size
         self.patch_size = int(patch_size)
-        self.patch_sizes = tuple(sorted(set(int(p) for p in (patch_sizes or [patch_size]))))
+        self.patch_sizes = tuple(sorted({int(p) for p in (patch_sizes or [patch_size])}))
         if self.patch_size not in self.patch_sizes:
             self.patch_sizes = tuple(sorted({*self.patch_sizes, self.patch_size}))
         for p in self.patch_sizes:
             if p < 1:
                 raise ValueError(f"patch sizes must be positive, got {p}")
-        self.n_patches = (self.image_h // self.patch_size) * (
-            self.image_w // self.patch_size
-        )
+        self.n_patches = (self.image_h // self.patch_size) * (self.image_w // self.patch_size)
         self.proj = nn.Conv2d(1, dim, kernel_size=self.patch_size, stride=self.patch_size)
 
     def _project(self, x: torch.Tensor, patch_size: int) -> torch.Tensor:
@@ -72,7 +70,7 @@ class ChannelTiedPatchEmbed(nn.Module):
         self,
         images: Sequence[torch.Tensor],
         channel_ids: Sequence[torch.Tensor],
-        visible: Optional[Sequence[torch.Tensor]] = None,
+        visible: Sequence[torch.Tensor] | None = None,
         patch_sizes=None,
     ):
         """Patchify a batch of variable-channel images.
@@ -107,7 +105,7 @@ class ChannelTiedPatchEmbed(nn.Module):
         grid_h_list, grid_w_list, n_patches_list = [], [], []
         channel_offset = 0
 
-        for b, (im, ids, p) in enumerate(zip(images, channel_ids, ps)):
+        for b, (im, ids, p) in enumerate(zip(images, channel_ids, ps, strict=True)):
             C, _, H, W = im.shape
             p = int(p)
             # FlexiViT's contract: floor(H/p) * floor(W/p) patches; a border
@@ -151,30 +149,48 @@ class ChannelTiedPatchEmbed(nn.Module):
             channel_global.append(c_global)
             patch_row.append(p_idx // gw)
             patch_col.append(p_idx % gw)
-            patch_size_tok.append(
-                torch.full_like(p_idx, p, dtype=torch.float32, device=device)
-            )
+            patch_size_tok.append(torch.full_like(p_idx, p, dtype=torch.float32, device=device))
             grid_h_list.append(gh)
             grid_w_list.append(gw)
             n_patches_list.append(N)
             channel_offset += C
 
-        tokens = torch.cat(tokens_list, dim=0) if tokens_list else images[0].new_zeros(0, self.proj.out_channels)
-        meta = dict(
-            sample_idx=torch.cat(sample_idx, dim=0) if sample_idx else torch.empty(0, dtype=torch.long, device=device),
-            channel_idx=torch.cat(channel_idx, dim=0) if channel_idx else torch.empty(0, dtype=torch.long, device=device),
-            patch_idx=torch.cat(patch_idx, dim=0) if patch_idx else torch.empty(0, dtype=torch.long, device=device),
-            channel_id=torch.cat(channel_id, dim=0) if channel_id else torch.empty(0, dtype=torch.long, device=device),
-            channel_global=torch.cat(channel_global, dim=0) if channel_global else torch.empty(0, dtype=torch.long, device=device),
-            patch_row=torch.cat(patch_row, dim=0) if patch_row else torch.empty(0, dtype=torch.long, device=device),
-            patch_col=torch.cat(patch_col, dim=0) if patch_col else torch.empty(0, dtype=torch.long, device=device),
-            patch_size=torch.cat(patch_size_tok, dim=0) if patch_size_tok else torch.empty(0, device=device),
-            grid_h=torch.tensor(grid_h_list, dtype=torch.long, device=device),
-            grid_w=torch.tensor(grid_w_list, dtype=torch.long, device=device),
-            n_patches_per_sample=torch.tensor(n_patches_list, dtype=torch.long, device=device),
-            n_patches=max(n_patches_list) if n_patches_list else 0,
-            patch_sizes=ps,
+        tokens = (
+            torch.cat(tokens_list, dim=0)
+            if tokens_list
+            else images[0].new_zeros(0, self.proj.out_channels)
         )
+        meta = {
+            "sample_idx": torch.cat(sample_idx, dim=0)
+            if sample_idx
+            else torch.empty(0, dtype=torch.long, device=device),
+            "channel_idx": torch.cat(channel_idx, dim=0)
+            if channel_idx
+            else torch.empty(0, dtype=torch.long, device=device),
+            "patch_idx": torch.cat(patch_idx, dim=0)
+            if patch_idx
+            else torch.empty(0, dtype=torch.long, device=device),
+            "channel_id": torch.cat(channel_id, dim=0)
+            if channel_id
+            else torch.empty(0, dtype=torch.long, device=device),
+            "channel_global": torch.cat(channel_global, dim=0)
+            if channel_global
+            else torch.empty(0, dtype=torch.long, device=device),
+            "patch_row": torch.cat(patch_row, dim=0)
+            if patch_row
+            else torch.empty(0, dtype=torch.long, device=device),
+            "patch_col": torch.cat(patch_col, dim=0)
+            if patch_col
+            else torch.empty(0, dtype=torch.long, device=device),
+            "patch_size": torch.cat(patch_size_tok, dim=0)
+            if patch_size_tok
+            else torch.empty(0, device=device),
+            "grid_h": torch.tensor(grid_h_list, dtype=torch.long, device=device),
+            "grid_w": torch.tensor(grid_w_list, dtype=torch.long, device=device),
+            "n_patches_per_sample": torch.tensor(n_patches_list, dtype=torch.long, device=device),
+            "n_patches": max(n_patches_list) if n_patches_list else 0,
+            "patch_sizes": ps,
+        }
         return tokens, meta
 
     def _resolve_patch_sizes(self, n_samples, patch_sizes, device):
@@ -184,9 +200,7 @@ class ChannelTiedPatchEmbed(nn.Module):
             return [int(patch_sizes)] * n_samples
         ps = [int(p) for p in patch_sizes]
         if len(ps) != n_samples:
-            raise ValueError(
-                f"expected {n_samples} patch sizes, got {len(ps)}"
-            )
+            raise ValueError(f"expected {n_samples} patch sizes, got {len(ps)}")
         return ps
 
 
@@ -204,7 +218,7 @@ class ChannelTokenizer(nn.Module):
         patch_size: int,
         dim: int,
         channel_embedding: ChannelEmbedding,
-        patch_sizes: Optional[Sequence[int]] = None,
+        patch_sizes: Sequence[int] | None = None,
     ) -> None:
         super().__init__()
         self.patch_embed = ChannelTiedPatchEmbed(
@@ -219,14 +233,12 @@ class ChannelTokenizer(nn.Module):
         self,
         images: Sequence[torch.Tensor],
         channel_ids: Sequence[torch.Tensor],
-        visible: Optional[Sequence[torch.Tensor]] = None,
+        visible: Sequence[torch.Tensor] | None = None,
         patch_sizes=None,
         pixel_sizes=None,
     ) -> ChannelSet:
         n_samples = len(images)
-        tokens, meta = self.patch_embed(
-            images, channel_ids, visible, patch_sizes=patch_sizes
-        )
+        tokens, meta = self.patch_embed(images, channel_ids, visible, patch_sizes=patch_sizes)
         channel_global = meta["channel_global"]
 
         # µm/px is constant within a sample; carry it per token so metric PE can
@@ -240,13 +252,9 @@ class ChannelTokenizer(nn.Module):
             else:
                 per_sample = [None if v is None else float(v) for v in pixel_sizes]
             if len(per_sample) != n_samples:
-                raise ValueError(
-                    f"expected {n_samples} pixel sizes, got {len(per_sample)}"
-                )
+                raise ValueError(f"expected {n_samples} pixel sizes, got {len(per_sample)}")
             if any(v is None for v in per_sample):
-                raise ValueError(
-                    "metric PE needs a pixel size for every sample; got None"
-                )
+                raise ValueError("metric PE needs a pixel size for every sample; got None")
             pv = torch.tensor(per_sample, dtype=torch.float32, device=tokens.device)
             pixel_size = pv[meta["sample_idx"]]
 
@@ -287,7 +295,7 @@ class ChannelTokenizer(nn.Module):
         else:
             ps = [int(p) for p in patch_size]
         per_sample = [
-            F.unfold(im.to(images[0].device), p, stride=p) for im, p in zip(images, ps)
+            F.unfold(im.to(images[0].device), p, stride=p) for im, p in zip(images, ps, strict=True)
         ]
         ns = {t.shape[-1] for t in per_sample}
         if len(ns) > 1:
@@ -298,9 +306,7 @@ class ChannelTokenizer(nn.Module):
         return torch.cat(per_sample, dim=0)
 
     @staticmethod
-    def extract_patches_list(
-        images: Sequence[torch.Tensor], patch_size
-    ) -> List[torch.Tensor]:
+    def extract_patches_list(images: Sequence[torch.Tensor], patch_size) -> list[torch.Tensor]:
         """Per-sample ``[C_b, p_b**2, N_b]`` patch tensors (variable ``p``)."""
         ps = (
             [patch_size] * len(images)
@@ -308,8 +314,7 @@ class ChannelTokenizer(nn.Module):
             else [int(p) for p in patch_size]
         )
         return [
-            F.unfold(im.to(images[0].device), p, stride=p)
-            for im, p in zip(images, ps)
+            F.unfold(im.to(images[0].device), p, stride=p) for im, p in zip(images, ps, strict=True)
         ]
 
     @staticmethod
@@ -320,7 +325,7 @@ class ChannelTokenizer(nn.Module):
         patch_idx: torch.Tensor,
         patch_sizes,
         grid_w,
-    ) -> List[torch.Tensor]:
+    ) -> list[torch.Tensor]:
         """Per-sample ``[k_b, p_b**2]`` pixels for the *requested* patches only.
 
         Unlike :meth:`extract_patches_list`, which materialises every patch of
@@ -338,7 +343,7 @@ class ChannelTokenizer(nn.Module):
             else [int(p) for p in patch_sizes]
         )
         device = images[0].device
-        out: List[torch.Tensor] = []
+        out: list[torch.Tensor] = []
         for b, im in enumerate(images):
             im = im.to(device)
             p = int(ps[b])

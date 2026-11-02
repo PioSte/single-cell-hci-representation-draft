@@ -1,6 +1,6 @@
 """Cost check: cross-attention fusion vs. identity-gated sum at C=60.
 
-    uv run python examples/benchmark_fusion.py
+uv run python examples/benchmark_fusion.py
 """
 
 from __future__ import annotations
@@ -56,13 +56,10 @@ def main() -> None:
 
     t_attn = bench(attn, cs)
     t_gated = bench(gated, cs)
-    print(f"tokens: B={B} C={C} N={N} D={D}  -> T={B*C*N}")
-    print(
-        f"attention fusion       : {t_attn*1e3:8.2f} ms / step "
-        f"(attn_dim={attn.attn_dim})"
-    )
-    print(f"identity-gated sum     : {t_gated*1e3:8.2f} ms / step")
-    print(f"speedup (gated/attn)   : {t_attn/max(t_gated,1e-9):.2f}x")
+    print(f"tokens: B={B} C={C} N={N} D={D}  -> T={B * C * N}")
+    print(f"attention fusion       : {t_attn * 1e3:8.2f} ms / step (attn_dim={attn.attn_dim})")
+    print(f"identity-gated sum     : {t_gated * 1e3:8.2f} ms / step")
+    print(f"speedup (gated/attn)   : {t_attn / max(t_gated, 1e-9):.2f}x")
 
 
 if __name__ == "__main__":

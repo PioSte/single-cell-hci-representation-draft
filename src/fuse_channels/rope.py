@@ -153,9 +153,7 @@ def axial_rope_cache(
     if pixel_size is not None:
         if patch_size is None:
             raise ValueError("metric RoPE needs patch_size when pixel_size is given")
-        r_norm, c_norm = physical_grid_coords(
-            rows, cols, patch_size, pixel_size, ref_um=ref_um
-        )
+        r_norm, c_norm = physical_grid_coords(rows, cols, patch_size, pixel_size, ref_um=ref_um)
     else:
         r_norm, c_norm = normalized_grid_coords(
             rows,
@@ -165,9 +163,7 @@ def axial_rope_cache(
             ref_extent=ref_extent,
             shared_extent=shared_extent,
         )
-    angle = torch.cat(
-        [r_norm[:, None] * theta[None, :], c_norm[:, None] * theta[None, :]], dim=-1
-    )
+    angle = torch.cat([r_norm[:, None] * theta[None, :], c_norm[:, None] * theta[None, :]], dim=-1)
     return angle.cos(), angle.sin()
 
 
@@ -181,9 +177,7 @@ def identity_rope_cache(
     return cos, sin
 
 
-def apply_rope(
-    x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor
-) -> torch.Tensor:
+def apply_rope(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
     """Rotate ``[T, H, D_head]`` query/key tensors.
 
     ``cos`` and ``sin`` have shape ``[T, D_head / 2]``.  Pairs are interleaved
@@ -194,13 +188,9 @@ def apply_rope(
         raise ValueError(f"apply_rope expects [T, H, D_head], got {tuple(x.shape)}")
     T, H, Dh = x.shape
     if Dh != 2 * cos.shape[-1]:
-        raise ValueError(
-            f"RoPE cache has {2 * cos.shape[-1]} channels, but x has {Dh}"
-        )
+        raise ValueError(f"RoPE cache has {2 * cos.shape[-1]} channels, but x has {Dh}")
     if cos.shape[0] != T:
-        raise ValueError(
-            f"RoPE cache has {cos.shape[0]} positions, but x has {T} tokens"
-        )
+        raise ValueError(f"RoPE cache has {cos.shape[0]} positions, but x has {T} tokens")
     pairs = x.reshape(T, H, Dh // 2, 2)
     c = cos.reshape(T, 1, -1).to(dtype=x.dtype)
     s = sin.reshape(T, 1, -1).to(dtype=x.dtype)

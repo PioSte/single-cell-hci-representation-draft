@@ -33,7 +33,7 @@ combined region (ChA-MAEViT's default).
 from __future__ import annotations
 
 import math
-from typing import List, Optional, Sequence
+from collections.abc import Sequence
 
 import torch
 
@@ -58,8 +58,8 @@ class HierarchicalChannelSampler:
     def __call__(
         self,
         n_channels: int,
-        device: Optional[torch.device] = None,
-        generator: Optional[torch.Generator] = None,
+        device: torch.device | None = None,
+        generator: torch.Generator | None = None,
         min_visible: int = 1,
     ) -> torch.Tensor:
         """Return a ``[n_channels]`` boolean visible-channel mask.
@@ -71,9 +71,7 @@ class HierarchicalChannelSampler:
         if n_channels < 1:
             raise ValueError(f"n_channels must be >= 1, got {n_channels}")
         if min_visible < 1 or min_visible > n_channels:
-            raise ValueError(
-                f"min_visible must be in [1, {n_channels}], got {min_visible}"
-            )
+            raise ValueError(f"min_visible must be in [1, {n_channels}], got {min_visible}")
         m = int(
             torch.randint(
                 min_visible,
@@ -139,39 +137,27 @@ class DCPVisibilitySampler:
             raise ValueError(f"n_patches must be >= 1, got {n_patches}")
         if p_patch < 0 or p_channel < 0:
             raise ValueError(
-                f"p_patch and p_channel must be non-negative, "
-                f"got {p_patch} and {p_channel}"
+                f"p_patch and p_channel must be non-negative, got {p_patch} and {p_channel}"
             )
         if p_patch + p_channel > 1:
-            raise ValueError(
-                f"p_patch + p_channel must be <= 1, got {p_patch + p_channel}"
-            )
+            raise ValueError(f"p_patch + p_channel must be <= 1, got {p_patch + p_channel}")
         if not 0.0 < patch_ratio < 1.0:
             raise ValueError(f"patch_ratio must be in (0, 1), got {patch_ratio}")
         patch_region_used = p_patch > 0 or p_patch + p_channel < 1
-        if (
-            n_patches is not None
-            and patch_region_used
-            and math.floor(n_patches * patch_ratio) < 1
-        ):
+        if n_patches is not None and patch_region_used and math.floor(n_patches * patch_ratio) < 1:
             raise ValueError(
                 "n_patches * patch_ratio must be >= 1 when the patch region "
                 "is used; got "
                 f"n_patches={n_patches}, patch_ratio={patch_ratio}"
             )
         if min_visible_channels < 1:
-            raise ValueError(
-                f"min_visible_channels must be >= 1, got {min_visible_channels}"
-            )
+            raise ValueError(f"min_visible_channels must be >= 1, got {min_visible_channels}")
         if not 0.0 <= max_masked_channels_frac <= 1.0:
             raise ValueError(
-                "max_masked_channels_frac must be in [0, 1], got "
-                f"{max_masked_channels_frac}"
+                f"max_masked_channels_frac must be in [0, 1], got {max_masked_channels_frac}"
             )
         if mode_sampling not in ("batch", "sample"):
-            raise ValueError(
-                f"mode_sampling must be 'batch' or 'sample', got {mode_sampling!r}"
-            )
+            raise ValueError(f"mode_sampling must be 'batch' or 'sample', got {mode_sampling!r}")
 
         self.n_patches = n_patches
         self.p_patch = p_patch
@@ -181,20 +167,14 @@ class DCPVisibilitySampler:
         self.max_masked_channels_frac = max_masked_channels_frac
         self.mode_sampling = mode_sampling
         self.channel_sampler = HierarchicalChannelSampler()
-        self.last_modes: List[str] = []
+        self.last_modes: list[str] = []
 
     # ------------------------------------------------------------------ #
     def _uniform(self, device, generator) -> float:
-        return float(
-            torch.rand(
-                (), device=device, generator=generator, dtype=torch.float32
-            ).item()
-        )
+        return float(torch.rand((), device=device, generator=generator, dtype=torch.float32).item())
 
     def _randint(self, high: int, device, generator) -> int:
-        return int(
-            torch.randint(0, high, (1,), device=device, generator=generator).item()
-        )
+        return int(torch.randint(0, high, (1,), device=device, generator=generator).item())
 
     def _mode_from_s(self, s: float) -> str:
         if s < self.p_patch:
@@ -203,31 +183,24 @@ class DCPVisibilitySampler:
             return "channel"
         return "combined"
 
-    def _select_modes(self, n_samples: int, device, generator) -> List[str]:
+    def _select_modes(self, n_samples: int, device, generator) -> list[str]:
         if self.mode_sampling == "batch":
             s = self._uniform(device, generator)
             return [self._mode_from_s(s)] * n_samples
-        return [
-            self._mode_from_s(self._uniform(device, generator))
-            for _ in range(n_samples)
-        ]
+        return [self._mode_from_s(self._uniform(device, generator)) for _ in range(n_samples)]
 
     # ------------------------------------------------------------------ #
     def _draw_visible(
         self, n_channels: int, n_patches: int, device, generator, mode: str
     ) -> torch.Tensor:
         """Draw a ``[C, N]`` boolean visible mask for one sample."""
-        visible = torch.ones(
-            n_channels, n_patches, dtype=torch.bool, device=device
-        )
+        visible = torch.ones(n_channels, n_patches, dtype=torch.bool, device=device)
 
         if mode in ("patch", "combined"):
-            n_masked = int(math.floor(n_patches * self.patch_ratio))
+            n_masked = math.floor(n_patches * self.patch_ratio)
             for c in range(n_channels):
                 if n_masked:
-                    idx = torch.randperm(
-                        n_patches, device=device, generator=generator
-                    )[:n_masked]
+                    idx = torch.randperm(n_patches, device=device, generator=generator)[:n_masked]
                     visible[c, idx] = False
 
         if mode in ("channel", "combined"):
@@ -238,7 +211,7 @@ class DCPVisibilitySampler:
                 min_visible=self._min_content_channels(n_channels),
             )
             dropped = int((~channel_visible).sum().item())
-            cap = int(math.floor(n_channels * self.max_masked_channels_frac))
+            cap = math.floor(n_channels * self.max_masked_channels_frac)
             if dropped > cap:
                 # Optional cap: uniformly restore enough channels instead of
                 # dropping more than requested.
@@ -265,7 +238,9 @@ class DCPVisibilitySampler:
         n_with_content = int(visible.any(dim=1).sum().item())
         return n_with_content >= self._min_content_channels(visible.shape[0])
 
-    def _force_visible_patch(self, visible: torch.Tensor, n_patches: int, generator) -> torch.Tensor:
+    def _force_visible_patch(
+        self, visible: torch.Tensor, n_patches: int, generator
+    ) -> torch.Tensor:
         """Last-resort guard: reveal one patch in every empty channel.
 
         Never reveals a whole channel row, so a channel dropped by the channel
@@ -289,7 +264,7 @@ class DCPVisibilitySampler:
         return visible
 
     # ------------------------------------------------------------------ #
-    def _resolve_n_patches(self, n_samples: int, n_patches) -> List[int]:
+    def _resolve_n_patches(self, n_samples: int, n_patches) -> list[int]:
         if n_patches is None:
             if self.n_patches is None:
                 raise ValueError(
@@ -300,17 +275,15 @@ class DCPVisibilitySampler:
             return [n_patches] * n_samples
         ns = [int(n) for n in n_patches]
         if len(ns) != n_samples:
-            raise ValueError(
-                f"expected {n_samples} n_patches values, got {len(ns)}"
-            )
+            raise ValueError(f"expected {n_samples} n_patches values, got {len(ns)}")
         return ns
 
     def __call__(
         self,
         images: Sequence[torch.Tensor],
-        generator: Optional[torch.Generator] = None,
+        generator: torch.Generator | None = None,
         n_patches=None,
-    ) -> List[torch.Tensor]:
+    ) -> list[torch.Tensor]:
         """Return a list of ``[C_b, N_b]`` boolean *visible* masks.
 
         ``n_patches`` overrides the constructor value and may be a scalar or
@@ -324,24 +297,21 @@ class DCPVisibilitySampler:
         device = images[0].device
         ns = self._resolve_n_patches(len(images), n_patches)
         modes = self._select_modes(len(images), device, generator)
-        out: List[torch.Tensor] = []
+        out: list[torch.Tensor] = []
 
-        for im, mode, N in zip(images, modes, ns):
+        for im, mode, N in zip(images, modes, ns, strict=True):
             if N < 1:
                 raise ValueError(f"n_patches must be >= 1, got {N}")
             patch_region_used = self.p_patch > 0 or self.p_patch + self.p_channel < 1
-            patch_ok = (
-                not patch_region_used
-                or math.floor(N * self.patch_ratio) >= 1
-            )
+            patch_ok = not patch_region_used or math.floor(N * self.patch_ratio) >= 1
             C = int(im.shape[0])
             applied = mode
             if not patch_ok and applied in ("patch", "combined"):
                 # A 1-patch grid cannot use the patch region.  Fall back to
                 # whole-channel masking, or to an unmasked sample when even
                 # channel masking would be a no-op.
-                applied = "channel" if C > self.min_visible_channels else "none"
-            if applied == "channel" and C <= self.min_visible_channels:
+                applied = "channel" if self.min_visible_channels < C else "none"
+            if applied == "channel" and self.min_visible_channels >= C:
                 # Channel-only masking would be a no-op (HCS keeps >= 1
                 # channel visible and C <= min_visible); use patch masking.
                 applied = "patch" if patch_ok else "none"

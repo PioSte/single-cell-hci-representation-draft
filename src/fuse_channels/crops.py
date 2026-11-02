@@ -50,9 +50,9 @@ from __future__ import annotations
 
 import json
 import math
-from dataclasses import asdict, dataclass, field
+from collections.abc import Callable, Sequence
+from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
@@ -80,7 +80,7 @@ def patch_size_for_pixel_size(pixel_size: float, target_um: float) -> int:
         raise ValueError(f"pixel_size must be positive, got {pixel_size}")
     if target_um <= 0:
         raise ValueError(f"target_um must be positive, got {target_um}")
-    return max(1, int(math.floor(target_um / pixel_size + 0.5)))
+    return max(1, math.floor(target_um / pixel_size + 0.5))
 
 
 @dataclass(frozen=True)
@@ -104,17 +104,15 @@ class CropGeometry:
         pixel_size: float,
         target_um: float,
         n_tokens: int,
-        fleet_pixel_sizes: Optional[Sequence[float]] = None,
-    ) -> "CropGeometry":
+        fleet_pixel_sizes: Sequence[float] | None = None,
+    ) -> CropGeometry:
         if n_tokens < 1:
             raise ValueError(f"n_tokens must be >= 1, got {n_tokens}")
         if fleet_pixel_sizes is not None:
             # Ingest-time validation: the pixel size must name an acquisition
             # fleet entry, and the canonical table value is what p is computed
             # from (float noise in the metadata must not move p).
-            pixel_size = canonical_fleet_pixel_size(
-                pixel_size, fleet_pixel_sizes
-            )
+            pixel_size = canonical_fleet_pixel_size(pixel_size, fleet_pixel_sizes)
         p = patch_size_for_pixel_size(pixel_size, target_um)
         return cls(
             patch_size=p,
@@ -133,10 +131,10 @@ class CropGeometry:
 
 
 def place_box(
-    bbox: Tuple[int, int, int, int],
+    bbox: tuple[int, int, int, int],
     crop_px: int,
-    image_hw: Tuple[int, int],
-) -> Optional[Tuple[int, int]]:
+    image_hw: tuple[int, int],
+) -> tuple[int, int] | None:
     """Top-left of a ``crop_px²`` box centred on ``bbox`` and clamped in-bounds.
 
     ``bbox`` is ``(y0, y1, x0, x1)`` in pixels, half-open. Returns ``None`` when
@@ -148,8 +146,8 @@ def place_box(
         return None
     cy = (y0 + y1) / 2.0
     cx = (x0 + x1) / 2.0
-    top = int(round(cy - crop_px / 2.0))
-    left = int(round(cx - crop_px / 2.0))
+    top = round(cy - crop_px / 2.0)
+    left = round(cx - crop_px / 2.0)
     top = max(0, min(top, H - crop_px))
     left = max(0, min(left, W - crop_px))
     return top, left
@@ -179,9 +177,7 @@ def token_coverage(
     p = patch_size
     nh, nw = mask_px.shape[0] // p, mask_px.shape[1] // p
     if nh < 1 or nw < 1:
-        raise ValueError(
-            f"mask {mask_px.shape} smaller than one {p}x{p} patch"
-        )
+        raise ValueError(f"mask {mask_px.shape} smaller than one {p}x{p} patch")
     m = mask_px[: nh * p, : nw * p].astype(np.float32)
     blocks = m.reshape(nh, p, nw, p)
     if mode == "any":
@@ -224,16 +220,16 @@ class CellCrop:
     geometry: CropGeometry
     top: int
     left: int
-    channel_ids: Tuple[int, ...]
-    valid: Optional[np.ndarray] = None
-    coverage: Optional[np.ndarray] = None
+    channel_ids: tuple[int, ...]
+    valid: np.ndarray | None = None
+    coverage: np.ndarray | None = None
     n_valid: int = 0
-    path: Optional[str] = None
-    cell_hw: Tuple[int, int] = (0, 0)
+    path: str | None = None
+    cell_hw: tuple[int, int] = (0, 0)
     covers_cell: bool = False
 
     @property
-    def shape_hw(self) -> Tuple[int, int]:
+    def shape_hw(self) -> tuple[int, int]:
         return self.geometry.crop_px, self.geometry.crop_px
 
     def to_dict(self) -> dict:
@@ -256,7 +252,7 @@ class CellCrop:
         return d
 
     @classmethod
-    def from_dict(cls, d: dict) -> "CellCrop":
+    def from_dict(cls, d: dict) -> CellCrop:
         geom = CropGeometry(**d["geometry"])
         cov = d.get("coverage")
         coverage = (
@@ -274,7 +270,7 @@ class CellCrop:
             coverage=coverage,
             n_valid=int(d.get("n_valid", 0)),
             path=d.get("path"),
-            cell_hw=tuple(int(v) for v in d.get("cell_hw", (0, 0))),
+            cell_hw=(int(d.get("cell_hw", (0, 0))[0]), int(d.get("cell_hw", (0, 0))[1])),
             covers_cell=bool(d.get("covers_cell", False)),
         )
         crop.valid = None if coverage is None else coverage.reshape(-1)
@@ -282,10 +278,10 @@ class CellCrop:
 
 
 def cell_n_tokens(
-    cell_hw_px: Tuple[int, int],
+    cell_hw_px: tuple[int, int],
     patch_size: int,
     min_n: int = 2,
-    max_n: Optional[int] = None,
+    max_n: int | None = None,
 ) -> int:
     """Tokens per side needed to cover a cell: ``max(min_n, ceil(max(h, w) / p))``.
 
@@ -314,8 +310,8 @@ def cell_n_tokens(
 
 def plan_patches(
     mask: np.ndarray,
-    image_hw: Tuple[int, int],
-    geometry: Optional[CropGeometry] = None,
+    image_hw: tuple[int, int],
+    geometry: CropGeometry | None = None,
     image_id: str = "image",
     channel_ids: Sequence[int] = (),
     coverage_mode: str = "any",
@@ -323,13 +319,13 @@ def plan_patches(
     min_valid_tokens: int = 1,
     require_full_cell: bool = False,
     *,
-    pixel_size: Optional[float] = None,
-    target_um: Optional[float] = None,
-    fleet_pixel_sizes: Optional[Sequence[float]] = None,
+    pixel_size: float | None = None,
+    target_um: float | None = None,
+    fleet_pixel_sizes: Sequence[float] | None = None,
     n_tokens=None,
     min_n: int = 2,
-    max_n: Optional[int] = None,
-) -> Tuple[List[CellCrop], List[dict]]:
+    max_n: int | None = None,
+) -> tuple[list[CellCrop], list[dict]]:
     """Plan one token window per non-zero id in ``mask``.
 
     Two modes:
@@ -359,13 +355,9 @@ def plan_patches(
         pixel_size = canonical_fleet_pixel_size(pixel_size, fleet_pixel_sizes)
     if geometry is None:
         if pixel_size is None or target_um is None:
-            raise ValueError(
-                "pass either geometry=, or pixel_size= with target_um="
-            )
+            raise ValueError("pass either geometry=, or pixel_size= with target_um=")
         if n_tokens is None:
-            raise ValueError(
-                "pass n_tokens= (an int, or 'cell' to size the window per cell)"
-            )
+            raise ValueError("pass n_tokens= (an int, or 'cell' to size the window per cell)")
         base_geometry = (
             None
             if n_tokens == "cell"
@@ -385,8 +377,8 @@ def plan_patches(
     if mask.ndim != 2:
         raise ValueError(f"mask must be 2-D, got {mask.shape}")
     H, W = int(image_hw[0]), int(image_hw[1])
-    crops: List[CellCrop] = []
-    skipped: List[dict] = []
+    crops: list[CellCrop] = []
+    skipped: list[dict] = []
     ids = np.unique(mask)
     ids = ids[ids != 0]
     for cid in ids:
@@ -396,11 +388,12 @@ def plan_patches(
         bbox = (int(ys.min()), int(ys.max()) + 1, int(xs.min()), int(xs.max()) + 1)
         geom = base_geometry
         if geom is None:
-            # variable-N mode: size this cell's window from its own extent
+            # variable-N mode: size this cell's window from its own extent.
+            # ``base_geometry`` is only None when ``geometry=`` was omitted,
+            # which the entry guard has already paired with pixel_size/target_um.
+            assert pixel_size is not None and target_um is not None
             p = patch_size_for_pixel_size(pixel_size, target_um)
-            need = cell_n_tokens(
-                (bbox[1] - bbox[0], bbox[3] - bbox[2]), p, min_n=min_n
-            )
+            need = cell_n_tokens((bbox[1] - bbox[0], bbox[3] - bbox[2]), p, min_n=min_n)
             if max_n is not None and need > max_n:
                 skipped.append(
                     {
@@ -429,12 +422,7 @@ def plan_patches(
         top, left = box
         s = geom.crop_px
         # the whole cell fits only if its bbox is inside the placed window
-        covers = (
-            bbox[0] >= top
-            and bbox[1] <= top + s
-            and bbox[2] >= left
-            and bbox[3] <= left + s
-        )
+        covers = bbox[0] >= top and bbox[1] <= top + s and bbox[2] >= left and bbox[3] <= left + s
         if require_full_cell and not covers:
             skipped.append(
                 {
@@ -494,20 +482,22 @@ class TiffStack:
     class then simply calls it.
     """
 
-    def __init__(self, paths: Sequence[str], plane_loader: Optional[Callable] = None):
+    def __init__(self, paths: Sequence[str], plane_loader: Callable | None = None):
         self.paths = [str(p) for p in paths]
         self._plane_loader = plane_loader
-        self._planes: List[Optional[np.ndarray]] = [None] * len(self.paths)
+        self._planes: list[np.ndarray | None] = [None] * len(self.paths)
 
     def _plane(self, i: int) -> np.ndarray:
-        if self._planes[i] is None:
+        plane = self._planes[i]
+        if plane is None:
             if self._plane_loader is not None:
-                self._planes[i] = np.asarray(self._plane_loader(self.paths[i]))
+                plane = np.asarray(self._plane_loader(self.paths[i]))
             else:
-                import tifffile  # noqa: PLC0415  (optional dependency)
+                import tifffile
 
-                self._planes[i] = tifffile.imread(self.paths[i])
-        return self._planes[i]
+                plane = tifffile.imread(self.paths[i])
+            self._planes[i] = plane
+        return plane
 
     def read_box(self, top: int, left: int, size: int) -> np.ndarray:
         """``[C, size, size]`` float32 crop; singleton leading axes are squeezed."""
@@ -517,9 +507,7 @@ class TiffStack:
             while plane.ndim > 2 and plane.shape[0] == 1:
                 plane = plane[0]
             if plane.ndim != 2:
-                raise ValueError(
-                    f"{self.paths[i]} must decode to a 2-D plane, got {plane.shape}"
-                )
+                raise ValueError(f"{self.paths[i]} must decode to a 2-D plane, got {plane.shape}")
             out.append(plane[top : top + size, left : left + size])
         return np.stack(out, axis=0).astype(np.float32, copy=False)
 
@@ -541,10 +529,10 @@ def write_crop_cache(
     out_dir: str | Path,
     crop: CellCrop,
     images: torch.Tensor | np.ndarray,
-    index: List[dict],
+    index: list[dict],
 ) -> str:
     """Write one crop as a channel-stack TIFF plus a JSON sidecar; append to ``index``."""
-    import tifffile  # noqa: PLC0415  (optional dependency)
+    import tifffile
 
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
@@ -585,9 +573,9 @@ class CellCropDataset(torch.utils.data.Dataset):
 
     def __init__(
         self,
-        crops: Optional[Sequence[CellCrop]] = None,
-        readers: Optional[Dict[str, TiffStack]] = None,
-        index_path: Optional[str | Path] = None,
+        crops: Sequence[CellCrop] | None = None,
+        readers: dict[str, TiffStack] | None = None,
+        index_path: str | Path | None = None,
         return_valid: bool = True,
     ) -> None:
         self.return_valid = bool(return_valid)
@@ -609,10 +597,10 @@ class CellCropDataset(torch.utils.data.Dataset):
     def __len__(self) -> int:
         return len(self.crops)
 
-    def __getitem__(self, i: int) -> dict:
-        crop = self.crops[i]
+    def __getitem__(self, index) -> dict:
+        crop = self.crops[index]
         if self.mode == "cache":
-            import tifffile  # noqa: PLC0415
+            import tifffile
 
             arr = np.asarray(tifffile.imread(crop.path))
             if arr.ndim == 2:

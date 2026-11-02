@@ -1,4 +1,5 @@
 import torch
+
 from fuse_channels import ChannelSet
 
 
@@ -56,13 +57,9 @@ def permute_channels(cs):
                 channel_idx.append(new_c)
                 patch_idx.append(int(cs.patch_idx[t]))
                 channel_id.append(int(cs.channel_id[t]))
-                channel_embed.append(
-                    cs.channel_embed[t] if cs.channel_embed is not None else None
-                )
+                channel_embed.append(cs.channel_embed[t] if cs.channel_embed is not None else None)
                 channel_group_id.append(
-                    int(cs.channel_group_id[t])
-                    if cs.channel_group_id is not None
-                    else -1
+                    int(cs.channel_group_id[t]) if cs.channel_group_id is not None else -1
                 )
     return ChannelSet(
         tokens=torch.stack(tokens),
@@ -72,9 +69,7 @@ def permute_channels(cs):
         channel_id=torch.tensor(channel_id),
         n_samples=cs.n_samples,
         n_patches=cs.n_patches,
-        channel_embed=(
-            torch.stack(channel_embed) if cs.channel_embed is not None else None
-        ),
+        channel_embed=(torch.stack(channel_embed) if cs.channel_embed is not None else None),
         channel_group_id=(
             torch.tensor(channel_group_id) if cs.channel_group_id is not None else None
         ),

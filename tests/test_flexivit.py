@@ -1,18 +1,15 @@
 """FlexiViT target architecture: RoPE, fractional PE, PI-resize, dynamic p."""
 
-import math
-
 import pytest
 import torch
 import torch.nn.functional as F
 
 from fuse_channels import (
+    ChannelEmbedding,
     ChannelFusionMAE,
     ChannelTokenizer,
-    ChannelEmbedding,
     apply_rope,
     axial_rope_cache,
-    fractional_1d_sincos,
     get_fractional_sincos_pos_embed,
     identity_rope_cache,
     normalized_grid_coords,
@@ -64,9 +61,7 @@ def test_normalized_rope_coords_are_grid_size_invariant():
 def test_shared_extent_preserves_aspect_ratio():
     rows = torch.tensor([1])
     cols = torch.tensor([3])
-    rn, cn = normalized_grid_coords(
-        rows, cols, 2, 8, ref_extent=8.0, shared_extent=True
-    )
+    rn, cn = normalized_grid_coords(rows, cols, 2, 8, ref_extent=8.0, shared_extent=True)
     assert torch.allclose(rn, torch.tensor([1.5]))
     assert torch.allclose(cn, torch.tensor([3.5]))
 
@@ -103,9 +98,7 @@ def test_fractional_pe_is_grid_size_invariant_and_non_square():
 
     # non-square grid: row fractions from a 12-row grid, column fractions
     # from a 4-column grid
-    non_square = get_fractional_sincos_pos_embed(
-        16, torch.tensor([1, 4, 7, 10]), cols, 12, 4
-    )
+    non_square = get_fractional_sincos_pos_embed(16, torch.tensor([1, 4, 7, 10]), cols, 12, 4)
     assert non_square.shape == (4, 16)
     assert torch.allclose(non_square, pe, atol=1e-6)
 
@@ -140,7 +133,7 @@ def test_pi_resize_uses_the_pseudoinverse_resize_operator():
     w_pi = pi_resize_patch_embed(w, p_out).reshape(-1)
     assert torch.allclose(w_pi, P @ w.reshape(-1), atol=1e-5)
     # PI-resize is not the same operation as bilinear resize.
-    bilinear = (B @ w.reshape(-1))
+    bilinear = B @ w.reshape(-1)
     assert not torch.allclose(w_pi, bilinear)
 
 
@@ -229,19 +222,19 @@ def _batch(image_size=16, seed=0):
 
 
 def _model(**kw):
-    cfg = dict(
-        image_size=16,
-        patch_size=8,
-        patch_sizes=(4, 8),
-        dim=32,
-        encoder_depth=1,
-        decoder_depth=1,
-        n_heads=4,
-        n_memory=2,
-        num_channel_ids=8,
-        flexi_random=False,
-        pixel_size=1.0,
-    )
+    cfg = {
+        "image_size": 16,
+        "patch_size": 8,
+        "patch_sizes": (4, 8),
+        "dim": 32,
+        "encoder_depth": 1,
+        "decoder_depth": 1,
+        "n_heads": 4,
+        "n_memory": 2,
+        "num_channel_ids": 8,
+        "flexi_random": False,
+        "pixel_size": 1.0,
+    }
     cfg.update(kw)
     return ChannelFusionMAE(**cfg)
 
@@ -279,9 +272,7 @@ def test_per_sample_variable_patch_size_keeps_each_rows_own_pixels():
         out = model(images, ids, visible=visible, patch_sizes=[4, 8])
     # mixed p: rows keep exactly their own p**2 pixels, contiguous -- no
     # padded [K, max(p)**2] block and no validity mask
-    counts = (
-        out["target_pixel_offset"][1:] - out["target_pixel_offset"][:-1]
-    ).tolist()
+    counts = (out["target_pixel_offset"][1:] - out["target_pixel_offset"][:-1]).tolist()
     assert set(counts) == {16, 64}
     assert out["target"].shape == out["pred"].shape
     assert out["pred"].numel() == sum(counts)
@@ -293,9 +284,7 @@ def test_single_patch_grid_falls_back_to_channel_masking():
     model = _model(patch_sizes=(4, 16))
     model.train()
     images, ids = _batch()
-    out = model(
-        images, ids, generator=torch.Generator().manual_seed(4), patch_sizes=16
-    )
+    out = model(images, ids, generator=torch.Generator().manual_seed(4), patch_sizes=16)
     assert out["patch_sizes"] == [16, 16]
     assert torch.isfinite(out["loss"])
     out["loss"].backward()
@@ -305,12 +294,22 @@ def test_encoder_rope_uses_normalized_layout_not_raw_indices():
     model = _model(patch_sizes=(4, 8, 16))
     assert model.encoder_pos_embed == "rope"
     c1, s1 = axial_rope_cache(
-        torch.tensor([0]), torch.tensor([0]), 4, 4, 8,
-        base=model.rope_base, ref_extent=model.rope_ref_extent,
+        torch.tensor([0]),
+        torch.tensor([0]),
+        4,
+        4,
+        8,
+        base=model.rope_base,
+        ref_extent=model.rope_ref_extent,
     )
     c2, s2 = axial_rope_cache(
-        torch.tensor([1]), torch.tensor([1]), 12, 12, 8,
-        base=model.rope_base, ref_extent=model.rope_ref_extent,
+        torch.tensor([1]),
+        torch.tensor([1]),
+        12,
+        12,
+        8,
+        base=model.rope_base,
+        ref_extent=model.rope_ref_extent,
     )
     assert torch.allclose(c1, c2, atol=1e-6)
     assert torch.allclose(s1, s2, atol=1e-6)
@@ -324,7 +323,10 @@ def test_scale_conditioning_add_and_adaln_and_none():
         a = add(images, ids, generator=torch.Generator().manual_seed(2), patch_sizes=8)["pred"]
         b = add(images, ids, generator=torch.Generator().manual_seed(2), patch_sizes=8)["pred"]
         c = add(
-            images, ids, generator=torch.Generator().manual_seed(2), patch_sizes=8,
+            images,
+            ids,
+            generator=torch.Generator().manual_seed(2),
+            patch_sizes=8,
             pixel_sizes=[0.5, 1.0],
         )["pred"]
     assert a is not None and torch.allclose(a, b)
@@ -383,8 +385,10 @@ def test_per_p_head_is_exact_and_does_not_resize():
     for p in (4, 8):
         with torch.no_grad():
             out = model(
-                images, ids,
-                generator=torch.Generator().manual_seed(p), patch_sizes=p,
+                images,
+                ids,
+                generator=torch.Generator().manual_seed(p),
+                patch_sizes=p,
             )
         _assert_every_row_is_p_squared(out, p)
         assert torch.isfinite(out["loss"])
@@ -399,8 +403,10 @@ def test_per_p_head_rejects_unseen_upsampling():
     images, ids = _batch()
     with pytest.raises(ValueError, match="cannot upsample"):
         model(
-            images, ids,
-            generator=torch.Generator().manual_seed(0), patch_sizes=16,
+            images,
+            ids,
+            generator=torch.Generator().manual_seed(0),
+            patch_sizes=16,
         )
 
 
@@ -411,8 +417,10 @@ def test_canonical_head_mode_is_still_available():
     for p in (4, 8):
         with torch.no_grad():
             out = model(
-                images, ids,
-                generator=torch.Generator().manual_seed(p), patch_sizes=p,
+                images,
+                ids,
+                generator=torch.Generator().manual_seed(p),
+                patch_sizes=p,
             )
         _assert_every_row_is_p_squared(out, p)
         assert torch.isfinite(out["loss"])
@@ -470,9 +478,7 @@ def test_non_divisible_border_is_cropped_not_rejected():
     assert cs.grid_w.tolist() == [3]
     assert cs.n_patches_per_sample.tolist() == [9]
 
-    out = model(
-        images, ids, generator=torch.Generator().manual_seed(0), patch_sizes=4
-    )
+    out = model(images, ids, generator=torch.Generator().manual_seed(0), patch_sizes=4)
     assert out["grid_h"].tolist() == [3]
     assert out["n_patches_per_sample"].tolist() == [9]
     _assert_every_row_is_p_squared(out, 4)
@@ -486,8 +492,10 @@ def test_max_tokens_explicit_patch_size_is_an_override():
     images, ids = _batch(image_size=16)
     with torch.no_grad():
         out = model(
-            images, ids,
-            generator=torch.Generator().manual_seed(0), patch_sizes=4,
+            images,
+            ids,
+            generator=torch.Generator().manual_seed(0),
+            patch_sizes=4,
         )
     assert out["patch_sizes"] == [4, 4]
     _assert_every_row_is_p_squared(out, 4)
@@ -502,8 +510,10 @@ def test_canonical_head_rejects_unseen_upsampling():
     images, ids = _batch()
     with pytest.raises(ValueError, match="cannot upsample"):
         model(
-            images, ids,
-            generator=torch.Generator().manual_seed(0), patch_sizes=16,
+            images,
+            ids,
+            generator=torch.Generator().manual_seed(0),
+            patch_sizes=16,
         )
 
 

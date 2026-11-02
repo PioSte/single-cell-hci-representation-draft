@@ -3,6 +3,7 @@ from dataclasses import replace
 
 import pytest
 import torch
+from helpers import make_channel_set, permute_channels
 
 from fuse_channels import (
     ChannelEmbedding,
@@ -13,7 +14,6 @@ from fuse_channels import (
     MultiheadAttentionPooling,
 )
 from fuse_channels.fusion import _dense_fusion_reference
-from helpers import make_channel_set, permute_channels
 
 D = 16
 N = 4
@@ -72,14 +72,10 @@ def test_omission_equivalence():
             n_samples=1,
             n_patches=N,
             channel_embed=(
-                source.channel_embed[keep]
-                if source.channel_embed is not None
-                else None
+                source.channel_embed[keep] if source.channel_embed is not None else None
             ),
             channel_group_id=(
-                source.channel_group_id[keep]
-                if source.channel_group_id is not None
-                else None
+                source.channel_group_id[keep] if source.channel_group_id is not None else None
             ),
         )
 
@@ -117,9 +113,7 @@ def test_identity_changes_routing():
     # Changing only the learned channel-embedding table (raw image content
     # fixed) changes what ChannelFusion produces.
     embed = ChannelEmbedding(D, 8)
-    tokenizer = ChannelTokenizer(
-        image_size=4, patch_size=2, dim=D, channel_embedding=embed
-    )
+    tokenizer = ChannelTokenizer(image_size=4, patch_size=2, dim=D, channel_embedding=embed)
     g = torch.Generator().manual_seed(5)
     images = [torch.randn(3, 1, 4, 4, generator=g)]
     ids = [torch.tensor([1, 4, 6])]
@@ -128,9 +122,7 @@ def test_identity_changes_routing():
         cs_zero = tokenizer(images, ids)
         fused_zero, _ = fusion(cs_zero)
         # non-constant so the shift cannot cancel in LayerNorm
-        embed.embed.weight.copy_(
-            torch.linspace(-1.0, 1.0, D).expand_as(embed.embed.weight)
-        )
+        embed.embed.weight.copy_(torch.linspace(-1.0, 1.0, D).expand_as(embed.embed.weight))
         cs_shifted = tokenizer(images, ids)
         fused_shifted, _ = fusion(cs_shifted)
     # patch content is identical; only the identity has changed
@@ -194,16 +186,12 @@ def test_multihead_attention_pooling_multi_query_shapes():
     x = torch.randn(7, D)
     group_id = torch.tensor([0, 0, 0, 1, 2, 2, 2])
 
-    flat = MultiheadAttentionPooling(
-        D, n_heads=HEADS, n_queries=3, post_sab=True, readout="flat"
-    )
+    flat = MultiheadAttentionPooling(D, n_heads=HEADS, n_queries=3, post_sab=True, readout="flat")
     out_flat = flat(x, group_id, 4)
     assert out_flat.shape == (4, 3 * D)
     assert torch.isfinite(out_flat).all()
 
-    mean = MultiheadAttentionPooling(
-        D, n_heads=HEADS, n_queries=3, post_sab=True, readout="mean"
-    )
+    mean = MultiheadAttentionPooling(D, n_heads=HEADS, n_queries=3, post_sab=True, readout="mean")
     out_mean = mean(x, group_id, 4)
     assert out_mean.shape == (4, D)
     assert torch.isfinite(out_mean).all()
@@ -259,9 +247,7 @@ def test_channel_fusion_is_single_query():
 
     # The descriptor pooler still supports the k>1 research ablation.
     torch.manual_seed(0)
-    pool = MultiheadAttentionPooling(
-        D, n_heads=HEADS, n_queries=3, post_sab=True, readout="flat"
-    )
+    pool = MultiheadAttentionPooling(D, n_heads=HEADS, n_queries=3, post_sab=True, readout="flat")
     x = torch.randn(6, D)
     group_id = torch.tensor([0, 0, 0, 1, 1, 1])
     assert pool(x, group_id, 2).shape == (2, 3 * D)
@@ -291,9 +277,7 @@ def test_identity_gated_sum_unsorted_locations():
     cs = make_channel_set([3, 4], N, D, seed=11)
 
     # shuffle the flattened tokens so the location group ids are unsorted
-    perm = torch.randperm(
-        cs.tokens.shape[0], generator=torch.Generator().manual_seed(3)
-    )
+    perm = torch.randperm(cs.tokens.shape[0], generator=torch.Generator().manual_seed(3))
     shuffled = ChannelSet(
         tokens=cs.tokens[perm],
         sample_idx=cs.sample_idx[perm],
@@ -455,6 +439,7 @@ def test_dropout_active_in_train():
     b, _ = fusion(cs)
     assert not torch.equal(a, b)
 
+
 def test_sincos_pos_embed_is_fixed_and_padding_free_equivalent():
     """pos_embed="sincos": no parameters, deterministic, same math as dense ref."""
     fusion = ChannelFusion(D, n_heads=HEADS, n_patches=N, pos_embed="sincos")
@@ -493,7 +478,7 @@ def test_identity_gated_sincos_pos_embed():
     assert out.shape == (2 * N, D)
     assert torch.isfinite(out).all()
     with torch.no_grad():
-        before = gated.spatial_pos.clone()
+        gated.spatial_pos.clone()
         gated.spatial_pos.zero_()
         no_pe, _ = gated(cs)
     assert not torch.allclose(out, no_pe)
@@ -505,7 +490,5 @@ def test_pos_embed_option_validation():
     # sincos needs a square lattice unless grid_size is given explicitly
     with pytest.raises(ValueError, match="not a square"):
         ChannelFusion(D, n_heads=HEADS, n_patches=6, pos_embed="sincos")
-    nonsquare = ChannelFusion(
-        D, n_heads=HEADS, n_patches=6, pos_embed="sincos", grid_size=(2, 3)
-    )
+    nonsquare = ChannelFusion(D, n_heads=HEADS, n_patches=6, pos_embed="sincos", grid_size=(2, 3))
     assert tuple(nonsquare.spatial_pos.shape) == (1, 6, D)

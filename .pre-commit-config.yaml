@@ -1,0 +1,30 @@
+# Local hooks only: ruff and ty come from the project's dev dependency group
+# (see [dependency-groups] in pyproject.toml), so the hook versions match
+# `uv run ruff` / `uv run ty` exactly and no pinned rev has to be bumped.
+#
+# `language: system` means the hooks call `uv`, so a commit requires `uv` on
+# PATH (this repo already builds and tests through uv).
+repos:
+  - repo: local
+    hooks:
+      - id: ruff-check
+        name: ruff check
+        entry: uv run ruff check --fix
+        language: system
+        types: [python]
+        require_serial: true
+      - id: ruff-format
+        name: ruff format
+        entry: uv run ruff format
+        language: system
+        types: [python]
+        require_serial: true
+      - id: ty
+        name: ty check (src/)
+        # Project-wide type check scoped to src/. `pass_filenames: false`
+        # keeps the scope fixed to src/ instead of the staged subset.
+        entry: uv run ty check src
+        language: system
+        files: ^(src/.*\.py|pyproject\.toml|uv\.lock)$
+        pass_filenames: false
+        require_serial: true

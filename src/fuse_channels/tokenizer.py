@@ -82,7 +82,7 @@ class ChannelFusionTokenizer(nn.Module):
         fusion_pos_embed: str = "none",
         fusion_dropout: float = 0.0,
         fusion_n_patches: int | None = None,
-    ) -> "ChannelFusionTokenizer":
+    ) -> ChannelFusionTokenizer:
         """Construct the stage from configuration (``channel_embedding`` is shared).
 
         ``fusion_n_patches`` sizes the legacy table-based fusion PE; it defaults
@@ -115,9 +115,7 @@ class ChannelFusionTokenizer(nn.Module):
                 pos_embed=fusion_pos_embed,
             )
         else:
-            raise ValueError(
-                f"unknown fusion '{fusion}'; expected 'attention' or 'identity_gated'"
-            )
+            raise ValueError(f"unknown fusion '{fusion}'; expected 'attention' or 'identity_gated'")
         return cls(tokenizer, pooled)
 
     # ------------------------------------------------------------------ #

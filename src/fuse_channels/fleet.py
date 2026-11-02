@@ -25,11 +25,11 @@ architecture.
 
 from __future__ import annotations
 
-from typing import Optional, Sequence, Tuple
+from collections.abc import Sequence
 
 #: The pixel sizes of this project's fleet, micrometres per pixel, sorted.
 #: One entry per instrument configuration.
-FLEET_PIXEL_SIZES: Tuple[float, ...] = (0.598, 0.646, 0.650, 0.652, 0.703)
+FLEET_PIXEL_SIZES: tuple[float, ...] = (0.598, 0.646, 0.650, 0.652, 0.703)
 
 #: Relative tolerance for matching metadata against a fleet entry. OME-TIFF
 #: reports three to five significant decimals (``0.59766`` for ``0.598``), so
@@ -37,7 +37,7 @@ FLEET_PIXEL_SIZES: Tuple[float, ...] = (0.598, 0.646, 0.650, 0.652, 0.703)
 FLEET_RTOL = 1e-3
 
 
-def sorted_fleet_pixel_sizes(pixel_sizes: Sequence[float]) -> Tuple[float, ...]:
+def sorted_fleet_pixel_sizes(pixel_sizes: Sequence[float]) -> tuple[float, ...]:
     """Return a fleet's pixel sizes sorted and deduplicated, rejecting non-positive ones."""
     table = tuple(sorted({float(q) for q in pixel_sizes}))
     if not table:
@@ -49,7 +49,7 @@ def sorted_fleet_pixel_sizes(pixel_sizes: Sequence[float]) -> Tuple[float, ...]:
 
 def canonical_fleet_pixel_size(
     pixel_size: float,
-    fleet_pixel_sizes: Optional[Sequence[float]] = None,
+    fleet_pixel_sizes: Sequence[float] | None = None,
     rtol: float = FLEET_RTOL,
 ) -> float:
     """Map one image's metadata ``pixel_size`` to its fleet entry.
@@ -68,7 +68,7 @@ def canonical_fleet_pixel_size(
         fleet_pixel_sizes if fleet_pixel_sizes is not None else FLEET_PIXEL_SIZES
     )
 
-    def nearest(value: float) -> Tuple[float, bool]:
+    def nearest(value: float) -> tuple[float, bool]:
         best = min(table, key=lambda q: abs(q - value))
         return best, abs(best - value) <= rtol * best
 
@@ -86,9 +86,7 @@ def canonical_fleet_pixel_size(
         if variant_ok:
             hints.append(label)
     hint = (
-        f" (looks like {', '.join(hints)}; see FLEXIVIT.md section 0 unit traps)"
-        if hints
-        else ""
+        f" (looks like {', '.join(hints)}; see FLEXIVIT.md section 0 unit traps)" if hints else ""
     )
     raise ValueError(
         f"pixel_size={pixel_size} um/px is not a member of the acquisition "
@@ -98,8 +96,8 @@ def canonical_fleet_pixel_size(
 
 
 def fleet_patch_sizes(
-    fleet_pixel_sizes: Optional[Sequence[float]] = None, target_um: float = 12.8
-) -> Tuple[int, ...]:
+    fleet_pixel_sizes: Sequence[float] | None = None, target_um: float = 12.8
+) -> tuple[int, ...]:
     """The distinct ``p`` values implied by a fleet's pixel sizes.
 
     This is the only place the fleet's concrete numbers should turn into model

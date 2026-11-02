@@ -13,7 +13,6 @@ import torch.nn as nn
 from fuse_channels import (
     ChannelFusion,
     IdentityGatedSum,
-    POS_EMBED_KINDS,
     build_spatial_pos,
     get_2d_sincos_pos_embed,
 )
@@ -66,9 +65,7 @@ def test_sincos_same_position_matches_across_grid_sizes():
     large = get_2d_sincos_pos_embed(D, 8)
     for r in range(4):
         for c in range(4):
-            assert torch.allclose(
-                small[r * 4 + c], large[r * 8 + c], atol=1e-6
-            )
+            assert torch.allclose(small[r * 4 + c], large[r * 8 + c], atol=1e-6)
 
 
 def test_sincos_non_square_grid():

@@ -12,17 +12,17 @@ from fuse_channels import (
 
 
 def _model(**kw):
-    cfg = dict(
-        image_size=8,
-        patch_size=4,
-        dim=32,
-        encoder_depth=2,
-        decoder_depth=1,
-        n_heads=4,
-        n_memory=3,
-        num_channel_ids=16,
-        pixel_size=1.0,
-    )
+    cfg = {
+        "image_size": 8,
+        "patch_size": 4,
+        "dim": 32,
+        "encoder_depth": 2,
+        "decoder_depth": 1,
+        "n_heads": 4,
+        "n_memory": 3,
+        "num_channel_ids": 16,
+        "pixel_size": 1.0,
+    }
     cfg.update(kw)
     return ChannelFusionMAE(**cfg)
 
@@ -35,12 +35,8 @@ def _batch(seed=0, C_list=(2, 4, 3), image_size=8):
 
 
 def _fourier_l1(pred, target, patch_size):
-    pred_amp = torch.fft.rfft2(
-        pred.reshape(-1, patch_size, patch_size)
-    ).abs()
-    target_amp = torch.fft.rfft2(
-        target.reshape(-1, patch_size, patch_size)
-    ).abs()
+    pred_amp = torch.fft.rfft2(pred.reshape(-1, patch_size, patch_size)).abs()
+    target_amp = torch.fft.rfft2(target.reshape(-1, patch_size, patch_size)).abs()
     return F.l1_loss(pred_amp, target_amp)
 
 
@@ -60,12 +56,8 @@ def test_cha_maevit_loss_lambda_extremes():
     expected_pixel = F.mse_loss(pred, target)
     expected_fourier = _fourier_l1(pred, target, patch_size=4)
 
-    assert torch.allclose(
-        cha_maevit_recon_loss(pred, target, lambda_f=0.0), expected_pixel
-    )
-    assert torch.allclose(
-        cha_maevit_recon_loss(pred, target, lambda_f=1.0), expected_fourier
-    )
+    assert torch.allclose(cha_maevit_recon_loss(pred, target, lambda_f=0.0), expected_pixel)
+    assert torch.allclose(cha_maevit_recon_loss(pred, target, lambda_f=1.0), expected_fourier)
     # the default interpolates the two terms
     assert torch.allclose(
         cha_maevit_recon_loss(pred, target, lambda_f=0.25),
@@ -79,9 +71,7 @@ def test_cha_maevit_loss_requires_square_patch():
     with pytest.raises(ValueError, match="square patch_dim"):
         cha_maevit_recon_loss(pred, target)
     # a square non-power-of-two patch works
-    assert math.isfinite(
-        cha_maevit_recon_loss(torch.randn(3, 9), torch.randn(3, 9)).item()
-    )
+    assert math.isfinite(cha_maevit_recon_loss(torch.randn(3, 9), torch.randn(3, 9)).item())
 
 
 def test_cha_maevit_loss_shape_mismatch():
@@ -130,16 +120,22 @@ def test_flat_row_terms_match_the_dense_reference():
     ps = torch.tensor([4, 8, 4])  # mixed sizes, non-contiguous rows
     offsets = patch_offsets(ps)
     assert offsets.tolist() == [0, 16, 80, 96]
-    pred_blocks = [torch.randn(1, 16, generator=g), torch.randn(1, 64, generator=g),
-                   torch.randn(1, 16, generator=g)]
-    target_blocks = [torch.randn(1, 16, generator=g), torch.randn(1, 64, generator=g),
-                     torch.randn(1, 16, generator=g)]
+    pred_blocks = [
+        torch.randn(1, 16, generator=g),
+        torch.randn(1, 64, generator=g),
+        torch.randn(1, 16, generator=g),
+    ]
+    target_blocks = [
+        torch.randn(1, 16, generator=g),
+        torch.randn(1, 64, generator=g),
+        torch.randn(1, 16, generator=g),
+    ]
     pred = torch.cat([b.reshape(-1) for b in pred_blocks])
     target = torch.cat([b.reshape(-1) for b in target_blocks])
     assert pred.shape == (int(offsets[-1]),)
 
     row_err, row_count = patch_row_terms(pred, target, ps)
-    for i, (pb, tb) in enumerate(zip(pred_blocks, target_blocks)):
+    for i, (pb, tb) in enumerate(zip(pred_blocks, target_blocks, strict=True)):
         assert row_count[i].item() == ps[i].item() ** 2
         torch.testing.assert_close(
             row_err[i] / row_count[i],
@@ -156,7 +152,9 @@ def test_mixed_p_batch_builds_no_padded_pixel_block():
     ids = [torch.tensor([0, 1]), torch.tensor([0, 1])]
     with torch.no_grad():
         out = model(
-            images, ids, patch_sizes=[4, 8],
+            images,
+            ids,
+            patch_sizes=[4, 8],
             generator=torch.Generator().manual_seed(0),
         )
     offsets = out["target_pixel_offset"]

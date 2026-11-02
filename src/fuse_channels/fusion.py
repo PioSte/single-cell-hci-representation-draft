@@ -30,7 +30,6 @@ from __future__ import annotations
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 from .container import ChannelSet
 from .encoder import TransformerBlock
@@ -94,6 +93,9 @@ class ChannelFusion(nn.Module):
     balance cannot drift with patch size (or any other content-scale change).
     """
 
+    # Registered only by the table-based (``learned``/``sincos``) variants.
+    spatial_pos: torch.Tensor
+
     def __init__(
         self,
         dim: int,
@@ -107,8 +109,6 @@ class ChannelFusion(nn.Module):
         super().__init__()
         attn_dim = 3 * dim if attn_dim is None else attn_dim
         assert attn_dim % n_heads == 0, "attn_dim must be divisible by n_heads"
-        if pos_embed != "none" and not n_patches:
-            raise ValueError("n_patches is required for a table-based spatial PE")
         self.dim = dim
         self.attn_dim = attn_dim
         self.n_heads = n_heads
@@ -135,9 +135,9 @@ class ChannelFusion(nn.Module):
         nn.init.trunc_normal_(self.queries, std=0.02)
         # optional legacy post-fusion positional embedding
         if pos_embed != "none":
-            add_spatial_pos(
-                self, dim, n_patches, pos_embed, grid_size=grid_size, batch_dims=1
-            )
+            if n_patches is None:
+                raise ValueError("n_patches is required for a table-based spatial PE")
+            add_spatial_pos(self, dim, n_patches, pos_embed, grid_size=grid_size, batch_dims=1)
         else:
             self.pos_embed = "none"
 
@@ -171,11 +171,7 @@ class ChannelFusion(nn.Module):
         tok = self.norm_kv(cs.tokens[order])
         k = self.k_proj(tok).view(-1, H, Dh)
         v = self.v_proj(tok).view(-1, H, Dh)
-        q = (
-            self.q_proj(self.norm_q(self.queries))
-            .reshape(1, 1, H, Dh)
-            .expand(n_groups, 1, H, Dh)
-        )
+        q = self.q_proj(self.norm_q(self.queries)).reshape(1, 1, H, Dh).expand(n_groups, 1, H, Dh)
 
         if cs.channel_embed is None:
             raise ValueError("ChannelFusion requires ChannelSet.channel_embed")
@@ -284,17 +280,13 @@ class MultiheadAttentionPooling(nn.Module):
         self.out_proj = nn.Linear(dim, dim)
         self.queries = nn.Parameter(torch.zeros(1, n_queries, dim))
         nn.init.trunc_normal_(self.queries, std=0.02)
-        self.post_sab = (
-            TransformerBlock(dim, n_heads, dropout=dropout) if post_sab else None
-        )
+        self.post_sab = TransformerBlock(dim, n_heads, dropout=dropout) if post_sab else None
 
     def _attention_dropout(self) -> float:
         """Attention dropout probability, disabled in eval mode."""
         return self.dropout if self.training else 0.0
 
-    def forward(
-        self, x: torch.Tensor, group_id: torch.Tensor, n_groups: int
-    ) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, group_id: torch.Tensor, n_groups: int) -> torch.Tensor:
         """Return ``[n_groups, n_queries * dim]`` (``flat``) or ``[n_groups, dim]``."""
         H, Dh, Q = self.n_heads, self.dim // self.n_heads, self.n_queries
         out_dim = Q * self.dim if self.readout == "flat" else self.dim
@@ -307,15 +299,9 @@ class MultiheadAttentionPooling(nn.Module):
         kv_norm = self.norm_kv(x[order])
         k = self.k_proj(kv_norm).view(-1, H, Dh)
         v = self.v_proj(kv_norm).view(-1, H, Dh)
-        q = (
-            self.q_proj(self.norm_q(self.queries))
-            .reshape(1, Q, H, Dh)
-            .expand(n_uniq, Q, H, Dh)
-        )
+        q = self.q_proj(self.norm_q(self.queries)).reshape(1, Q, H, Dh).expand(n_uniq, Q, H, Dh)
 
-        pooled = grouped_pool_attention(
-            q, k, v, lookup, n_uniq, self._attention_dropout()
-        )
+        pooled = grouped_pool_attention(q, k, v, lookup, n_uniq, self._attention_dropout())
         pooled = self.out_proj(pooled.reshape(n_uniq, Q, self.dim))
 
         if self.post_sab is not None:
@@ -325,9 +311,7 @@ class MultiheadAttentionPooling(nn.Module):
             ).reshape(n_uniq, Q, self.dim)
 
         pooled = (
-            pooled.reshape(n_uniq, Q * self.dim)
-            if self.readout == "flat"
-            else pooled.mean(dim=1)
+            pooled.reshape(n_uniq, Q * self.dim) if self.readout == "flat" else pooled.mean(dim=1)
         )
         out[uniq] = pooled
         return out
@@ -358,6 +342,9 @@ class IdentityGatedSum(nn.Module):
     normalisation.
     """
 
+    # Registered only by the table-based (``learned``/``sincos``) variants.
+    spatial_pos: torch.Tensor
+
     def __init__(
         self,
         dim: int,
@@ -367,8 +354,6 @@ class IdentityGatedSum(nn.Module):
         grid_size=None,
     ) -> None:
         super().__init__()
-        if pos_embed != "none" and not n_patches:
-            raise ValueError("n_patches is required for a table-based spatial PE")
         self.dim = dim
         self.n_patches = n_patches
         self.has_spatial_pos = pos_embed != "none"
@@ -378,15 +363,13 @@ class IdentityGatedSum(nn.Module):
         self.identity_skip = nn.Linear(dim, dim, bias=False)
         nn.init.trunc_normal_(self.identity_skip.weight, std=0.02)
         hidden = hidden or dim
-        self.weight_net = nn.Sequential(
-            nn.Linear(dim, hidden), nn.GELU(), nn.Linear(hidden, 1)
-        )
+        self.weight_net = nn.Sequential(nn.Linear(dim, hidden), nn.GELU(), nn.Linear(hidden, 1))
         self.value_proj = nn.Linear(dim, dim)
         self.out_norm = nn.LayerNorm(dim)
         if pos_embed != "none":
-            add_spatial_pos(
-                self, dim, n_patches, pos_embed, grid_size=grid_size, batch_dims=1
-            )
+            if n_patches is None:
+                raise ValueError("n_patches is required for a table-based spatial PE")
+            add_spatial_pos(self, dim, n_patches, pos_embed, grid_size=grid_size, batch_dims=1)
         else:
             self.pos_embed = "none"
 
@@ -424,9 +407,7 @@ class IdentityGatedSum(nn.Module):
         out = values.new_zeros(n_groups, self.dim)
         out.index_add_(0, location_inverse, contrib)
         ident_pool = out.new_zeros(n_groups, self.dim)
-        ident_pool.index_add_(
-            0, location_inverse, weights.unsqueeze(-1) * cs.channel_embed
-        )
+        ident_pool.index_add_(0, location_inverse, weights.unsqueeze(-1) * cs.channel_embed)
         out = out + self.identity_skip(ident_pool)
 
         N = cs.n_patches
@@ -434,9 +415,7 @@ class IdentityGatedSum(nn.Module):
         patch_of_group = uniq % N
         if self.has_spatial_pos:
             out = out + self.spatial_pos[0][patch_of_group]
-        present = torch.zeros(
-            cs.n_samples, N, dtype=torch.bool, device=cs.tokens.device
-        )
+        present = torch.zeros(cs.n_samples, N, dtype=torch.bool, device=cs.tokens.device)
         present[sample_of_group, patch_of_group] = True
         return out, present
 
@@ -464,11 +443,13 @@ def _dense_fusion_reference(fusion: ChannelFusion, cs: ChannelSet) -> torch.Tens
 
     Cmax = int(cs.channel_idx.max().item()) + 1 if cs.channel_idx.numel() else 1
 
+    channel_embed = cs.channel_embed
+    assert channel_embed is not None, "ChannelFusion requires ChannelSet.channel_embed"
     x = cs.tokens.new_zeros(B, Cmax, N, D)
     e = cs.tokens.new_zeros(B, Cmax, N, D)
     mask = torch.zeros(B, Cmax, N, dtype=torch.bool, device=device)
     x[cs.sample_idx, cs.channel_idx, cs.patch_idx] = cs.tokens
-    e[cs.sample_idx, cs.channel_idx, cs.patch_idx] = cs.channel_embed
+    e[cs.sample_idx, cs.channel_idx, cs.patch_idx] = channel_embed
     mask[cs.sample_idx, cs.channel_idx, cs.patch_idx] = True
     present = mask.any(dim=1)  # [B, N]
 

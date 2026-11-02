@@ -29,27 +29,19 @@ def _bilinear_resize_matrix(
     the resize as its own batch element, then transpose the resulting
     ``[p_in**2, p_out**2]`` coefficient table into ``[p_out**2, p_in**2]``.
     """
-    eye = torch.eye(p_in * p_in, dtype=dtype).reshape(
-        p_in * p_in, 1, p_in, p_in
-    )
-    out = F.interpolate(
-        eye, size=(p_out, p_out), mode="bilinear", align_corners=False
-    )
+    eye = torch.eye(p_in * p_in, dtype=dtype).reshape(p_in * p_in, 1, p_in, p_in)
+    out = F.interpolate(eye, size=(p_out, p_out), mode="bilinear", align_corners=False)
     return out.reshape(p_in * p_in, p_out * p_out).T.contiguous()
 
 
 @lru_cache(maxsize=32)
-def _pi_resize_matrix(
-    p_in: int, p_out: int, dtype: torch.dtype = torch.float32
-) -> torch.Tensor:
+def _pi_resize_matrix(p_in: int, p_out: int, dtype: torch.dtype = torch.float32) -> torch.Tensor:
     """PI-resize operator ``P = pinv(B.T)`` of shape ``[p_out**2, p_in**2]``."""
     B = _bilinear_resize_matrix(p_in, p_out, dtype)
     return torch.linalg.pinv(B.T).contiguous()
 
 
-def pi_resize_patch_embed(
-    weight: torch.Tensor, new_patch_size: int
-) -> torch.Tensor:
+def pi_resize_patch_embed(weight: torch.Tensor, new_patch_size: int) -> torch.Tensor:
     """PI-resize a patch-embedding kernel to ``new_patch_size``.
 
     Parameters

@@ -34,18 +34,12 @@ def _probe(desc, labels, ridge=1e-2):
     n_train = int(0.8 * n)
     xtr, xte = desc[:n_train], desc[n_train:]
     ytr, yte = labels[:n_train], labels[n_train:]
-    w = torch.linalg.solve(
-        xtr.T @ xtr + ridge * torch.eye(xtr.shape[1]), xtr.T @ ytr
-    )
+    w = torch.linalg.solve(xtr.T @ xtr + ridge * torch.eye(xtr.shape[1]), xtr.T @ ytr)
     pred = xte @ w
     ss_res = ((pred - yte) ** 2).sum(0)
     ss_tot = ((yte - yte.mean(0, keepdim=True)) ** 2).sum(0)
     valid = ss_tot > 1e-12
-    r2 = (
-        (1 - ss_res[valid] / ss_tot[valid]).mean().item()
-        if valid.any()
-        else float("nan")
-    )
+    r2 = (1 - ss_res[valid] / ss_tot[valid]).mean().item() if valid.any() else float("nan")
     pos = (yte > 0.5).sum().clamp_min(1)
     neg = (yte <= 0.5).sum().clamp_min(1)
     tpr = (((pred > 0.5) & (yte > 0.5)).sum() / pos).item()
@@ -89,10 +83,7 @@ def main() -> None:
         (torch.arange(k * args.channels, (k + 1) * args.channels) % args.channel_ids)
         for k in range(4)
     ]
-    ids_b = [
-        torch.randperm(args.channel_ids)[: args.channels].sort().values
-        for _ in range(4)
-    ]
+    ids_b = [torch.randperm(args.channel_ids)[: args.channels].sort().values for _ in range(4)]
 
     def rel(a, b):
         return ((a - b).norm(dim=-1) / a.norm(dim=-1)).mean().item()
@@ -112,9 +103,7 @@ def main() -> None:
     images, ids, labels = [], [], []
     for _ in range(args.samples):
         sel = torch.randperm(args.channel_ids)[: args.channels].sort().values
-        images.append(
-            torch.randn(args.channels, 1, args.image_size, args.image_size)
-        )
+        images.append(torch.randn(args.channels, 1, args.image_size, args.image_size))
         ids.append(sel)
         y = torch.zeros(args.channel_ids)
         y[sel] = 1

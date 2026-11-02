@@ -42,6 +42,7 @@ not affect deployment.
 from __future__ import annotations
 
 import math
+from typing import cast
 
 import torch
 import torch.nn as nn
@@ -114,9 +115,7 @@ class DecoderBlock(nn.Module):
         cond: torch.Tensor | None = None,
     ) -> torch.Tensor:
         # target queries attend to each other (one group per sample)
-        h = self._modulate(
-            self.norm_self(q), self.mod_self if self.adaln else None, cond
-        )
+        h = self._modulate(self.norm_self(q), self.mod_self if self.adaln else None, cond)
         self_attn = grouped_projected_self_attention(
             self.self_q_proj(h),
             self.self_k_proj(h),
@@ -133,9 +132,7 @@ class DecoderBlock(nn.Module):
         # is no cross-attention source, so this is skipped: a blind decoder
         # that reconstructs from the mask/position/channel query alone.
         if kv.shape[0] > 0:
-            hq = self._modulate(
-                self.norm_q(q), self.mod_q if self.adaln else None, cond
-            )
+            hq = self._modulate(self.norm_q(q), self.mod_q if self.adaln else None, cond)
             hkv = self.norm_kv(kv)
             cross = grouped_attention(
                 self.q_proj(hq),
@@ -148,9 +145,7 @@ class DecoderBlock(nn.Module):
                 dropout_p=self._attention_dropout(),
             )
             q = q + self.dropout(self.out_proj(cross))
-        hff = self._modulate(
-            self.norm_ff(q), self.mod_ff if self.adaln else None, cond
-        )
+        hff = self._modulate(self.norm_ff(q), self.mod_ff if self.adaln else None, cond)
         q = q + self.dropout(self.mlp(hff))
         return q
 
@@ -225,6 +220,10 @@ class PatchReconstructionHead(nn.Module):
 
     RESAMPLE_OPS = ("area", "bilinear", "pi")
 
+    # One of the two is populated by ``__init__`` depending on ``mode``.
+    head: nn.Linear | None
+    heads: nn.ModuleDict | None
+
     def __init__(
         self,
         dim: int,
@@ -241,8 +240,7 @@ class PatchReconstructionHead(nn.Module):
             )
         if resample not in self.RESAMPLE_OPS:
             raise ValueError(
-                f"unknown head_resample '{resample}'; "
-                f"expected one of {self.RESAMPLE_OPS}"
+                f"unknown head_resample '{resample}'; expected one of {self.RESAMPLE_OPS}"
             )
         self.canonical_patch_size = int(canonical_patch_size)
         self.mode = mode
@@ -259,9 +257,7 @@ class PatchReconstructionHead(nn.Module):
             self.heads = None
             self.head = nn.Linear(dim, self.canonical_patch_size**2)
         else:
-            self.heads = nn.ModuleDict(
-                {str(p): nn.Linear(dim, p * p) for p in self.patch_sizes}
-            )
+            self.heads = nn.ModuleDict({str(p): nn.Linear(dim, p * p) for p in self.patch_sizes})
             self.head = None
 
     @property
@@ -275,24 +271,30 @@ class PatchReconstructionHead(nn.Module):
 
     def _canonical_head(self) -> nn.Linear:
         if self.heads is None:
-            return self.head
-        return self.heads[str(self.canonical_patch_size)]
+            head = self.head
+            assert head is not None, "reconstruction head is not initialised"
+            return head
+        return cast(nn.Linear, self.heads[str(self.canonical_patch_size)])
 
     def _head_for(self, patch_size: int) -> tuple[nn.Linear, bool, int]:
         """Return ``(head, needs_resize, source_p)`` for one target size."""
         p = int(patch_size)
+        head = self.head
         if self.mode == "shared":
             # p-free: one head, resampled in both directions.
-            return self.head, p != self.canonical_patch_size, self.canonical_patch_size
-        if self.heads is None:
+            assert head is not None, "reconstruction head is not initialised"
+            return head, p != self.canonical_patch_size, self.canonical_patch_size
+        heads = self.heads
+        if heads is None:
+            assert head is not None, "reconstruction head is not initialised"
             if p > self.canonical_patch_size:
                 raise ValueError(
                     "canonical reconstruction head cannot upsample: "
                     f"target p={p} > canonical_patch_size={self.canonical_patch_size}"
                 )
-            return self.head, p != self.canonical_patch_size, self.canonical_patch_size
-        if str(p) in self.heads:
-            return self.heads[str(p)], False, p
+            return head, p != self.canonical_patch_size, self.canonical_patch_size
+        if str(p) in heads:
+            return cast(nn.Linear, heads[str(p)]), False, p
         larger = [hp for hp in self.patch_sizes if hp >= p]
         if not larger:
             raise ValueError(
@@ -300,7 +302,7 @@ class PatchReconstructionHead(nn.Module):
                 f"p={p} and cannot upsample; configured p={self.patch_sizes}"
             )
         source = min(larger)
-        return self.heads[str(source)], True, source
+        return cast(nn.Linear, heads[str(source)]), True, source
 
     def forward(self, x: torch.Tensor, patch_sizes) -> torch.Tensor:
         """Return ``[Σ p**2]`` pixels: row ``i`` is contiguous, ``p_i**2`` long.
@@ -331,9 +333,7 @@ class PatchReconstructionHead(nn.Module):
             head, resize, source = self._head_for(p)
             pred = head(x[idx])
             pred = self._resize(pred, p, source) if resize else pred
-            slots = offsets[idx].unsqueeze(1) + torch.arange(
-                p * p, device=x.device
-            )
+            slots = offsets[idx].unsqueeze(1) + torch.arange(p * p, device=x.device)
             out[slots.reshape(-1)] = pred.reshape(-1)
         return out
 
@@ -342,9 +342,7 @@ class PatchReconstructionHead(nn.Module):
         """Row boundaries of the flat pixel layout (see :func:`patch_offsets`)."""
         return patch_offsets(patch_sizes)
 
-    def _resize(
-        self, pred: torch.Tensor, patch_size: int, source_patch_size: int
-    ) -> torch.Tensor:
+    def _resize(self, pred: torch.Tensor, patch_size: int, source_patch_size: int) -> torch.Tensor:
         p = int(patch_size)
         c = int(source_patch_size)
         if p == c:
@@ -352,16 +350,12 @@ class PatchReconstructionHead(nn.Module):
         if self.mode == "shared":
             return self._resample_shared(pred, c, p)
         if p > c:
-            raise ValueError(
-                f"cannot resize p={c} prediction up to p={p}"
-            )
+            raise ValueError(f"cannot resize p={c} prediction up to p={p}")
         x = pred.reshape(-1, 1, c, c)
         x = F.interpolate(x, size=(p, p), mode="bilinear", align_corners=False)
         return x.reshape(pred.shape[0], p * p)
 
-    def _resample_shared(
-        self, pred: torch.Tensor, source_p: int, target_p: int
-    ) -> torch.Tensor:
+    def _resample_shared(self, pred: torch.Tensor, source_p: int, target_p: int) -> torch.Tensor:
         """Resample a ``[K, source_p**2]`` patch prediction to ``target_p``.
 
         Resampling commutes with the linear head, so applying the operator to
@@ -379,10 +373,9 @@ class PatchReconstructionHead(nn.Module):
         if self.resample == "area" and target_p < source_p:
             x = F.interpolate(x, size=(target_p, target_p), mode="area")
         else:
-            x = F.interpolate(
-                x, size=(target_p, target_p), mode="bilinear", align_corners=False
-            )
+            x = F.interpolate(x, size=(target_p, target_p), mode="bilinear", align_corners=False)
         return x.reshape(pred.shape[0], target_p * target_p)
+
 
 class ChannelAwareDecoder(nn.Module):
     """Channel-aware shared decoder.
@@ -396,6 +389,9 @@ class ChannelAwareDecoder(nn.Module):
     grid coordinates), or the legacy ``"learned"`` / ``"sincos"`` fixed-grid
     lookup.
     """
+
+    # Registered only by the table-based (``learned``/``sincos``) variants.
+    spatial_pos: torch.Tensor
 
     def __init__(
         self,
@@ -450,9 +446,7 @@ class ChannelAwareDecoder(nn.Module):
             nn.init.zeros_(self.mod_out.weight)
             nn.init.zeros_(self.mod_out.bias)
         if canonical_patch_size is None:
-            raise ValueError(
-                "canonical_patch_size is required for the reconstruction head"
-            )
+            raise ValueError("canonical_patch_size is required for the reconstruction head")
         self.canonical_patch_size = int(canonical_patch_size)
         self.head_mode = cfg.head_mode
         self.head = PatchReconstructionHead(
@@ -463,8 +457,15 @@ class ChannelAwareDecoder(nn.Module):
             resample=cfg.head_resample,
         )
 
-    def _target_pe(self, target_patch, target_row=None, target_col=None,
-                   target_grid_h=None, target_grid_w=None, target_step_um=None):
+    def _target_pe(
+        self,
+        target_patch,
+        target_row=None,
+        target_col=None,
+        target_grid_h=None,
+        target_grid_w=None,
+        target_step_um=None,
+    ):
         if self.fractional_pe is not None:
             if target_row is None or target_col is None:
                 raise ValueError(
@@ -479,9 +480,7 @@ class ChannelAwareDecoder(nn.Module):
                 ref_um=self.pe_ref_um,
             )
         if self.pos_embed == "none":
-            return self.mask_token.new_zeros(
-                target_patch.shape[0], self.mask_token.shape[0]
-            )
+            return self.mask_token.new_zeros(target_patch.shape[0], self.mask_token.shape[0])
         return self.spatial_pos[target_patch]
 
     def forward(

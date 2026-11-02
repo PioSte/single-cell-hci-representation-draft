@@ -165,7 +165,7 @@ def grouped_pool_attention(
     -------
     ``out`` or ``(out, weights)`` when ``return_weights`` is true.
     """
-    _, n_q, n_heads, head_dim = q.shape
+    _, _n_q, _n_heads, head_dim = q.shape
     out = torch.zeros_like(q)
     T = kv_group_id.numel()
     if T == 0:
@@ -208,6 +208,7 @@ def grouped_pool_attention(
         out[group_ids] = o.permute(0, 2, 1, 3)
 
     if return_weights:
+        assert w_sorted is not None, "weights buffer is allocated when return_weights is set"
         weights = torch.zeros_like(w_sorted)
         weights[order] = w_sorted
         return out, weights
@@ -280,14 +281,10 @@ def grouped_cross_attention(
 ) -> torch.Tensor:
     """Cross-attention with ``k == v`` (kept as a thin alias of
     :func:`grouped_attention` for existing callers/tests)."""
-    return grouped_attention(
-        q, q_group_id, k, k, kv_group_id, n_groups, n_heads, dropout_p
-    )
+    return grouped_attention(q, q_group_id, k, k, kv_group_id, n_groups, n_heads, dropout_p)
 
 
-def grouped_softmax(
-    logits: torch.Tensor, group_id: torch.Tensor, n_groups: int
-) -> torch.Tensor:
+def grouped_softmax(logits: torch.Tensor, group_id: torch.Tensor, n_groups: int) -> torch.Tensor:
     """Softmax of ``logits`` within each group.
 
     ``logits`` may be ``[T]`` or ``[T, Q]`` (query dim last).  Returns the same
@@ -296,7 +293,7 @@ def grouped_softmax(
     squeeze = logits.dim() == 1
     if squeeze:
         logits = logits.unsqueeze(-1)
-    T, Q = logits.shape
+    _T, Q = logits.shape
     out = torch.empty_like(logits)
     for q in range(Q):
         z = logits[:, q]
@@ -305,8 +302,6 @@ def grouped_softmax(
         ).scatter_reduce(0, group_id, z, reduce="amax", include_self=True)
         maxv = torch.where(torch.isfinite(maxv), maxv, torch.zeros_like(maxv))
         e = torch.exp(z - maxv[group_id])
-        denom = torch.zeros(n_groups, device=z.device, dtype=z.dtype).index_add_(
-            0, group_id, e
-        )
+        denom = torch.zeros(n_groups, device=z.device, dtype=z.dtype).index_add_(0, group_id, e)
         out[:, q] = e / denom[group_id].clamp_min(1e-12)
     return out.squeeze(-1) if squeeze else out

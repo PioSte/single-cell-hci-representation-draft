@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import math
-from typing import Optional
+from dataclasses import dataclass
 
 import torch
 
@@ -68,18 +67,18 @@ class ChannelSet:
     channel_id: torch.Tensor
     n_samples: int
     n_patches: int
-    channel_embed: Optional[torch.Tensor] = None
-    channel_group_id: Optional[torch.Tensor] = None
-    grid_h: Optional[torch.Tensor] = None
-    grid_w: Optional[torch.Tensor] = None
-    n_patches_per_sample: Optional[torch.Tensor] = None
-    patch_row: Optional[torch.Tensor] = None
-    patch_col: Optional[torch.Tensor] = None
-    patch_size: Optional[torch.Tensor] = None
-    pixel_size: Optional[torch.Tensor] = None
+    channel_embed: torch.Tensor | None = None
+    channel_group_id: torch.Tensor | None = None
+    grid_h: torch.Tensor | None = None
+    grid_w: torch.Tensor | None = None
+    n_patches_per_sample: torch.Tensor | None = None
+    patch_row: torch.Tensor | None = None
+    patch_col: torch.Tensor | None = None
+    patch_size: torch.Tensor | None = None
+    pixel_size: torch.Tensor | None = None
 
     # ------------------------------------------------------------------ #
-    def per_sample_of(self, values: Optional[torch.Tensor]) -> Optional[torch.Tensor]:
+    def per_sample_of(self, values: torch.Tensor | None) -> torch.Tensor | None:
         """Collapse a per-token ``[T]`` tensor to per-sample ``[n_samples]``.
 
         Patch size and pixel size are constant within a sample, so the last

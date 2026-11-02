@@ -3,7 +3,6 @@ import pytest
 import torch
 
 from fuse_channels.crops import (
-    CellCrop,
     CellCropDataset,
     CropGeometry,
     TiffStack,
@@ -33,17 +32,14 @@ def test_patch_size_is_a_rounding_not_a_snap():
     Rounding half *up* is deliberate -- Python's banker's ``round`` maps 2.5
     to 2, which would make the map non-monotone across instruments.
     """
-    assert patch_size_for_pixel_size(2.0, 5.0) == 3   # 2.5 -> 3, not 2
-    assert patch_size_for_pixel_size(2.0, 7.0) == 4   # 3.5 -> 4
+    assert patch_size_for_pixel_size(2.0, 5.0) == 3  # 2.5 -> 3, not 2
+    assert patch_size_for_pixel_size(2.0, 7.0) == 4  # 3.5 -> 4
     # no clamping to a "configured" set: 13.33 is p=13, not 8 or 16
     assert patch_size_for_pixel_size(0.6, 8.0) == 13
     # a very coarse pixel size still yields a usable p, never 0
     assert patch_size_for_pixel_size(100.0, 8.0) == 1
     # and the map is monotone: finer sampling -> larger p
-    ps = [
-        patch_size_for_pixel_size(q, 12.8)
-        for q in (0.703, 0.652, 0.650, 0.646, 0.598)
-    ]
+    ps = [patch_size_for_pixel_size(q, 12.8) for q in (0.703, 0.652, 0.650, 0.646, 0.598)]
     assert ps == sorted(ps) == [18, 20, 20, 20, 21]
 
 
@@ -133,6 +129,7 @@ class _FakeStack(TiffStack):
             plane_loader=lambda p: stack[int(p[2:]), 0].numpy(),
         )
 
+
 def _mask_with_three_cells():
     mask = np.zeros((64, 64), dtype=np.int64)
     mask[10:20, 12:22] = 1
@@ -196,21 +193,27 @@ def test_dataset_reads_variable_size_crops_and_collates_padding_free():
     assert isinstance(batch["images"], list)
     assert [im.shape[0] for im in batch["images"]] == [3, 3, 2, 2]
     assert [im.shape[-1] for im in batch["images"]] == [16, 16, 32, 32]
-    assert len({im.shape[-1] // b for im, b in zip(batch["images"], batch["patch_sizes"])}) == 1
+    assert (
+        len(
+            {im.shape[-1] // b for im, b in zip(batch["images"], batch["patch_sizes"], strict=True)}
+        )
+        == 1
+    )
     assert all(t.shape == (4,) for t in batch["valid"])
 
 
 def test_cache_roundtrip(tmp_path):
     pytest.importorskip("tifffile")
-    from fuse_channels.crops import write_crop_cache
     import json
+
+    from fuse_channels.crops import write_crop_cache
 
     g = CropGeometry.build(pixel_size=1.0, target_um=8.0, n_tokens=2)
     crops, _ = plan_patches(
         _mask_with_three_cells(), (64, 64), g, image_id="im0", channel_ids=(0, 1, 2)
     )
     index = []
-    for i, c in enumerate(crops):
+    for _i, c in enumerate(crops):
         write_crop_cache(tmp_path, c, torch.randn(3, 1, g.crop_px, g.crop_px), index)
     (tmp_path / "index.json").write_text(json.dumps(index))
 

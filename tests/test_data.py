@@ -1,5 +1,3 @@
-import torch
-
 from fuse_channels.data import SyntheticChannelDataset, collate_fn
 
 
@@ -30,7 +28,10 @@ def test_pixel_size_is_required_metadata():
 
 def test_collate_without_pixel_sizes_is_opt_out_only():
     ds = SyntheticChannelDataset(
-        n_samples=2, image_size=8, seed=0, pixel_size=1.0,
+        n_samples=2,
+        image_size=8,
+        seed=0,
+        pixel_size=1.0,
         return_pixel_size=False,
     )
     images, ids = collate_fn([ds[0], ds[1]])

@@ -10,7 +10,7 @@ channel-id offset.
 
 from __future__ import annotations
 
-from typing import List, Optional, Sequence, Tuple, Union
+from collections.abc import Sequence
 
 import torch
 from torch.utils.data import Dataset
@@ -27,10 +27,10 @@ class SyntheticChannelDataset(Dataset):
         c_max: int = 8,
         n_channel_ids: int = 32,
         seed: int = 0,
-        pixel_size: Optional[Union[float, Sequence[float]]] = None,
-        pixel_size_range: Optional[Sequence[float]] = None,
+        pixel_size: float | Sequence[float] | None = None,
+        pixel_size_range: Sequence[float] | None = None,
         return_pixel_size: bool = True,
-        fleet_pixel_sizes: Optional[Sequence[float]] = None,
+        fleet_pixel_sizes: Sequence[float] | None = None,
         strict_fleet: bool = True,
     ) -> None:
         super().__init__()
@@ -39,15 +39,14 @@ class SyntheticChannelDataset(Dataset):
         self.return_pixel_size = bool(return_pixel_size)
         g = torch.Generator().manual_seed(seed)
         self.fleet_pixel_sizes = (
-            None
-            if fleet_pixel_sizes is None
-            else sorted_fleet_pixel_sizes(fleet_pixel_sizes)
+            None if fleet_pixel_sizes is None else sorted_fleet_pixel_sizes(fleet_pixel_sizes)
         )
-        self.strict_fleet = (
-            bool(strict_fleet) and self.fleet_pixel_sizes is not None
-        )
+        self.strict_fleet = bool(strict_fleet) and self.fleet_pixel_sizes is not None
         self.pixel_sizes = self._resolve_pixel_sizes(
-            n_samples, pixel_size, pixel_size_range, g,
+            n_samples,
+            pixel_size,
+            pixel_size_range,
+            g,
             fleet_pixel_sizes=self.fleet_pixel_sizes,
             strict_fleet=self.strict_fleet,
         )
@@ -58,15 +57,13 @@ class SyntheticChannelDataset(Dataset):
             )
 
         # shared latent basis over channels x pixels
-        self.items: List[Tuple[torch.Tensor, torch.Tensor]] = []
-        for i in range(n_samples):
+        self.items: list[tuple[torch.Tensor, torch.Tensor]] = []
+        for _i in range(n_samples):
             C = int(torch.randint(c_min, c_max + 1, (1,), generator=g).item())
             channel_ids = torch.randperm(n_channel_ids, generator=g)[:C]
             latent = torch.randn(C, 1, image_size, image_size, generator=g)
             # smooth the latent a little so patches are spatially coherent
-            k = torch.tensor(
-                [[1.0, 2.0, 1.0], [2.0, 4.0, 2.0], [1.0, 2.0, 1.0]]
-            ).view(1, 1, 3, 3)
+            k = torch.tensor([[1.0, 2.0, 1.0], [2.0, 4.0, 2.0], [1.0, 2.0, 1.0]]).view(1, 1, 3, 3)
             k = k / k.sum()
             import torch.nn.functional as F
 
@@ -81,10 +78,10 @@ class SyntheticChannelDataset(Dataset):
         n_samples: int,
         pixel_size,
         pixel_size_range=None,
-        generator: Optional[torch.Generator] = None,
-        fleet_pixel_sizes: Optional[Sequence[float]] = None,
+        generator: torch.Generator | None = None,
+        fleet_pixel_sizes: Sequence[float] | None = None,
         strict_fleet: bool = False,
-    ) -> Optional[List[float]]:
+    ) -> list[float] | None:
         """Resolve the per-sample pixel sizes.
 
         With ``fleet_pixel_sizes`` given the values are **discrete**: drawn
@@ -108,14 +105,10 @@ class SyntheticChannelDataset(Dataset):
                         f"pixel_size_range={pixel_size_range} contains no fleet pixel "
                         f"size of {list(fleet_pixel_sizes)}"
                     )
-                picks = torch.randint(
-                    len(members), (n_samples,), generator=generator
-                ).tolist()
+                picks = torch.randint(len(members), (n_samples,), generator=generator).tolist()
                 values = [members[i] for i in picks]
             else:
-                values = torch.empty(n_samples).uniform_(
-                    lo, hi, generator=generator
-                ).tolist()
+                values = torch.empty(n_samples).uniform_(lo, hi, generator=generator).tolist()
         elif pixel_size is None:
             return None  # caller raises: pixel size is required
         elif isinstance(pixel_size, (int, float)):
@@ -124,22 +117,21 @@ class SyntheticChannelDataset(Dataset):
             values = [float(v) for v in pixel_size]
             if len(values) != n_samples:
                 raise ValueError(
-                    f"pixel_size must be a scalar or {n_samples} values, "
-                    f"got {len(values)}"
+                    f"pixel_size must be a scalar or {n_samples} values, got {len(values)}"
                 )
         if strict_fleet:
-            values = [
-                canonical_fleet_pixel_size(v, fleet_pixel_sizes) for v in values
-            ]
+            values = [canonical_fleet_pixel_size(v, fleet_pixel_sizes) for v in values]
         return values
 
     def __len__(self) -> int:
         return len(self.items)
 
-    def __getitem__(self, idx: int):
-        img, channel_ids = self.items[idx]
+    def __getitem__(self, index):
+        img, channel_ids = self.items[index]
         if self.return_pixel_size:
-            return img.clone(), channel_ids.clone(), self.pixel_sizes[idx]
+            pixel_sizes = self.pixel_sizes
+            assert pixel_sizes is not None, "return_pixel_size requires resolved pixel sizes"
+            return img.clone(), channel_ids.clone(), pixel_sizes[index]
         return img.clone(), channel_ids.clone()
 
 

@@ -1,6 +1,6 @@
 """Train the channel-aware MAE on the synthetic variable-channel dataset.
 
-    uv run python examples/train_mae.py --steps 200
+uv run python examples/train_mae.py --steps 200
 """
 
 from __future__ import annotations
@@ -80,9 +80,7 @@ def main() -> None:
     p.add_argument("--p-patch", type=float, default=0.5)
     p.add_argument("--p-channel", type=float, default=0.5)
     p.add_argument("--patch-ratio", type=float, default=0.75)
-    p.add_argument(
-        "--mode-sampling", choices=("batch", "sample"), default="batch"
-    )
+    p.add_argument("--mode-sampling", choices=("batch", "sample"), default="batch")
     p.add_argument(
         "--hcs",
         action="store_true",
@@ -92,8 +90,7 @@ def main() -> None:
         "--loss",
         choices=("mae", "cha_maevit"),
         default="mae",
-        help="mae: patch-normalized MSE (default); "
-        "cha_maevit: raw-pixel L2 + Fourier L1 ablation",
+        help="mae: patch-normalized MSE (default); cha_maevit: raw-pixel L2 + Fourier L1 ablation",
     )
     p.add_argument(
         "--pos-embed",
@@ -193,10 +190,7 @@ def main() -> None:
             opt.step()
             step += 1
             if step % 20 == 0 or step == 1:
-                print(
-                    f"step {step:5d}  loss {out['loss'].item():.4f}  "
-                    f"({time.time() - t0:.1f}s)"
-                )
+                print(f"step {step:5d}  loss {out['loss'].item():.4f}  ({time.time() - t0:.1f}s)")
             if step >= args.steps:
                 break
 
@@ -207,13 +201,11 @@ def main() -> None:
         model.eval()
         with torch.no_grad():
             gen = torch.Generator(device=images[0].device).manual_seed(123)
-            correct = model(
-                images, ids, generator=gen, pixel_sizes=pixel_sizes
-            )["loss"].item()
+            correct = model(images, ids, generator=gen, pixel_sizes=pixel_sizes)["loss"].item()
             gen = torch.Generator(device=images[0].device).manual_seed(123)
-            wrong = model(
-                images, ids, generator=gen, pixel_sizes=list(reversed(pixel_sizes))
-            )["loss"].item()
+            wrong = model(images, ids, generator=gen, pixel_sizes=list(reversed(pixel_sizes)))[
+                "loss"
+            ].item()
         print(
             f"scale sensitivity: correct {correct:.4f}, shuffled {wrong:.4f}, "
             f"ratio {wrong / max(correct, 1e-12):.3f}"

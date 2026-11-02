@@ -53,8 +53,9 @@ flat constructor call.
 
 from __future__ import annotations
 
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
-from typing import Callable, Optional, Sequence
+from typing import Any
 
 #: ``pos_embed`` kinds that select the legacy fixed-grid table scheme.  The
 #: fan-out to ``encoder_pos_embed`` / ``decoder_pos_embed`` /
@@ -83,9 +84,7 @@ class SharedCore:
 
     def __post_init__(self) -> None:
         if self.dim % self.n_heads != 0:
-            raise ValueError(
-                f"dim ({self.dim}) must be divisible by n_heads ({self.n_heads})"
-            )
+            raise ValueError(f"dim ({self.dim}) must be divisible by n_heads ({self.n_heads})")
 
 
 @dataclass(frozen=True)
@@ -114,13 +113,13 @@ class DecoderConfig:
 
     depth: int = 2
     mlp_ratio: float = 4.0
-    pos_embed: Optional[str] = None
+    pos_embed: str | None = None
     fractional_pe_mode: str = "sincos"
     fractional_pe_base: float = 10000.0
     pe_ref_um: float = 1.0
     head_mode: str = "per_p"
     head_resample: str = "area"
-    head_patch_size: Optional[int] = None
+    head_patch_size: int | None = None
 
 
 @dataclass(frozen=True)
@@ -143,23 +142,23 @@ class ModelConfig:
     # means "no model-level default, pass pixel_sizes= per call".  Both "auto"
     # meanings are resolved by :meth:`resolve`, not duplicated in the flat API.
     patch_size: int | Sequence[int] | None = None
-    patch_sizes: Optional[Sequence[int]] = None
+    patch_sizes: Sequence[int] | None = None
     flexi_random: bool = True
-    max_tokens: Optional[int] = None
-    pixel_size: Optional[float] = None
+    max_tokens: int | None = None
+    pixel_size: float | None = None
     pe_space: str = "physical"
 
     # --- positional-embedding variants (decoder's lives in DecoderConfig) -----
-    pos_embed: Optional[str] = None
-    encoder_pos_embed: Optional[str] = None
-    fusion_pos_embed: Optional[str] = None
+    pos_embed: str | None = None
+    encoder_pos_embed: str | None = None
+    fusion_pos_embed: str | None = None
     rope_base: float = 100.0
     rope_ref_extent: float = 32.0
     rope_shared_extent: bool = False
 
     # --- fusion ---------------------------------------------------------------
     fusion: str = "attention"
-    fusion_attn_dim: Optional[int] = None
+    fusion_attn_dim: int | None = None
 
     # --- pooling / decoder-KV wiring -----------------------------------------
     n_latents: int = 16
@@ -184,7 +183,7 @@ class ModelConfig:
     loss: str = "mae"
     loss_reduce: str = "sample"
 
-    def resolve(self) -> "ModelConfig":
+    def resolve(self) -> ModelConfig:
         """Return a copy with every derived field made explicit.
 
         This is the single implementation of the derivation the flat
@@ -202,9 +201,10 @@ class ModelConfig:
         patch_sizes = self.patch_sizes
         if patch_size is None:
             patch_size = patch_sizes[0] if patch_sizes else DEFAULT_PATCH_SIZE
-        if isinstance(patch_size, (list, tuple)):
+        if isinstance(patch_size, Sequence) and not isinstance(patch_size, (str, bytes)):
             patch_sizes = tuple(patch_size)
             patch_size = patch_size[0]
+        assert isinstance(patch_size, int), "patch_size must resolve to a single int"
         patch_size = int(patch_size)
         if patch_sizes is None:
             patch_sizes = (patch_size,)
@@ -212,10 +212,15 @@ class ModelConfig:
 
         pos_embed = self.pos_embed
         legacy = pos_embed in LEGACY_POS_EMBEDS
-        if pos_embed is not None and not legacy and pos_embed not in (
-            "fractional",
-            "rope",
-            "none",
+        if (
+            pos_embed is not None
+            and not legacy
+            and pos_embed
+            not in (
+                "fractional",
+                "rope",
+                "none",
+            )
         ):
             raise ValueError(
                 f"unknown pos_embed '{pos_embed}'; expected learned, sincos, "
@@ -223,9 +228,7 @@ class ModelConfig:
             )
         encoder_pos_embed = self.encoder_pos_embed
         if encoder_pos_embed is None:
-            encoder_pos_embed = (
-                "none" if legacy or pos_embed == "none" else "rope"
-            )
+            encoder_pos_embed = "none" if legacy or pos_embed == "none" else "rope"
         decoder_pos_embed = self.decoder.pos_embed
         if decoder_pos_embed is None:
             if legacy:
@@ -264,7 +267,7 @@ class ModelConfig:
         )
 
     @classmethod
-    def from_kwargs(cls, **kw: object) -> "ModelConfig":
+    def from_kwargs(cls, **kw: Any) -> ModelConfig:
         """Inverse of :meth:`to_kwargs`: build from flat constructor keywords.
 
         The flat ``ChannelFusionMAE`` constructor routes through this so its
@@ -279,12 +282,8 @@ class ModelConfig:
                 f"missing={sorted(missing)}"
             )
         return cls(
-            core=SharedCore(
-                dim=kw["dim"], n_heads=kw["n_heads"], dropout=kw["dropout"]
-            ),
-            encoder=EncoderConfig(
-                depth=kw["encoder_depth"], n_memory=kw["n_memory"]
-            ),
+            core=SharedCore(dim=kw["dim"], n_heads=kw["n_heads"], dropout=kw["dropout"]),
+            encoder=EncoderConfig(depth=kw["encoder_depth"], n_memory=kw["n_memory"]),
             decoder=DecoderConfig(
                 depth=kw["decoder_depth"],
                 pos_embed=kw["decoder_pos_embed"],
@@ -305,55 +304,55 @@ class ModelConfig:
         flat constructor bakes it at 4.0.  Keep this in sync with the
         constructor; ``tests/test_config.py`` asserts the key sets match.
         """
-        return dict(
-            image_size=self.image_size,
-            patch_size=self.patch_size,
-            patch_sizes=self.patch_sizes,
-            flexi_random=self.flexi_random,
-            max_tokens=self.max_tokens,
-            pixel_size=self.pixel_size,
-            pe_space=self.pe_space,
+        return {
+            "image_size": self.image_size,
+            "patch_size": self.patch_size,
+            "patch_sizes": self.patch_sizes,
+            "flexi_random": self.flexi_random,
+            "max_tokens": self.max_tokens,
+            "pixel_size": self.pixel_size,
+            "pe_space": self.pe_space,
             # core (adaln is derived from scale_conditioning, not a flat kwarg)
-            dim=self.core.dim,
-            n_heads=self.core.n_heads,
-            dropout=self.core.dropout,
+            "dim": self.core.dim,
+            "n_heads": self.core.n_heads,
+            "dropout": self.core.dropout,
             # encoder
-            encoder_depth=self.encoder.depth,
-            n_memory=self.encoder.n_memory,
+            "encoder_depth": self.encoder.depth,
+            "n_memory": self.encoder.n_memory,
             # decoder
-            decoder_depth=self.decoder.depth,
-            decoder_pos_embed=self.decoder.pos_embed,
-            fractional_pe_mode=self.decoder.fractional_pe_mode,
-            fractional_pe_base=self.decoder.fractional_pe_base,
-            pe_ref_um=self.decoder.pe_ref_um,
-            head_mode=self.decoder.head_mode,
-            head_resample=self.decoder.head_resample,
-            head_patch_size=self.decoder.head_patch_size,
+            "decoder_depth": self.decoder.depth,
+            "decoder_pos_embed": self.decoder.pos_embed,
+            "fractional_pe_mode": self.decoder.fractional_pe_mode,
+            "fractional_pe_base": self.decoder.fractional_pe_base,
+            "pe_ref_um": self.decoder.pe_ref_um,
+            "head_mode": self.decoder.head_mode,
+            "head_resample": self.decoder.head_resample,
+            "head_patch_size": self.decoder.head_patch_size,
             # top-level
-            pos_embed=self.pos_embed,
-            encoder_pos_embed=self.encoder_pos_embed,
-            fusion_pos_embed=self.fusion_pos_embed,
-            rope_base=self.rope_base,
-            rope_ref_extent=self.rope_ref_extent,
-            rope_shared_extent=self.rope_shared_extent,
-            fusion=self.fusion,
-            fusion_attn_dim=self.fusion_attn_dim,
-            n_latents=self.n_latents,
-            n_queries=self.n_queries,
-            decoder_kv=self.decoder_kv,
-            p_patch=self.p_patch,
-            p_channel=self.p_channel,
-            patch_ratio=self.patch_ratio,
-            mode_sampling=self.mode_sampling,
-            min_visible_channels=self.min_visible_channels,
-            max_masked_channels_frac=self.max_masked_channels_frac,
-            keep_offcell_as_context=self.keep_offcell_as_context,
-            scale_conditioning=self.scale_conditioning,
-            scale_fourier_frequencies=self.scale_fourier_frequencies,
-            num_channel_ids=self.num_channel_ids,
-            loss=self.loss,
-            loss_reduce=self.loss_reduce,
-        )
+            "pos_embed": self.pos_embed,
+            "encoder_pos_embed": self.encoder_pos_embed,
+            "fusion_pos_embed": self.fusion_pos_embed,
+            "rope_base": self.rope_base,
+            "rope_ref_extent": self.rope_ref_extent,
+            "rope_shared_extent": self.rope_shared_extent,
+            "fusion": self.fusion,
+            "fusion_attn_dim": self.fusion_attn_dim,
+            "n_latents": self.n_latents,
+            "n_queries": self.n_queries,
+            "decoder_kv": self.decoder_kv,
+            "p_patch": self.p_patch,
+            "p_channel": self.p_channel,
+            "patch_ratio": self.patch_ratio,
+            "mode_sampling": self.mode_sampling,
+            "min_visible_channels": self.min_visible_channels,
+            "max_masked_channels_frac": self.max_masked_channels_frac,
+            "keep_offcell_as_context": self.keep_offcell_as_context,
+            "scale_conditioning": self.scale_conditioning,
+            "scale_fourier_frequencies": self.scale_fourier_frequencies,
+            "num_channel_ids": self.num_channel_ids,
+            "loss": self.loss,
+            "loss_reduce": self.loss_reduce,
+        }
 
 
 # --------------------------------------------------------------------------- #
@@ -483,14 +482,10 @@ _FLAT_KEYS = frozenset(_TOP_LEVEL_FLAT + _SUBCONFIG_FLAT)
 DEFAULT_CONFIG: ModelConfig = ModelConfig()
 
 
-def ablated_config(
-    name: str = "full", base: ModelConfig | None = None
-) -> ModelConfig:
+def ablated_config(name: str = "full", base: ModelConfig | None = None) -> ModelConfig:
     """Return the :class:`ModelConfig` for a named ablation."""
     if name not in ABLATIONS:
-        raise KeyError(
-            f"unknown ablation '{name}'; expected one of {sorted(ABLATIONS)}"
-        )
+        raise KeyError(f"unknown ablation '{name}'; expected one of {sorted(ABLATIONS)}")
     return ABLATIONS[name](base or DEFAULT_CONFIG)
 
 

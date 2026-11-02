@@ -27,9 +27,7 @@ def patch_offsets(patch_sizes) -> torch.Tensor:
     ps = torch.as_tensor(patch_sizes, dtype=torch.long)
     if ps.numel() == 0:
         return torch.zeros(1, dtype=torch.long, device=ps.device)
-    offsets = torch.zeros(
-        ps.numel() + 1, dtype=torch.long, device=ps.device
-    )
+    offsets = torch.zeros(ps.numel() + 1, dtype=torch.long, device=ps.device)
     offsets[1:] = torch.cumsum(ps * ps, dim=0)
     return offsets
 
@@ -129,9 +127,7 @@ def cha_maevit_recon_loss(
     patch_dim = pred.shape[-1]
     patch_size = math.isqrt(patch_dim)
     if patch_size * patch_size != patch_dim:
-        raise ValueError(
-            f"cha_maevit_recon_loss requires a square patch_dim, got {patch_dim}"
-        )
+        raise ValueError(f"cha_maevit_recon_loss requires a square patch_dim, got {patch_dim}")
 
     target = target.float()
     pixel_loss = F.mse_loss(pred, target)

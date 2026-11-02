@@ -21,7 +21,6 @@ from fuse_channels import (
     CropGeometry,
     cell_n_tokens,
     plan_patches,
-    token_coverage,
 )
 from fuse_channels.pos_embed import FractionalSpatialPE
 from fuse_channels.rope import axial_rope_cache, physical_grid_coords
@@ -59,9 +58,7 @@ def test_grid_fraction_coords_encode_distance_relative_to_the_window():
 
     def relative_phase(n_h):
         rows = torch.tensor([0.0, 2.0])
-        r, _ = normalized_grid_coords(
-            rows, rows, n_h, n_h, ref_extent=32.0
-        )
+        r, _ = normalized_grid_coords(rows, rows, n_h, n_h, ref_extent=32.0)
         return float((r[1] - r[0]) * theta)
 
     small, large = relative_phase(4), relative_phase(8)
@@ -114,11 +111,12 @@ def test_decoder_metric_pe_uses_the_same_frame_as_the_encoder():
 
 def test_pixel_size_is_required_metadata():
     """There is no "unknown pixel size" state: the model refuses to run blind."""
-    model = ChannelFusionMAE(image_size=16, patch_size=8, dim=16, n_heads=4,
-                             scale_conditioning="none")
+    model = ChannelFusionMAE(
+        image_size=16, patch_size=8, dim=16, n_heads=4, scale_conditioning="none"
+    )
     images = [torch.randn(2, 1, 16, 16)]
     ids = [torch.tensor([0, 1])]
-    with pytest.raises(ValueError, match="pixel size .* is required"):
+    with pytest.raises(ValueError, match=r"pixel size .* is required"):
         model(images, ids, patch_sizes=8)
     with pytest.raises(ValueError, match="all be known"):
         model(images, ids, patch_sizes=8, pixel_sizes=[None])
@@ -141,12 +139,10 @@ def test_cell_n_tokens_is_driven_by_cell_size_and_p():
 
 def test_plan_patches_variable_n_gives_each_cell_its_own_grid():
     mask = np.zeros((200, 200), dtype=np.int64)
-    mask[50:66, 50:66] = 1    # 16 px  -> 2 tokens at p=8
+    mask[50:66, 50:66] = 1  # 16 px  -> 2 tokens at p=8
     mask[100:132, 100:132] = 2  # 32 px -> 4 tokens
     mask[150:190, 150:190] = 3  # 40 px -> 5 tokens
-    crops, skipped = plan_patches(
-        mask, (200, 200), pixel_size=1.0, target_um=8.0, n_tokens="cell"
-    )
+    crops, skipped = plan_patches(mask, (200, 200), pixel_size=1.0, target_um=8.0, n_tokens="cell")
     assert skipped == []
     by_id = {c.cell_id: c for c in crops}
     assert by_id[1].geometry.n_tokens == 2
@@ -162,9 +158,7 @@ def test_large_cell_is_processed_not_clipped():
     """No model-side cap on N: a big cell gets its own large grid."""
     mask = np.zeros((400, 400), dtype=np.int64)
     mask[150:330, 150:330] = 1  # 180 px cell -> 23 tokens/side at p=8
-    crops, skipped = plan_patches(
-        mask, (400, 400), pixel_size=1.0, target_um=8.0, n_tokens="cell"
-    )
+    crops, skipped = plan_patches(mask, (400, 400), pixel_size=1.0, target_um=8.0, n_tokens="cell")
     assert skipped == [] and len(crops) == 1
     c = crops[0]
     assert c.geometry.n_tokens == 23
@@ -177,8 +171,12 @@ def test_max_n_budget_skips_and_reports_instead_of_clipping():
     mask = np.zeros((400, 400), dtype=np.int64)
     mask[150:330, 150:330] = 1
     crops, skipped = plan_patches(
-        mask, (400, 400), pixel_size=1.0, target_um=8.0,
-        n_tokens="cell", max_n=8,
+        mask,
+        (400, 400),
+        pixel_size=1.0,
+        target_um=8.0,
+        n_tokens="cell",
+        max_n=8,
     )
     assert crops == []
     assert len(skipped) == 1
@@ -189,7 +187,10 @@ def test_model_accepts_a_far_larger_grid_than_its_construction_image_size():
     model = _model()  # built for image_size=16
     im = torch.randn(2, 1, 96, 96)
     out = model(
-        [im], [torch.tensor([0, 1])], patch_sizes=8, pixel_sizes=[0.5],
+        [im],
+        [torch.tensor([0, 1])],
+        patch_sizes=8,
+        pixel_sizes=[0.5],
         generator=torch.Generator().manual_seed(0),
     )
     assert int(out["n_patches_per_sample"][0]) == 144
@@ -199,9 +200,7 @@ def test_model_accepts_a_far_larger_grid_than_its_construction_image_size():
 def test_plan_patches_variable_n_still_clamps_to_the_image():
     mask = np.zeros((96, 96), dtype=np.int64)
     mask[80:94, 80:94] = 1  # interior but the window would cross the border
-    crops, skipped = plan_patches(
-        mask, (96, 96), pixel_size=1.0, target_um=8.0, n_tokens="cell"
-    )
+    crops, skipped = plan_patches(mask, (96, 96), pixel_size=1.0, target_um=8.0, n_tokens="cell")
     assert skipped == [] and len(crops) == 1
     c = crops[0]
     assert c.top + c.geometry.crop_px <= 96
@@ -215,27 +214,27 @@ def test_plan_patches_variable_n_still_clamps_to_the_image():
 def _variable_n_batch(seed=0):
     """Two samples, same p, different H/W hence different N (previously a crash)."""
     g = torch.Generator().manual_seed(seed)
-    a = torch.randn(2, 1, 16, 16, generator=g)   # 2x2  = 4 patches at p=8
-    b = torch.randn(3, 1, 32, 16, generator=g)   # 4x2  = 8 patches at p=8
+    a = torch.randn(2, 1, 16, 16, generator=g)  # 2x2  = 4 patches at p=8
+    b = torch.randn(3, 1, 32, 16, generator=g)  # 4x2  = 8 patches at p=8
     return [a, b], [torch.tensor([0, 1]), torch.tensor([2, 3, 4])]
 
 
 def _model(**kw):
-    defaults = dict(
-        image_size=16,
-        patch_size=8,
-        dim=16,
-        encoder_depth=1,
-        decoder_depth=1,
-        n_heads=4,
-        n_memory=1,
-        num_channel_ids=8,
-        scale_conditioning="none",
-        p_patch=0.0,
-        p_channel=0.0,
-        patch_ratio=0.5,
-        pixel_size=1.0,
-    )
+    defaults = {
+        "image_size": 16,
+        "patch_size": 8,
+        "dim": 16,
+        "encoder_depth": 1,
+        "decoder_depth": 1,
+        "n_heads": 4,
+        "n_memory": 1,
+        "num_channel_ids": 8,
+        "scale_conditioning": "none",
+        "p_patch": 0.0,
+        "p_channel": 0.0,
+        "patch_ratio": 0.5,
+        "pixel_size": 1.0,
+    }
     defaults.update(kw)
     return ChannelFusionMAE(**defaults)
 
@@ -289,9 +288,7 @@ def test_gather_patches_matches_the_full_unfold():
     sample_idx = torch.tensor([0, 0, 0, 1, 1])
     channel_idx = torch.tensor([1, 1, 0, 2, 0])
     patch_idx = torch.tensor([3, 1, 0, 2, 3])
-    got = ChannelTokenizer.gather_patches(
-        images, sample_idx, channel_idx, patch_idx, ps, grid_w
-    )
+    got = ChannelTokenizer.gather_patches(images, sample_idx, channel_idx, patch_idx, ps, grid_w)
     full = ChannelTokenizer.extract_patches_list(images, ps)
     for b in range(2):
         sel = (sample_idx == b).nonzero(as_tuple=True)[0]
@@ -302,8 +299,8 @@ def test_gather_patches_matches_the_full_unfold():
 
 def _visible_two_samples():
     return [
-        torch.ones(2, 4, dtype=torch.bool),   # sample 0: 2 channels, 4 patches
-        torch.ones(3, 8, dtype=torch.bool),   # sample 1: 3 channels, 8 patches
+        torch.ones(2, 4, dtype=torch.bool),  # sample 0: 2 channels, 4 patches
+        torch.ones(3, 8, dtype=torch.bool),  # sample 1: 3 channels, 8 patches
     ]
 
 
@@ -332,7 +329,7 @@ def test_masking_an_offcell_patch_produces_no_target():
     valid = [torch.tensor([True, False, False, False]), torch.ones(8, dtype=torch.bool)]
     vis = _visible_two_samples()
     vis[0][:, 1] = False  # mask an OFF-cell patch
-    vis[1][:] = True      # sample 1 has nothing masked
+    vis[1][:] = True  # sample 1 has nothing masked
     out = model(images, ids, patch_sizes=8, visible=vis, valid=valid)
     # nothing is reconstructable -> the guard returns a zero loss with no pred
     assert out["pred"] is None
@@ -367,9 +364,7 @@ def test_sample_reduction_weights_cells_equally():
 def test_metric_pe_end_to_end_with_pixel_sizes():
     model = _model(pe_space="physical", scale_conditioning="add")
     images, ids = _variable_n_batch()
-    out = model(
-        images, ids, patch_sizes=8, pixel_sizes=[0.5, 1.0]
-    )
+    out = model(images, ids, patch_sizes=8, pixel_sizes=[0.5, 1.0])
     assert out["pe_metric"] is True
     assert torch.isfinite(out["loss"])
 
@@ -381,12 +376,24 @@ def test_metric_pe_is_patch_size_invariant_for_the_same_physical_token():
     rows = torch.tensor([0, 1, 2], dtype=torch.float32)
     # p=16 @ 0.5 um/px and p=8 @ 1.0 um/px both give an 8 um patch
     c1, s1 = axial_rope_cache(
-        rows, rows, 3, 3, 8, patch_size=torch.tensor(16),
-        pixel_size=torch.tensor(0.5), ref_um=32.0,
+        rows,
+        rows,
+        3,
+        3,
+        8,
+        patch_size=torch.tensor(16),
+        pixel_size=torch.tensor(0.5),
+        ref_um=32.0,
     )
     c2, s2 = axial_rope_cache(
-        rows, rows, 3, 3, 8, patch_size=torch.tensor(8),
-        pixel_size=torch.tensor(1.0), ref_um=32.0,
+        rows,
+        rows,
+        3,
+        3,
+        8,
+        patch_size=torch.tensor(8),
+        pixel_size=torch.tensor(1.0),
+        ref_um=32.0,
     )
     torch.testing.assert_close(c1, c2)
     torch.testing.assert_close(s1, s2)
@@ -400,7 +407,7 @@ def test_crop_reader_to_model_with_variable_n_and_variable_p():
     from fuse_channels import CellCropDataset, TiffStack, collate_crops, plan_patches
 
     mask = np.zeros((200, 200), dtype=np.int64)
-    mask[60:76, 60:76] = 1     # 16 px cell
+    mask[60:76, 60:76] = 1  # 16 px cell
     mask[100:132, 100:132] = 2  # 32 px cell
 
     # two instruments: same physical patch extent, different p
@@ -408,14 +415,17 @@ def test_crop_reader_to_model_with_variable_n_and_variable_p():
     geom_b = CropGeometry.build(pixel_size=0.5, target_um=8.0, n_tokens=2)
     assert geom_a.patch_size == 8 and geom_b.patch_size == 16
 
-    crops_a, _ = plan_patches(mask, (200, 200), geom_a, image_id="a",
-                              channel_ids=(0, 1))
-    crops_b, _ = plan_patches(mask, (200, 200), geom_b, image_id="b",
-                              channel_ids=(0, 1))
+    _crops_a, _ = plan_patches(mask, (200, 200), geom_a, image_id="a", channel_ids=(0, 1))
+    crops_b, _ = plan_patches(mask, (200, 200), geom_b, image_id="b", channel_ids=(0, 1))
     # variable N on instrument a: cell-sized windows
     crops_a_cell, skipped = plan_patches(
-        mask, (200, 200), pixel_size=1.0, target_um=8.0,
-        n_tokens="cell", image_id="a", channel_ids=(0, 1),
+        mask,
+        (200, 200),
+        pixel_size=1.0,
+        target_um=8.0,
+        n_tokens="cell",
+        image_id="a",
+        channel_ids=(0, 1),
     )
     assert skipped == []
     assert {c.geometry.n_tokens for c in crops_a_cell} == {2, 4}
@@ -434,7 +444,9 @@ def test_crop_reader_to_model_with_variable_n_and_variable_p():
     assert len(batch["patch_sizes"]) == 4
 
     model = _model(
-        pe_space="physical", scale_conditioning="add", patch_ratio=0.5,
+        pe_space="physical",
+        scale_conditioning="add",
+        patch_ratio=0.5,
         patch_sizes=(8, 16),
     )
     out = model(
@@ -465,15 +477,12 @@ def _reduction_setup():
     model = _model(pe_space="physical", p_patch=1.0, p_channel=0.0)
     images = [torch.randn(2, 1, 16, 16), torch.randn(2, 1, 64, 64)]
     ids = [torch.tensor([0, 1]), torch.tensor([0, 1])]
-    out = model(images, ids, patch_sizes=8,
-                generator=torch.Generator().manual_seed(3))
+    out = model(images, ids, patch_sizes=8, generator=torch.Generator().manual_seed(3))
     _cs, _ps, _ns, visible, _tv, _px = model._prepare(
         images, ids, None, torch.Generator().manual_seed(3), 8
     )
     counts = [int((~v).sum()) for v in visible]
-    gid = torch.cat(
-        [torch.full((c,), b, dtype=torch.long) for b, c in enumerate(counts)]
-    )
+    gid = torch.cat([torch.full((c,), b, dtype=torch.long) for b, c in enumerate(counts)])
     return model, out, gid, counts
 
 
@@ -484,11 +493,7 @@ def test_token_reduction_weights_by_target_count_sample_does_not():
 
     tp = out["target_patch_size"]
     per_sample = [
-        float(
-            model._loss_on(
-                pred, target, tp, (gid == g).nonzero(as_tuple=True)[0]
-            ).detach()
-        )
+        float(model._loss_on(pred, target, tp, (gid == g).nonzero(as_tuple=True)[0]).detach())
         for g in (0, 1)
     ]
     weights = torch.tensor(counts, dtype=torch.float32)
@@ -519,17 +524,13 @@ def test_vectorised_sample_reduction_matches_the_per_sample_loop(mixed_p):
         # a mixed-p batch: rows keep their own p**2 pixels, still no mask
         images = [torch.randn(2, 1, 16, 16), torch.randn(2, 1, 64, 64)]
         ids = [torch.tensor([0, 1]), torch.tensor([0, 1])]
-        model = _model(
-            pe_space="physical", p_patch=1.0, p_channel=0.0, patch_sizes=(8, 16)
-        )
-        out = model(images, ids, patch_sizes=[8, 16],
-                    generator=torch.Generator().manual_seed(3))
+        model = _model(pe_space="physical", p_patch=1.0, p_channel=0.0, patch_sizes=(8, 16))
+        out = model(images, ids, patch_sizes=[8, 16], generator=torch.Generator().manual_seed(3))
         _cs, _ps, _ns, visible, _tv, _px = model._prepare(
             images, ids, None, torch.Generator().manual_seed(3), [8, 16]
         )
         gid = torch.cat(
-            [torch.full((int((~v).sum()),), b, dtype=torch.long)
-             for b, v in enumerate(visible)]
+            [torch.full((int((~v).sum()),), b, dtype=torch.long) for b, v in enumerate(visible)]
         )
         pred, target, tp = out["pred"], out["target"], out["target_patch_size"]
         offsets = out["target_pixel_offset"]
@@ -540,9 +541,7 @@ def test_vectorised_sample_reduction_matches_the_per_sample_loop(mixed_p):
     groups = torch.unique(gid)
     loop = pred.new_zeros(())
     for g in groups.tolist():
-        loop = loop + model._loss_on(
-            pred, target, tp, (gid == g).nonzero(as_tuple=True)[0]
-        )
+        loop = loop + model._loss_on(pred, target, tp, (gid == g).nonzero(as_tuple=True)[0])
     loop = loop / groups.numel()
     vec = model._sample_mean_loss(pred, target, tp, gid)
     torch.testing.assert_close(vec, loop, rtol=1e-6, atol=1e-6)
@@ -555,14 +554,14 @@ def test_vectorised_sample_reduction_gradient_matches_the_loop():
     def run(vectorised):
         pred = out["pred"].detach().clone().requires_grad_(True)
         if vectorised:
-            loss = model._sample_mean_loss(
-                pred, out["target"], out["target_patch_size"], gid
-            )
+            loss = model._sample_mean_loss(pred, out["target"], out["target_patch_size"], gid)
         else:
             loss = pred.new_zeros(())
             for g in groups.tolist():
                 loss = loss + model._loss_on(
-                    pred, out["target"], out["target_patch_size"],
+                    pred,
+                    out["target"],
+                    out["target_patch_size"],
                     (gid == g).nonzero(as_tuple=True)[0],
                 )
             loss = loss / groups.numel()

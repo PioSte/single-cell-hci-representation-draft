@@ -15,8 +15,6 @@ identity/content balance.
 
 from __future__ import annotations
 
-import dataclasses
-
 import pytest
 import torch
 import torch.nn.functional as F
@@ -30,7 +28,6 @@ from fuse_channels import (
 )
 from fuse_channels.container import ChannelSet
 from fuse_channels.fusion import _dense_fusion_reference
-
 
 DIM = 192
 N_HEADS = 6
@@ -140,14 +137,10 @@ def test_fusion_is_content_scale_invariant(kind):
 def test_zero_content_is_identity_only():
     """An empty patch carries identity, not amplified noise."""
     n_ch, n_patch = 1, 3
-    channel_embed = (
-        torch.randn(n_ch, DIM, generator=torch.Generator().manual_seed(0)) * 0.3
-    )
+    channel_embed = torch.randn(n_ch, DIM, generator=torch.Generator().manual_seed(0)) * 0.3
     zeros = torch.zeros(n_ch * n_patch, DIM)
     fusion = ChannelFusion(DIM, n_heads=N_HEADS, pos_embed="none")
-    fused = fusion(
-        _cs(zeros, channel_embed.repeat_interleave(n_patch, dim=0), n_patch, n_ch)
-    )[0]
+    fused = fusion(_cs(zeros, channel_embed.repeat_interleave(n_patch, dim=0), n_patch, n_ch))[0]
     # one channel per location: content attention collapses to v_proj(0), so the
     # only content that survives is the value-projection bias.
     v0 = fusion.v_proj(torch.zeros(1, DIM))
@@ -159,9 +152,7 @@ def test_zero_content_is_identity_only():
 def test_routing_still_uses_identity(kind):
     fusion = _fusion(kind)
     n_ch, n_patch = 2, 4
-    tokens = torch.randn(
-        n_ch * n_patch, DIM, generator=torch.Generator().manual_seed(0)
-    )
+    tokens = torch.randn(n_ch * n_patch, DIM, generator=torch.Generator().manual_seed(0))
     e_ids = torch.randn(n_ch, DIM, generator=torch.Generator().manual_seed(1)) * 0.3
     channel_embed = e_ids.repeat_interleave(n_patch, dim=0)
     cs = _cs(tokens, channel_embed, n_patch, n_ch)

@@ -16,9 +16,7 @@ from fuse_channels.flexi import _pi_resize_matrix
 
 
 def _head(mode="shared", p0=8, patch_sizes=(4, 8, 16), resample="area", dim=16):
-    return PatchReconstructionHead(
-        dim, p0, patch_sizes=patch_sizes, mode=mode, resample=resample
-    )
+    return PatchReconstructionHead(dim, p0, patch_sizes=patch_sizes, mode=mode, resample=resample)
 
 
 # --------------------------------------------------------------------------- #
@@ -29,18 +27,14 @@ def test_parameter_shapes_are_independent_of_patch_sizes():
     a = _head(patch_sizes=(4, 8, 16))
     b = _head(patch_sizes=(5, 7, 23))
     assert set(a.state_dict()) == set(b.state_dict()) == {"head.weight", "head.bias"}
-    assert sum(p.numel() for p in a.parameters()) == sum(
-        p.numel() for p in b.parameters()
-    )
+    assert sum(p.numel() for p in a.parameters()) == sum(p.numel() for p in b.parameters())
     assert a.head.weight.shape == (8 * 8, 16)
 
 
 def test_per_p_mode_still_grows_with_the_configured_set():
     small = _head(patch_sizes=(8,), mode="per_p")
     large = _head(patch_sizes=(4, 8, 16, 32), mode="per_p")
-    assert sum(p.numel() for p in large.parameters()) > sum(
-        p.numel() for p in small.parameters()
-    )
+    assert sum(p.numel() for p in large.parameters()) > sum(p.numel() for p in small.parameters())
 
 
 # --------------------------------------------------------------------------- #
@@ -82,7 +76,9 @@ def test_mixed_patch_sizes_are_concatenated_not_padded():
     for i, p in enumerate(ps):
         block = out[offsets[i] : offsets[i + 1]]
         expected = head._head_for(p)[0](x[i : i + 1])
-        expected = head._resize(expected, p, head._head_for(p)[2]) if head._head_for(p)[1] else expected
+        expected = (
+            head._resize(expected, p, head._head_for(p)[2]) if head._head_for(p)[1] else expected
+        )
         assert torch.equal(block, expected.reshape(-1))
 
 
@@ -92,9 +88,7 @@ def test_mixed_patch_sizes_are_concatenated_not_padded():
 def test_area_operator_is_a_box_average_when_shrinking():
     head = _head(resample="area")
     x = torch.randn(2, 64, generator=torch.Generator().manual_seed(0))
-    expected = F.interpolate(
-        x.reshape(2, 1, 8, 8), size=(5, 5), mode="area"
-    ).reshape(2, 25)
+    expected = F.interpolate(x.reshape(2, 1, 8, 8), size=(5, 5), mode="area").reshape(2, 25)
     assert torch.allclose(head._resample_shared(x, 8, 5), expected)
 
 
@@ -144,19 +138,19 @@ def test_gradients_flow_through_the_resample():
 # model integration
 # --------------------------------------------------------------------------- #
 def _model(**kw):
-    cfg = dict(
-        image_size=32,
-        patch_size=8,
-        patch_sizes=(4, 8),
-        dim=32,
-        encoder_depth=1,
-        decoder_depth=1,
-        n_heads=4,
-        n_memory=2,
-        num_channel_ids=8,
-        flexi_random=False,
-        pixel_size=1.0,
-    )
+    cfg = {
+        "image_size": 32,
+        "patch_size": 8,
+        "patch_sizes": (4, 8),
+        "dim": 32,
+        "encoder_depth": 1,
+        "decoder_depth": 1,
+        "n_heads": 4,
+        "n_memory": 2,
+        "num_channel_ids": 8,
+        "flexi_random": False,
+        "pixel_size": 1.0,
+    }
     cfg.update(kw)
     return ChannelFusionMAE(**cfg)
 
@@ -175,9 +169,7 @@ def test_mae_shared_head_runs_at_an_unseen_p_end_to_end():
     model = _model(head_mode="shared", head_patch_size=8)
     images, ids = _batch()
     with torch.no_grad():
-        out = model(
-            images, ids, generator=torch.Generator().manual_seed(0), patch_sizes=16
-        )
+        out = model(images, ids, generator=torch.Generator().manual_seed(0), patch_sizes=16)
     offsets = out["target_pixel_offset"]
     assert set((offsets[1:] - offsets[:-1]).tolist()) == {16 * 16}
     assert torch.isfinite(out["loss"])

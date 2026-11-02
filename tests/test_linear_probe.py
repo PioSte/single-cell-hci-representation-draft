@@ -6,14 +6,14 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from examples.linear_probe import (  # noqa: E402
+from examples.linear_probe import (
     extract_descriptors,
     probe_accuracy,
     split_indices,
     train_linear_probe,
 )
-from fuse_channels import ChannelFusionMAE  # noqa: E402
-from fuse_channels.data import SyntheticChannelDataset  # noqa: E402
+from fuse_channels import ChannelFusionMAE
+from fuse_channels.data import SyntheticChannelDataset
 
 
 def test_linear_probe_smoke():
@@ -45,9 +45,7 @@ def test_linear_probe_smoke():
     model.eval()
     model.requires_grad_(False)
 
-    features, labels = extract_descriptors(
-        model, ds, train_idx, target_channel=0, batch_size=8
-    )
+    features, labels = extract_descriptors(model, ds, train_idx, target_channel=0, batch_size=8)
     assert features.shape == (len(train_idx), dim)
     assert labels.shape == (len(train_idx),)
     assert torch.isfinite(features).all()

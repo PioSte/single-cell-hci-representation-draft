@@ -193,9 +193,9 @@ def test_combined_region_unions_patch_and_channel_masks():
 
 def test_guards_never_mask_everything_or_starve_channels():
     configs = [
-        dict(p_patch=1.0, p_channel=0.0, patch_ratio=0.875, min_visible_channels=1),
-        dict(p_patch=0.0, p_channel=1.0, patch_ratio=0.75, min_visible_channels=2),
-        dict(p_patch=0.0, p_channel=0.0, patch_ratio=0.9, min_visible_channels=2),
+        {"p_patch": 1.0, "p_channel": 0.0, "patch_ratio": 0.875, "min_visible_channels": 1},
+        {"p_patch": 0.0, "p_channel": 1.0, "patch_ratio": 0.75, "min_visible_channels": 2},
+        {"p_patch": 0.0, "p_channel": 0.0, "patch_ratio": 0.9, "min_visible_channels": 2},
     ]
     C_list = [1, 2, 3, 5, 8]
     for cfg in configs:
@@ -203,32 +203,27 @@ def test_guards_never_mask_everything_or_starve_channels():
         for seed in range(40):
             g = torch.Generator().manual_seed(seed)
             imgs = _images(C_list, 8, seed=seed)
-            for im, v in zip(imgs, masker(imgs, generator=g)):
+            for im, v in zip(imgs, masker(imgs, generator=g), strict=True):
                 C = im.shape[0]
                 assert v.shape == (C, 8)
                 assert bool(v.any()), "at least one token must stay visible"
-                assert (
-                    int(v.any(dim=1).sum())
-                    >= min(cfg["min_visible_channels"], C)
-                )
+                assert int(v.any(dim=1).sum()) >= min(cfg["min_visible_channels"], C)
 
 
 def test_last_resort_guard_is_unreachable_for_channel_and_combined(monkeypatch):
     """The channel/combined regions satisfy the minimum-content guard by draw."""
 
     def _fail(*_args, **_kwargs):
-        raise AssertionError(
-            "last-resort guard must be unreachable for channel/combined"
-        )
+        raise AssertionError("last-resort guard must be unreachable for channel/combined")
 
     configs = [
-        dict(p_patch=0.0, p_channel=1.0, min_visible_channels=1),
-        dict(p_patch=0.0, p_channel=1.0, min_visible_channels=3),
-        dict(p_patch=0.0, p_channel=1.0, min_visible_channels=4),
-        dict(p_patch=0.0, p_channel=1.0, min_visible_channels=5),
-        dict(p_patch=0.0, p_channel=0.0, min_visible_channels=1),
-        dict(p_patch=0.0, p_channel=0.0, min_visible_channels=3),
-        dict(p_patch=0.0, p_channel=0.0, min_visible_channels=5),
+        {"p_patch": 0.0, "p_channel": 1.0, "min_visible_channels": 1},
+        {"p_patch": 0.0, "p_channel": 1.0, "min_visible_channels": 3},
+        {"p_patch": 0.0, "p_channel": 1.0, "min_visible_channels": 4},
+        {"p_patch": 0.0, "p_channel": 1.0, "min_visible_channels": 5},
+        {"p_patch": 0.0, "p_channel": 0.0, "min_visible_channels": 1},
+        {"p_patch": 0.0, "p_channel": 0.0, "min_visible_channels": 3},
+        {"p_patch": 0.0, "p_channel": 0.0, "min_visible_channels": 5},
     ]
     C_list = [1, 2, 3, 5, 8]
 
@@ -238,18 +233,14 @@ def test_last_resort_guard_is_unreachable_for_channel_and_combined(monkeypatch):
         for seed in range(50):
             g = torch.Generator().manual_seed(seed)
             imgs = _images(C_list, 8, seed=seed)
-            for im, v in zip(imgs, masker(imgs, generator=g)):
+            for im, v in zip(imgs, masker(imgs, generator=g), strict=True):
                 C = im.shape[0]
-                assert int(v.any(dim=1).sum()) >= min(
-                    cfg["min_visible_channels"], C
-                )
+                assert int(v.any(dim=1).sum()) >= min(cfg["min_visible_channels"], C)
 
     # Exact regression case: with the old ``m ~ U{1..C}`` channel draw this
     # seed exhausted the resampling attempts and reached the patch-reveal
     # fallback, leaking encoder evidence from a dropped channel.
-    masker = DCPVisibilitySampler(
-        8, p_patch=0.0, p_channel=1.0, min_visible_channels=4
-    )
+    masker = DCPVisibilitySampler(8, p_patch=0.0, p_channel=1.0, min_visible_channels=4)
     monkeypatch.setattr(masker, "_force_visible_patch", _fail)
     for seed in range(500):
         g = torch.Generator().manual_seed(seed)
@@ -260,9 +251,7 @@ def test_last_resort_guard_is_unreachable_for_channel_and_combined(monkeypatch):
 
 def test_guards_never_reveal_a_whole_channel_row_in_patch_mode():
     N, C = 8, 5
-    masker = DCPVisibilitySampler(
-        N, p_patch=1.0, p_channel=0.0, patch_ratio=0.875
-    )
+    masker = DCPVisibilitySampler(N, p_patch=1.0, p_channel=0.0, patch_ratio=0.875)
     for seed in range(50):
         g = torch.Generator().manual_seed(seed)
         v = masker(_images([C], N, seed=seed), generator=g)[0]
@@ -284,7 +273,7 @@ def test_channel_mode_is_not_a_noop_for_c1():
 
 def test_mode_selection_is_per_batch_or_per_sample():
     imgs = _images([4, 4, 4, 4], 8)
-    common = dict(p_patch=0.5, p_channel=0.5, patch_ratio=0.5)
+    common = {"p_patch": 0.5, "p_channel": 0.5, "patch_ratio": 0.5}
 
     batch = DCPVisibilitySampler(8, mode_sampling="batch", **common)
     for seed in range(30):
@@ -308,9 +297,7 @@ def test_mode_selection_is_per_batch_or_per_sample():
     [(1.0, 0.0, "patch"), (0.0, 1.0, "channel"), (0.0, 0.0, "combined")],
 )
 def test_probability_regions_select_the_expected_mode(p_patch, p_channel, expected):
-    masker = DCPVisibilitySampler(
-        8, p_patch=p_patch, p_channel=p_channel, patch_ratio=0.5
-    )
+    masker = DCPVisibilitySampler(8, p_patch=p_patch, p_channel=p_channel, patch_ratio=0.5)
     imgs = _images([4, 3, 2], 8)
     for seed in range(10):
         masker(imgs, generator=torch.Generator().manual_seed(seed))

@@ -22,7 +22,6 @@ from fuse_channels.fleet import (
     sorted_fleet_pixel_sizes,
 )
 
-
 FLEET = (0.598, 0.646, 0.650, 0.652, 0.703)
 
 
@@ -124,9 +123,7 @@ def test_scale_features_encode_the_realized_extent_not_the_target():
     )
     for q in FLEET:
         geom = CropGeometry.build(q, 12.8, n_tokens=2, fleet_pixel_sizes=FLEET)
-        values = model._scale_values(
-            [geom.patch_size], [geom.pixel_size], torch.device("cpu")
-        )
+        values = model._scale_values([geom.patch_size], [geom.pixel_size], torch.device("cpu"))
         realized = float(torch.exp(values[0, 0]) * torch.exp(values[0, 1]))
         assert realized == pytest.approx(geom.extent_um)
         assert realized == pytest.approx(geom.patch_size * geom.pixel_size)
@@ -175,12 +172,22 @@ def test_plan_patches_validates_the_fleet():
     mask[40:60, 40:60] = 1
     with pytest.raises(ValueError, match="acquisition fleet"):
         plan_patches(
-            mask, (128, 128), pixel_size=0.66, target_um=12.8,
-            fleet_pixel_sizes=FLEET, n_tokens=2,
+            mask,
+            (128, 128),
+            pixel_size=0.66,
+            target_um=12.8,
+            fleet_pixel_sizes=FLEET,
+            n_tokens=2,
         )
     crops, skipped = plan_patches(
-        mask, (128, 128), pixel_size=0.650, target_um=12.8,
-        fleet_pixel_sizes=FLEET, n_tokens=2, image_id="im", channel_ids=(0,),
+        mask,
+        (128, 128),
+        pixel_size=0.650,
+        target_um=12.8,
+        fleet_pixel_sizes=FLEET,
+        n_tokens=2,
+        image_id="im",
+        channel_ids=(0,),
     )
     assert not skipped
     assert crops[0].geometry.patch_size == 20
@@ -205,8 +212,14 @@ def test_dataset_draws_discrete_fleet_members():
 
 def test_dataset_canonicalises_float_noise():
     ds = SyntheticChannelDataset(
-        n_samples=2, image_size=8, c_min=2, c_max=2, n_channel_ids=4,
-        pixel_size=[0.59766, 0.6500000000000001], fleet_pixel_sizes=FLEET, seed=0,
+        n_samples=2,
+        image_size=8,
+        c_min=2,
+        c_max=2,
+        n_channel_ids=4,
+        pixel_size=[0.59766, 0.6500000000000001],
+        fleet_pixel_sizes=FLEET,
+        seed=0,
     )
     assert [ds[i][2] for i in range(2)] == [0.598, 0.650]
 
@@ -214,29 +227,53 @@ def test_dataset_canonicalises_float_noise():
 def test_dataset_rejects_a_non_member_by_default():
     with pytest.raises(ValueError, match="acquisition fleet"):
         SyntheticChannelDataset(
-            n_samples=2, image_size=8, c_min=2, c_max=2, n_channel_ids=4,
-            pixel_size=[0.5, 0.5], fleet_pixel_sizes=FLEET, seed=0,
+            n_samples=2,
+            image_size=8,
+            c_min=2,
+            c_max=2,
+            n_channel_ids=4,
+            pixel_size=[0.5, 0.5],
+            fleet_pixel_sizes=FLEET,
+            seed=0,
         )
 
 
 def test_dataset_serves_another_fleet_or_none():
     """Other datasets keep working: their own table, or no validation at all."""
     foreign = SyntheticChannelDataset(
-        n_samples=2, image_size=8, c_min=2, c_max=2, n_channel_ids=4,
-        pixel_size=[0.5, 0.5], fleet_pixel_sizes=(0.4, 0.5), seed=0,
+        n_samples=2,
+        image_size=8,
+        c_min=2,
+        c_max=2,
+        n_channel_ids=4,
+        pixel_size=[0.5, 0.5],
+        fleet_pixel_sizes=(0.4, 0.5),
+        seed=0,
     )
     assert foreign[0][2] == 0.5
     permissive = SyntheticChannelDataset(
-        n_samples=2, image_size=8, c_min=2, c_max=2, n_channel_ids=4,
-        pixel_size=[0.37, 0.37], fleet_pixel_sizes=FLEET, strict_fleet=False, seed=0,
+        n_samples=2,
+        image_size=8,
+        c_min=2,
+        c_max=2,
+        n_channel_ids=4,
+        pixel_size=[0.37, 0.37],
+        fleet_pixel_sizes=FLEET,
+        strict_fleet=False,
+        seed=0,
     )
     assert permissive[0][2] == 0.37
 
 
 def test_pixel_size_range_without_a_fleet_stays_continuous():
     ds = SyntheticChannelDataset(
-        n_samples=8, image_size=8, c_min=2, c_max=2, n_channel_ids=4,
-        pixel_size_range=(0.5, 2.0), seed=0,
+        n_samples=8,
+        image_size=8,
+        c_min=2,
+        c_max=2,
+        n_channel_ids=4,
+        pixel_size_range=(0.5, 2.0),
+        seed=0,
     )
     values = [ds[i][2] for i in range(8)]
     assert all(0.5 <= v <= 2.0 for v in values)

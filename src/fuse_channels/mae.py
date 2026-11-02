@@ -57,7 +57,7 @@ from __future__ import annotations
 
 import math
 import warnings
-from typing import Optional, Sequence
+from collections.abc import Sequence
 
 import torch
 import torch.nn as nn
@@ -65,7 +65,6 @@ import torch.nn as nn
 from .config import DEFAULT_CONFIG, LEGACY_POS_EMBEDS, ModelConfig
 from .decoder import (
     ChannelAwareDecoder,
-    PatchReconstructionHead,
     canonical_patch_size_for,
 )
 from .encoder import TransformerEncoder
@@ -87,7 +86,6 @@ _LOSSES = {
 }
 
 
-
 class FourierScaleEmbedding(nn.Module):
     """Fourier features + MLP for ``[log(p), log(pixel_size)]``.
 
@@ -95,6 +93,9 @@ class FourierScaleEmbedding(nn.Module):
     metadata, not an optional field, so there is no presence flag and no filled
     value: every sample carries a real pixel size.
     """
+
+    # registered buffer
+    freqs: torch.Tensor
 
     def __init__(
         self,
@@ -109,9 +110,7 @@ class FourierScaleEmbedding(nn.Module):
         self.register_buffer("freqs", freqs)
         hidden = hidden or dim
         in_dim = self.input_dim * 2 * n_frequencies
-        self.mlp = nn.Sequential(
-            nn.Linear(in_dim, hidden), nn.GELU(), nn.Linear(hidden, dim)
-        )
+        self.mlp = nn.Sequential(nn.Linear(in_dim, hidden), nn.GELU(), nn.Linear(hidden, dim))
 
     def forward(self, values: torch.Tensor) -> torch.Tensor:
         if values.shape[-1] != self.input_dim:
@@ -139,9 +138,7 @@ def _n_patches_for(im: torch.Tensor, p: int) -> int:
     _, _, H, W = im.shape
     n = (H // p) * (W // p)
     if n < 1:
-        raise ValueError(
-            f"image {(H, W)} leaves no tokens at patch size {p}"
-        )
+        raise ValueError(f"image {(H, W)} leaves no tokens at patch size {p}")
     return n
 
 
@@ -173,7 +170,7 @@ class ChannelFusionMAE(nn.Module):
         encoder_pos_embed: str | None = DEFAULT_CONFIG.encoder_pos_embed,
         decoder_pos_embed: str | None = DEFAULT_CONFIG.decoder.pos_embed,
         fusion_pos_embed: str | None = DEFAULT_CONFIG.fusion_pos_embed,
-        patch_sizes: Optional[Sequence[int]] = DEFAULT_CONFIG.patch_sizes,
+        patch_sizes: Sequence[int] | None = DEFAULT_CONFIG.patch_sizes,
         flexi_random: bool = DEFAULT_CONFIG.flexi_random,
         rope_base: float = DEFAULT_CONFIG.rope_base,
         rope_ref_extent: float = DEFAULT_CONFIG.rope_ref_extent,
@@ -198,22 +195,24 @@ class ChannelFusionMAE(nn.Module):
         # one implementation; the signature defaults above come from the same
         # ``DEFAULT_CONFIG``.
         cfg = ModelConfig.from_kwargs(
-            **{
-                k: v
-                for k, v in locals().items()
-                if k != "self" and not k.startswith("__")
-            }
+            **{k: v for k, v in locals().items() if k != "self" and not k.startswith("__")}
         ).resolve()
+        # ``ModelConfig.resolve`` normalises the geometry/POS fields: a single
+        # canonical ``int`` patch size and non-None POS-embed strings.  Narrow
+        # once here so the rest of ``__init__`` sees concrete types.
         patch_size = cfg.patch_size
         patch_sizes = cfg.patch_sizes
         encoder_pos_embed = cfg.encoder_pos_embed
         decoder_pos_embed = cfg.decoder.pos_embed
         fusion_pos_embed = cfg.fusion_pos_embed
+        assert isinstance(patch_size, int), "resolve() must produce an int patch_size"
+        assert patch_sizes is not None, "resolve() must populate patch_sizes"
+        assert encoder_pos_embed is not None
+        assert decoder_pos_embed is not None
+        assert fusion_pos_embed is not None
 
         if loss not in _LOSSES:
-            raise ValueError(
-                f"unknown loss '{loss}'; expected one of {sorted(_LOSSES)}"
-            )
+            raise ValueError(f"unknown loss '{loss}'; expected one of {sorted(_LOSSES)}")
         if scale_conditioning not in ("none", "add", "adaln"):
             raise ValueError(
                 f"unknown scale_conditioning '{scale_conditioning}'; "
@@ -221,8 +220,7 @@ class ChannelFusionMAE(nn.Module):
             )
         if head_mode not in ("per_p", "canonical", "shared"):
             raise ValueError(
-                f"unknown head_mode '{head_mode}'; "
-                "expected 'per_p', 'canonical' or 'shared'"
+                f"unknown head_mode '{head_mode}'; expected 'per_p', 'canonical' or 'shared'"
             )
         # Which components reach the decoder as cross-attention key/value.
         # Default is all three (the shipped architecture).  Dropping entries is
@@ -248,17 +246,15 @@ class ChannelFusionMAE(nn.Module):
                 "(pixel size is always supplied, so there is no 'auto')"
             )
         if loss_reduce not in ("token", "sample"):
-            raise ValueError(
-                f"unknown loss_reduce '{loss_reduce}'; expected 'token' or 'sample'"
-            )
+            raise ValueError(f"unknown loss_reduce '{loss_reduce}'; expected 'token' or 'sample'")
         if int(n_latents) < 1:
             raise ValueError(f"n_latents must be >= 1, got {n_latents}")
 
         # ---- patch-size / positional-scheme resolution ------------------ #
         # ``ModelConfig.resolve`` (above) owns the canonical patch size and the
         # POS-embed fan-out, including the legacy fixed-grid checks.
-        self.patch_size = patch_size
-        self.patch_sizes = patch_sizes
+        self.patch_size: int = patch_size
+        self.patch_sizes: tuple[int, ...] = tuple(int(p) for p in patch_sizes)
         self.flexi_random = flexi_random
         self.max_tokens = None if max_tokens is None else int(max_tokens)
 
@@ -296,9 +292,7 @@ class ChannelFusionMAE(nn.Module):
         self.n_patches = base_n_patches
         self.image_size = image_size
 
-        fusion_n_patches = (
-            base_n_patches if fusion_pos_embed != "none" else None
-        )
+        fusion_n_patches = base_n_patches if fusion_pos_embed != "none" else None
         if fusion == "attention":
             self.fusion = ChannelFusion(
                 dim,
@@ -375,22 +369,18 @@ class ChannelFusionMAE(nn.Module):
             max_masked_channels_frac=max_masked_channels_frac,
         )
         self.pixel_size = pixel_size
+        self.scale_embed: FourierScaleEmbedding | None = None
         if scale_conditioning != "none":
-            self.scale_embed = FourierScaleEmbedding(
-                dim, n_frequencies=scale_fourier_frequencies
-            )
-        else:
-            self.scale_embed = None
+            self.scale_embed = FourierScaleEmbedding(dim, n_frequencies=scale_fourier_frequencies)
 
         head_dim = dim // n_heads
         if encoder_pos_embed == "rope" and head_dim % 4 != 0:
             raise ValueError(
-                "axial encoder RoPE needs dim / n_heads divisible by 4; got "
-                f"head_dim={head_dim}"
+                f"axial encoder RoPE needs dim / n_heads divisible by 4; got head_dim={head_dim}"
             )
 
     @classmethod
-    def from_config(cls, cfg: ModelConfig) -> "ChannelFusionMAE":
+    def from_config(cls, cfg: ModelConfig) -> ChannelFusionMAE:
         """Build from a :class:`~fuse_channels.config.ModelConfig`.
 
         Thin adapter: it flattens the structured config to the constructor
@@ -420,9 +410,7 @@ class ChannelFusionMAE(nn.Module):
             else:
                 ps = [int(p) for p in patch_sizes]
                 if len(ps) != n:
-                    raise ValueError(
-                        f"expected {n} patch sizes, got {len(ps)}"
-                    )
+                    raise ValueError(f"expected {n} patch sizes, got {len(ps)}")
         elif self.legacy_pos_embed:
             ps = [self.patch_size] * n
         elif len(self.patch_sizes) > 1 and self.flexi_random and self.training:
@@ -432,9 +420,7 @@ class ChannelFusionMAE(nn.Module):
                     "max_tokens excludes every configured patch size; "
                     f"max_tokens={self.max_tokens}, patch_sizes={self.patch_sizes}"
                 )
-            gen_device = (
-                generator.device if generator is not None else torch.device("cpu")
-            )
+            gen_device = generator.device if generator is not None else torch.device("cpu")
             choice = int(
                 torch.randint(
                     len(candidates),
@@ -447,9 +433,7 @@ class ChannelFusionMAE(nn.Module):
         else:
             ps = [self.patch_size] * n
         if self.legacy_pos_embed and any(p != self.patch_size for p in ps):
-            raise ValueError(
-                "legacy table-based pos_embed cannot change patch size"
-            )
+            raise ValueError("legacy table-based pos_embed cannot change patch size")
         return ps
 
     def _resolve_pixel_sizes(self, n, pixel_sizes):
@@ -467,9 +451,9 @@ class ChannelFusionMAE(nn.Module):
                 "encode(), or construct the model with pixel_size=<µm/px>. "
                 "It is metadata every image has, not an optional field."
             )
-        if torch.is_tensor(pixel_sizes) and pixel_sizes.ndim == 0:
-            values = [float(pixel_sizes)] * n
-        elif isinstance(pixel_sizes, (int, float)):
+        if (torch.is_tensor(pixel_sizes) and pixel_sizes.ndim == 0) or isinstance(
+            pixel_sizes, (int, float)
+        ):
             values = [float(pixel_sizes)] * n
         else:
             if any(v is None for v in pixel_sizes):
@@ -492,8 +476,9 @@ class ChannelFusionMAE(nn.Module):
         )
         return torch.stack([log_p, log_pixel_size], dim=-1)
 
-    def _prepare(self, images, channel_ids, visible, generator, patch_sizes,
-                 pixel_sizes=None, valid=None):
+    def _prepare(
+        self, images, channel_ids, visible, generator, patch_sizes, pixel_sizes=None, valid=None
+    ):
         """Resolve sizes, draw the DCP mask, and apply the off-cell token mask.
 
         ``valid`` is an optional per-sample ``[N_b]`` boolean mask in full-grid
@@ -509,7 +494,7 @@ class ChannelFusionMAE(nn.Module):
         """
         ps = self._resolve_patch_sizes(images, patch_sizes, generator)
         pixel_sizes = self._resolve_pixel_sizes(len(images), pixel_sizes)
-        ns = [_n_patches_for(im, p) for im, p in zip(images, ps)]
+        ns = [_n_patches_for(im, p) for im, p in zip(images, ps, strict=True)]
         if visible is None:
             visible = self.masker(images, generator=generator, n_patches=ns)
         else:
@@ -518,12 +503,11 @@ class ChannelFusionMAE(nn.Module):
         target_valid = None
         if valid is not None:
             target_valid = []
-            for b, (v, N) in enumerate(zip(valid, ns)):
+            for b, (v, N) in enumerate(zip(valid, ns, strict=True)):
                 v = v.to(device=images[0].device, dtype=torch.bool)
                 if v.numel() != N:
                     raise ValueError(
-                        f"valid[{b}] must have {N} entries for patch size "
-                        f"{ps[b]}, got {v.numel()}"
+                        f"valid[{b}] must have {N} entries for patch size {ps[b]}, got {v.numel()}"
                     )
                 keep = v[None, :].expand_as(visible[b])
                 if self.keep_offcell_as_context:
@@ -562,7 +546,6 @@ class ChannelFusionMAE(nn.Module):
         # fusion already returns one vector per present location: [Kf, D]
         enc_tokens, present = self.fusion(cs)
         B = cs.n_samples
-        device = enc_tokens.device
         present_bi = present.nonzero(as_tuple=False)  # [Kf, 2]
         # ``present`` indexes ``enc_tokens`` by construction (both count the
         # present locations); check the count without a device sync.
@@ -590,12 +573,8 @@ class ChannelFusionMAE(nn.Module):
                 base=self.rope_base,
                 ref_extent=self.rope_ref_extent,
                 shared_extent=self.rope_shared_extent,
-                patch_size=cs.per_sample_of(cs.patch_size)[sample_of]
-                if metric
-                else None,
-                pixel_size=cs.per_sample_of(cs.pixel_size)[sample_of]
-                if metric
-                else None,
+                patch_size=cs.per_sample_of(cs.patch_size)[sample_of] if metric else None,
+                pixel_size=cs.per_sample_of(cs.pixel_size)[sample_of] if metric else None,
                 ref_um=self.pe_ref_um,
             )
 
@@ -606,9 +585,7 @@ class ChannelFusionMAE(nn.Module):
             cond_enc = scale_emb[present_bi[:, 0]]
 
         enc_group_id = present_bi[:, 0]
-        mem_out, tok_out = self.encoder(
-            enc_tokens, enc_group_id, B, rope=rope, cond=cond_enc
-        )
+        mem_out, tok_out = self.encoder(enc_tokens, enc_group_id, B, rope=rope, cond=cond_enc)
         # Spatial pooling to fixed size latent.  ``tok_out`` stays available for the
         # descriptor (and the encode() mean-pool ablation), but it is no longer
         # part of the decoder KV.
@@ -668,8 +645,8 @@ class ChannelFusionMAE(nn.Module):
         self,
         images: Sequence[torch.Tensor],
         channel_ids: Sequence[torch.Tensor],
-        visible: Optional[Sequence[torch.Tensor]] = None,
-        generator: Optional[torch.Generator] = None,
+        visible: Sequence[torch.Tensor] | None = None,
+        generator: torch.Generator | None = None,
         patch_sizes=None,
         pixel_sizes=None,
         valid=None,
@@ -677,23 +654,28 @@ class ChannelFusionMAE(nn.Module):
         B = len(images)
         device = images[0].device
         cs, ps, ns, visible, target_valid, pixel_sizes = self._prepare(
-            images, channel_ids, visible, generator, patch_sizes,
-            pixel_sizes=pixel_sizes, valid=valid,
+            images,
+            channel_ids,
+            visible,
+            generator,
+            patch_sizes,
+            pixel_sizes=pixel_sizes,
+            valid=valid,
         )
         scale_values = None
         scale_emb = None
-        if self.scale_conditioning != "none":
+        if self.scale_embed is not None:
             scale_values = self._scale_values(ps, pixel_sizes, device)
             scale_emb = self.scale_embed(scale_values)
         (
             fused,
             present,
             mem_out,
-            tok_out,
+            _tok_out,
             latents,
             desc,
-            enc_group_id,
-            present_bi,
+            _enc_group_id,
+            _present_bi,
         ) = self._encode(cs, ps, scale_emb)
 
         # Decoder KV = the selected components of the encoder representation
@@ -796,15 +778,11 @@ class ChannelFusionMAE(nn.Module):
             target_grid_h=tgt_gh,
             target_grid_w=tgt_gw,
             target_patch_size=tgt_p,
-            target_step_um=self._target_step_um(
-                cs, tgt_group_id, tgt_p, pixel_sizes
-            ),
+            target_step_um=self._target_step_um(cs, tgt_group_id, tgt_p, pixel_sizes),
             cond=cond_dec,
         )
 
-        target = self._build_targets(
-            images, ps, ns, tgt_group_id, tgt_ch, tgt_patch, tgt_p, pred
-        )
+        target = self._build_targets(images, ps, ns, tgt_group_id, tgt_ch, tgt_patch, tgt_p, pred)
         loss = self._compute_loss(pred, target, tgt_p, tgt_group_id)
 
         target_cid = ids_per_ch[gidx]
@@ -830,9 +808,7 @@ class ChannelFusionMAE(nn.Module):
         }
         return out
 
-    def _build_targets(
-        self, images, ps, ns, tgt_group_id, tgt_ch, tgt_patch, tgt_p, pred
-    ):
+    def _build_targets(self, images, ps, ns, tgt_group_id, tgt_ch, tgt_patch, tgt_p, pred):
         """Target pixels in the decoder's flat ``[Σ p**2]`` layout.
 
         One path for every batch: each row's ``p**2`` pixels come from
@@ -845,9 +821,7 @@ class ChannelFusionMAE(nn.Module):
         target = pred.new_zeros(int(offsets[-1]))
         if tgt_group_id.numel() == 0:
             return target
-        grid_w = [
-            ns[b] // (images[b].shape[-2] // ps[b]) for b in range(len(images))
-        ]
+        grid_w = [ns[b] // (images[b].shape[-2] // ps[b]) for b in range(len(images))]
         gathered = ChannelTokenizer.gather_patches(
             images, tgt_group_id, tgt_ch, tgt_patch, ps, grid_w
         )
@@ -855,9 +829,7 @@ class ChannelFusionMAE(nn.Module):
             sel = (tgt_group_id == b).nonzero(as_tuple=True)[0]
             if sel.numel() == 0:
                 continue
-            slots = offsets[sel].unsqueeze(1) + torch.arange(
-                block.shape[-1], device=pred.device
-            )
+            slots = offsets[sel].unsqueeze(1) + torch.arange(block.shape[-1], device=pred.device)
             target[slots.reshape(-1)] = block.reshape(-1)
         return target
 
@@ -971,27 +943,28 @@ class ChannelFusionMAE(nn.Module):
         device = images[0].device
         ps = self._resolve_patch_sizes(images, patch_sizes)
         pixel_sizes = self._resolve_pixel_sizes(B, pixel_sizes)
-        ns = [_n_patches_for(im, p) for im, p in zip(images, ps)]
+        ns = [_n_patches_for(im, p) for im, p in zip(images, ps, strict=True)]
         visible = [
             torch.ones(im.shape[0], n, dtype=torch.bool, device=im.device)
-            for im, n in zip(images, ns)
+            for im, n in zip(images, ns, strict=True)
         ]
         if valid is not None:
             for b, v in enumerate(valid):
                 v = v.to(device=device, dtype=torch.bool)
                 if v.numel() != ns[b]:
-                    raise ValueError(
-                        f"valid[{b}] must have {ns[b]} entries, got {v.numel()}"
-                    )
+                    raise ValueError(f"valid[{b}] must have {ns[b]} entries, got {v.numel()}")
                 if not self.keep_offcell_as_context:
                     visible[b] = visible[b] & v[None, :]
         cs = self.tokenizer(
-            images, channel_ids, visible=visible, patch_sizes=ps,
+            images,
+            channel_ids,
+            visible=visible,
+            patch_sizes=ps,
             pixel_sizes=pixel_sizes,
         )
         scale_values = None
         scale_emb = None
-        if self.scale_conditioning != "none":
+        if self.scale_embed is not None:
             scale_values = self._scale_values(ps, pixel_sizes, device)
             scale_emb = self.scale_embed(scale_values)
         (

@@ -28,17 +28,16 @@ Patch indices are **row-major** over the ``(grid_h, grid_w)`` lattice: patch
 from __future__ import annotations
 
 import math
-from typing import Tuple, Union
 
 import torch
 import torch.nn as nn
 
 POS_EMBED_KINDS = ("learned", "sincos", "none", "fractional")
 
-GridSize = Union[int, Tuple[int, int]]
+GridSize = int | tuple[int, int]
 
 
-def _grid_hw(grid_size: GridSize) -> Tuple[int, int]:
+def _grid_hw(grid_size: GridSize) -> tuple[int, int]:
     """Normalize ``int | (grid_h, grid_w)`` to a checked ``(h, w)`` pair."""
     if isinstance(grid_size, int):
         grid_h = grid_w = grid_size
@@ -98,9 +97,7 @@ def get_2d_sincos_pos_embed(
     return torch.cat([emb_h, emb_w], dim=1)
 
 
-def fractional_1d_sincos(
-    dim: int, positions: torch.Tensor, base: float = 10000.0
-) -> torch.Tensor:
+def fractional_1d_sincos(dim: int, positions: torch.Tensor, base: float = 10000.0) -> torch.Tensor:
     """Sine-cosine embedding of continuous positions in ``[0, 1]``."""
     if dim % 2 != 0:
         raise ValueError(f"fractional sincos needs an even dim, got {dim}")
@@ -196,12 +193,8 @@ class FractionalSpatialPE(nn.Module):
         self.base = base
         if mode == "mlp":
             hidden = hidden or dim
-            self.row_mlp = nn.Sequential(
-                nn.Linear(1, hidden), nn.GELU(), nn.Linear(hidden, dim)
-            )
-            self.col_mlp = nn.Sequential(
-                nn.Linear(1, hidden), nn.GELU(), nn.Linear(hidden, dim)
-            )
+            self.row_mlp = nn.Sequential(nn.Linear(1, hidden), nn.GELU(), nn.Linear(hidden, dim))
+            self.col_mlp = nn.Sequential(nn.Linear(1, hidden), nn.GELU(), nn.Linear(hidden, dim))
 
     def forward(
         self, rows, cols, grid_h, grid_w, *, step_um=None, ref_um: float = 1.0
@@ -226,9 +219,7 @@ class FractionalSpatialPE(nn.Module):
             v = (rows.to(dtype) + 0.5) / gh
             u = (cols.to(dtype) + 0.5) / gw
         if self.mode == "sincos":
-            return get_fractional_sincos_pos_embed_uv(
-                self.dim, v, u, base=self.base
-            )
+            return get_fractional_sincos_pos_embed_uv(self.dim, v, u, base=self.base)
         row_pe = self.row_mlp(v.reshape(-1, 1))
         col_pe = self.col_mlp(u.reshape(-1, 1))
         return row_pe + col_pe
@@ -269,8 +260,7 @@ def build_spatial_pos(
     pos = get_2d_sincos_pos_embed(dim, grid)
     if pos.shape[0] != n_patches:
         raise ValueError(
-            f"grid_size={grid} gives {pos.shape[0]} positions, "
-            f"expected n_patches={n_patches}"
+            f"grid_size={grid} gives {pos.shape[0]} positions, expected n_patches={n_patches}"
         )
     return pos.reshape(shape)
 
@@ -289,11 +279,14 @@ def add_spatial_pos(
     can be asserted in tests.
     """
     if kind == "none":
-        module.pos_embed = "none"
+        # ``pos_embed`` is a dynamic marker on an arbitrary nn.Module, so the
+        # static type checkers cannot see the attribute; setattr keeps ty quiet
+        # (the module stubs do not declare ``pos_embed``).
+        setattr(module, "pos_embed", "none")  # noqa: B010
         return
     pos = build_spatial_pos(dim, n_patches, kind, grid_size, batch_dims)
     if isinstance(pos, nn.Parameter):
         module.register_parameter("spatial_pos", pos)
     else:
         module.register_buffer("spatial_pos", pos)
-    module.pos_embed = kind
+    setattr(module, "pos_embed", kind)  # noqa: B010

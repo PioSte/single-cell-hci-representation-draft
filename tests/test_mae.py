@@ -16,17 +16,17 @@ def _fixed_visible(images, masker, seed=0):
 
 
 def _model(**kw):
-    cfg = dict(
-        image_size=8,
-        patch_size=4,
-        dim=32,
-        encoder_depth=2,
-        decoder_depth=1,
-        n_heads=4,
-        n_memory=3,
-        num_channel_ids=16,
-        pixel_size=1.0,
-    )
+    cfg = {
+        "image_size": 8,
+        "patch_size": 4,
+        "dim": 32,
+        "encoder_depth": 2,
+        "decoder_depth": 1,
+        "n_heads": 4,
+        "n_memory": 3,
+        "num_channel_ids": 16,
+        "pixel_size": 1.0,
+    }
     cfg.update(kw)
     return ChannelFusionMAE(**cfg)
 
@@ -139,12 +139,9 @@ def test_encoder_output_is_fixed_size_across_patch_counts():
                 torch.randn(2, 1, size, size, generator=g),
                 torch.randn(3, 1, size, size, generator=g),
             ]
-            ids = [torch.randint(0, 16, (2,), generator=g),
-                   torch.randint(0, 16, (3,), generator=g)]
+            ids = [torch.randint(0, 16, (2,), generator=g), torch.randint(0, 16, (3,), generator=g)]
             with torch.no_grad():
-                out = model(
-                    images, ids, generator=torch.Generator().manual_seed(0)
-                )
+                out = model(images, ids, generator=torch.Generator().manual_seed(0))
             assert out["pred"] is not None
             assert out["latents"].shape == (B, model.n_latents, 32)
             latents_shapes.append(tuple(out["latents"].shape))
@@ -177,7 +174,7 @@ def test_overfit_single_batch():
     opt = torch.optim.Adam(model.parameters(), lr=2e-3)
 
     losses = []
-    for step in range(80):
+    for _step in range(80):
         out = model(images, ids, visible=visible)
         opt.zero_grad()
         out["loss"].backward()
@@ -217,9 +214,7 @@ def test_decoder_kv_ablatable():
         out = model(images, ids, generator=torch.Generator().manual_seed(1))
         assert torch.isfinite(out["loss"]), kv
     # a string is accepted as a single component
-    out = _model(decoder_kv="latents")(
-        images, ids, generator=torch.Generator().manual_seed(1)
-    )
+    out = _model(decoder_kv="latents")(images, ids, generator=torch.Generator().manual_seed(1))
     assert torch.isfinite(out["loss"])
     # encode() is unaffected by decoder_kv
     model = _model(decoder_kv=()).eval()
@@ -239,7 +234,7 @@ def test_encode_inference():
     model = _model()
     model.eval()
     images, ids = _batch()
-    mem, pooled = model.encode(images, ids)
+    _mem, pooled = model.encode(images, ids)
     assert pooled.shape == (3, 32)
     assert torch.isfinite(pooled).all()
 
@@ -270,9 +265,7 @@ def test_descriptor_is_trained_by_the_mae_loss():
     out = model(images, ids, generator=torch.Generator().manual_seed(1))
     out["loss"].backward()
     for pooler in (model.pooler, model.latent_pooler):
-        missing = [
-            name for name, p in pooler.named_parameters() if p.grad is None
-        ]
+        missing = [name for name, p in pooler.named_parameters() if p.grad is None]
         assert not missing, f"pooler parameters without gradients: {missing}"
 
 
@@ -322,9 +315,7 @@ def test_forward_and_encode_share_the_descriptor():
     model = _model()
     model.eval()
     images, ids = _batch()
-    visible = [
-        torch.ones(im.shape[0], model.n_patches, dtype=torch.bool) for im in images
-    ]
+    visible = [torch.ones(im.shape[0], model.n_patches, dtype=torch.bool) for im in images]
     with torch.no_grad():
         out = model(images, ids, visible=visible)
         _, pooled = model.encode(images, ids, pool="attention")
@@ -377,9 +368,7 @@ def test_dcp_dropped_channel_is_a_reconstruction_target():
     absent_id = 0  # valid embedding id, but not in this sample's panel
 
     for seed in range(50):
-        visible = model.masker(
-            images, generator=torch.Generator().manual_seed(seed)
-        )
+        visible = model.masker(images, generator=torch.Generator().manual_seed(seed))
         dropped = ~visible[0].any(dim=1)
         if bool(dropped.any()):
             break
@@ -423,12 +412,8 @@ def test_attention_primitives_route_self_and_cross_attention(monkeypatch):
         calls["decoder_cross"] += 1
         return decoder_cross(*args, **kwargs)
 
-    monkeypatch.setattr(
-        encoder_module, "grouped_projected_self_attention", count_encoder_self
-    )
-    monkeypatch.setattr(
-        decoder_module, "grouped_projected_self_attention", count_decoder_self
-    )
+    monkeypatch.setattr(encoder_module, "grouped_projected_self_attention", count_encoder_self)
+    monkeypatch.setattr(decoder_module, "grouped_projected_self_attention", count_decoder_self)
     monkeypatch.setattr(decoder_module, "grouped_attention", count_decoder_cross)
 
     model = _model()

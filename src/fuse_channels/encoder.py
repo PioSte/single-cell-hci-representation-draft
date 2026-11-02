@@ -88,7 +88,7 @@ class TransformerBlock(nn.Module):
     def _attention_dropout(self) -> float:
         return self.dropout.p if self.training else 0.0
 
-    def _modulate(self, h: torch.Tensor, mod: nn.Linear, cond: torch.Tensor | None):
+    def _modulate(self, h: torch.Tensor, mod: nn.Linear | None, cond: torch.Tensor | None):
         if mod is None or cond is None:
             return h
         gamma, beta = mod(cond).chunk(2, dim=-1)
@@ -103,21 +103,15 @@ class TransformerBlock(nn.Module):
         rope_sin: torch.Tensor | None = None,
         cond: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        h = self._modulate(
-            self.norm1(x), self.mod1 if self.adaln else None, cond
-        )
+        h = self._modulate(self.norm1(x), self.mod1 if self.adaln else None, cond)
         q = self.q_proj(h)
         k = self.k_proj(h)
         v = self.v_proj(h)
-        if rope_cos is not None:
+        if rope_cos is not None and rope_sin is not None:
             T = q.shape[0]
             Dh = q.shape[-1] // self.n_heads
-            q = apply_rope(
-                q.reshape(T, self.n_heads, Dh), rope_cos, rope_sin
-            ).reshape(T, -1)
-            k = apply_rope(
-                k.reshape(T, self.n_heads, Dh), rope_cos, rope_sin
-            ).reshape(T, -1)
+            q = apply_rope(q.reshape(T, self.n_heads, Dh), rope_cos, rope_sin).reshape(T, -1)
+            k = apply_rope(k.reshape(T, self.n_heads, Dh), rope_cos, rope_sin).reshape(T, -1)
         attn = grouped_projected_self_attention(
             q,
             k,
@@ -128,9 +122,7 @@ class TransformerBlock(nn.Module):
             dropout_p=self._attention_dropout(),
         )
         x = x + self.dropout(self.out_proj(attn))
-        h2 = self._modulate(
-            self.norm2(x), self.mod2 if self.adaln else None, cond
-        )
+        h2 = self._modulate(self.norm2(x), self.mod2 if self.adaln else None, cond)
         x = x + self.dropout(self.mlp(h2))
         return x
 
