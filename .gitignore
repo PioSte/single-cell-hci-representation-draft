@@ -22,3 +22,6 @@ references/*/images/
 # local MinerU parse artifacts
 .mineru-service.lock
 blobs/
+
+# upstream reference checkouts that ship their own figure PNGs (re-clone to reproduce)
+references/*/figures/
