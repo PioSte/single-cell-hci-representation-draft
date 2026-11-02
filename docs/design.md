@@ -468,4 +468,12 @@ knob with no home in `EncoderConfig`/`DecoderConfig`/`ModelConfig` is a signal
 that the parameter's scope is unclear, not that it should be threaded ad hoc.
 
 `ModelConfig.to_kwargs()` is the single flattening point back to the flat
-constructor.
+constructor, but the two entry points also share a default set and a
+resolution path: `config.DEFAULT_CONFIG` supplies the flat constructor's
+signature defaults, and `ModelConfig.resolve()` is the one place the canonical
+patch size, the `pos_embed` fan-out and `adaln` are derived. A "derive it"
+field stays `None` in the config (for example `pos_embed=None` on the decoder
+means "inherit"), so the structured config can express every arm the flat
+constructor can; `ModelConfig.from_kwargs()` is the inverse of `to_kwargs()`.
+`ChannelFusionMAE()` and `from_config(ModelConfig())` therefore cannot
+disagree.

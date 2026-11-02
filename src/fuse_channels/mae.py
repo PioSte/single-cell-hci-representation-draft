@@ -62,7 +62,7 @@ from typing import Optional, Sequence
 import torch
 import torch.nn as nn
 
-from .config import DecoderConfig, EncoderConfig, ModelConfig, SharedCore
+from .config import DEFAULT_CONFIG, LEGACY_POS_EMBEDS, ModelConfig
 from .decoder import (
     ChannelAwareDecoder,
     PatchReconstructionHead,
@@ -86,7 +86,6 @@ _LOSSES = {
     "cha_maevit": cha_maevit_recon_loss,
 }
 
-_LEGACY_POS = ("learned", "sincos")
 
 
 class FourierScaleEmbedding(nn.Module):
@@ -149,51 +148,68 @@ def _n_patches_for(im: torch.Tensor, p: int) -> int:
 class ChannelFusionMAE(nn.Module):
     def __init__(
         self,
-        image_size,
-        patch_size: int | Sequence[int] | None = None,
-        dim: int = 192,
-        encoder_depth: int = 4,
-        decoder_depth: int = 2,
-        n_heads: int = 6,
-        n_memory: int = 4,
-        n_latents: int = 16,
-        n_queries: int = 1,
-        decoder_kv: Sequence[str] = ("memory", "latents", "descriptor"),
-        num_channel_ids: int = 16,
-        fusion: str = "attention",
-        fusion_attn_dim: int | None = None,
-        p_patch: float = 0.5,
-        p_channel: float = 0.5,
-        patch_ratio: float = 0.75,
-        mode_sampling: str = "batch",
-        min_visible_channels: int = 1,
-        max_masked_channels_frac: float = 1.0,
-        dropout: float = 0.0,
-        loss: str = "mae",
-        pos_embed: str | None = None,
-        encoder_pos_embed: str | None = None,
-        decoder_pos_embed: str | None = None,
-        fusion_pos_embed: str | None = None,
-        patch_sizes: Optional[Sequence[int]] = None,
-        flexi_random: bool = True,
-        rope_base: float = 100.0,
-        rope_ref_extent: float = 32.0,
-        rope_shared_extent: bool = False,
-        scale_conditioning: str = "add",
-        pixel_size=None,
-        scale_fourier_frequencies: int = 8,
-        fractional_pe_mode: str = "sincos",
-        fractional_pe_base: float = 10000.0,
-        pe_space: str = "physical",
-        pe_ref_um: float = 1.0,
-        loss_reduce: str = "sample",
-        keep_offcell_as_context: bool = True,
-        head_patch_size: int | None = None,
-        head_mode: str = "per_p",
-        head_resample: str = "area",
-        max_tokens: int | None = None,
+        image_size=DEFAULT_CONFIG.image_size,
+        patch_size: int | Sequence[int] | None = DEFAULT_CONFIG.patch_size,
+        dim: int = DEFAULT_CONFIG.core.dim,
+        encoder_depth: int = DEFAULT_CONFIG.encoder.depth,
+        decoder_depth: int = DEFAULT_CONFIG.decoder.depth,
+        n_heads: int = DEFAULT_CONFIG.core.n_heads,
+        n_memory: int = DEFAULT_CONFIG.encoder.n_memory,
+        n_latents: int = DEFAULT_CONFIG.n_latents,
+        n_queries: int = DEFAULT_CONFIG.n_queries,
+        decoder_kv: Sequence[str] = DEFAULT_CONFIG.decoder_kv,
+        num_channel_ids: int = DEFAULT_CONFIG.num_channel_ids,
+        fusion: str = DEFAULT_CONFIG.fusion,
+        fusion_attn_dim: int | None = DEFAULT_CONFIG.fusion_attn_dim,
+        p_patch: float = DEFAULT_CONFIG.p_patch,
+        p_channel: float = DEFAULT_CONFIG.p_channel,
+        patch_ratio: float = DEFAULT_CONFIG.patch_ratio,
+        mode_sampling: str = DEFAULT_CONFIG.mode_sampling,
+        min_visible_channels: int = DEFAULT_CONFIG.min_visible_channels,
+        max_masked_channels_frac: float = DEFAULT_CONFIG.max_masked_channels_frac,
+        dropout: float = DEFAULT_CONFIG.core.dropout,
+        loss: str = DEFAULT_CONFIG.loss,
+        pos_embed: str | None = DEFAULT_CONFIG.pos_embed,
+        encoder_pos_embed: str | None = DEFAULT_CONFIG.encoder_pos_embed,
+        decoder_pos_embed: str | None = DEFAULT_CONFIG.decoder.pos_embed,
+        fusion_pos_embed: str | None = DEFAULT_CONFIG.fusion_pos_embed,
+        patch_sizes: Optional[Sequence[int]] = DEFAULT_CONFIG.patch_sizes,
+        flexi_random: bool = DEFAULT_CONFIG.flexi_random,
+        rope_base: float = DEFAULT_CONFIG.rope_base,
+        rope_ref_extent: float = DEFAULT_CONFIG.rope_ref_extent,
+        rope_shared_extent: bool = DEFAULT_CONFIG.rope_shared_extent,
+        scale_conditioning: str = DEFAULT_CONFIG.scale_conditioning,
+        pixel_size=DEFAULT_CONFIG.pixel_size,
+        scale_fourier_frequencies: int = DEFAULT_CONFIG.scale_fourier_frequencies,
+        fractional_pe_mode: str = DEFAULT_CONFIG.decoder.fractional_pe_mode,
+        fractional_pe_base: float = DEFAULT_CONFIG.decoder.fractional_pe_base,
+        pe_space: str = DEFAULT_CONFIG.pe_space,
+        pe_ref_um: float = DEFAULT_CONFIG.decoder.pe_ref_um,
+        loss_reduce: str = DEFAULT_CONFIG.loss_reduce,
+        keep_offcell_as_context: bool = DEFAULT_CONFIG.keep_offcell_as_context,
+        head_patch_size: int | None = DEFAULT_CONFIG.decoder.head_patch_size,
+        head_mode: str = DEFAULT_CONFIG.decoder.head_mode,
+        head_resample: str = DEFAULT_CONFIG.decoder.head_resample,
+        max_tokens: int | None = DEFAULT_CONFIG.max_tokens,
     ) -> None:
         super().__init__()
+        # Geometry, the POS-embed fan-out and ``adaln`` are resolved by
+        # ``ModelConfig.resolve`` so the structured and flat entry points share
+        # one implementation; the signature defaults above come from the same
+        # ``DEFAULT_CONFIG``.
+        cfg = ModelConfig.from_kwargs(
+            **{
+                k: v
+                for k, v in locals().items()
+                if k != "self" and not k.startswith("__")
+            }
+        ).resolve()
+        patch_size = cfg.patch_size
+        patch_sizes = cfg.patch_sizes
+        encoder_pos_embed = cfg.encoder_pos_embed
+        decoder_pos_embed = cfg.decoder.pos_embed
+        fusion_pos_embed = cfg.fusion_pos_embed
+
         if loss not in _LOSSES:
             raise ValueError(
                 f"unknown loss '{loss}'; expected one of {sorted(_LOSSES)}"
@@ -239,58 +255,14 @@ class ChannelFusionMAE(nn.Module):
             raise ValueError(f"n_latents must be >= 1, got {n_latents}")
 
         # ---- patch-size / positional-scheme resolution ------------------ #
-        if patch_size is None:
-            if patch_sizes is None:
-                raise ValueError("pass patch_size or patch_sizes")
-            patch_size = patch_sizes[0]
-        if isinstance(patch_size, (list, tuple)):
-            patch_sizes = tuple(patch_size)
-            patch_size = patch_size[0]
-        self.patch_size = int(patch_size)
-        if patch_sizes is None:
-            patch_sizes = (self.patch_size,)
-        self.patch_sizes = tuple(sorted({int(p) for p in patch_sizes} | {self.patch_size}))
+        # ``ModelConfig.resolve`` (above) owns the canonical patch size and the
+        # POS-embed fan-out, including the legacy fixed-grid checks.
+        self.patch_size = patch_size
+        self.patch_sizes = patch_sizes
         self.flexi_random = flexi_random
         self.max_tokens = None if max_tokens is None else int(max_tokens)
 
-        self.legacy_pos_embed = pos_embed in _LEGACY_POS
-        if pos_embed is not None and not self.legacy_pos_embed and pos_embed not in (
-            "fractional",
-            "rope",
-            "none",
-        ):
-            raise ValueError(
-                f"unknown pos_embed '{pos_embed}'; expected learned, sincos, "
-                "fractional, rope or none"
-            )
-        if encoder_pos_embed is None:
-            encoder_pos_embed = (
-                "none" if self.legacy_pos_embed or pos_embed == "none" else "rope"
-            )
-        if decoder_pos_embed is None:
-            if self.legacy_pos_embed:
-                decoder_pos_embed = pos_embed
-            elif pos_embed == "none":
-                decoder_pos_embed = "none"
-            else:
-                decoder_pos_embed = "fractional"
-        if fusion_pos_embed is None:
-            fusion_pos_embed = pos_embed if self.legacy_pos_embed else "none"
-        if encoder_pos_embed not in ("rope", "none"):
-            raise ValueError(f"unknown encoder_pos_embed '{encoder_pos_embed}'")
-        if decoder_pos_embed not in ("fractional", "none", *_LEGACY_POS):
-            raise ValueError(f"unknown decoder_pos_embed '{decoder_pos_embed}'")
-        if fusion_pos_embed not in ("none", *_LEGACY_POS):
-            raise ValueError(f"unknown fusion_pos_embed '{fusion_pos_embed}'")
-        if self.legacy_pos_embed and (
-            encoder_pos_embed != "none"
-            or decoder_pos_embed not in _LEGACY_POS
-            or fusion_pos_embed not in _LEGACY_POS
-        ):
-            raise ValueError(
-                "legacy pos_embed='learned'/'sincos' uses table PE on fusion and "
-                "decoder; do not combine it with encoder/fusion overrides"
-            )
+        self.legacy_pos_embed = pos_embed in LEGACY_POS_EMBEDS
         self.encoder_pos_embed = encoder_pos_embed
         self.decoder_pos_embed = decoder_pos_embed
         self.fusion_pos_embed = fusion_pos_embed
@@ -346,16 +318,10 @@ class ChannelFusionMAE(nn.Module):
             raise ValueError(f"unknown fusion '{fusion}'")
 
         # Backbone invariants shared by encoder and decoder, threaded explicitly
-        # (option "b").  ``adaln`` is derived from ``scale_conditioning``.
-        self.core = SharedCore(
-            dim=dim,
-            n_heads=n_heads,
-            dropout=dropout,
-            adaln=scale_conditioning == "adaln",
-        )
-        self.encoder = TransformerEncoder(
-            self.core, EncoderConfig(depth=encoder_depth, n_memory=n_memory)
-        )
+        # (option "b").  ``core.adaln`` was derived from ``scale_conditioning``
+        # by ``ModelConfig.resolve``.
+        self.core = cfg.core
+        self.encoder = TransformerEncoder(self.core, cfg.encoder)
         # Spatial pooling to fixed size latent: the encoder's per-token output is
         # pooled to ``[B, n_latents, D]`` with no dependence on the patch count.
         # Option 1 from the design discussion (keep token-level encoder
@@ -393,15 +359,7 @@ class ChannelFusionMAE(nn.Module):
         canonical_patch_size = int(head_patch_size or max(self.patch_sizes))
         self.decoder = ChannelAwareDecoder(
             self.core,
-            DecoderConfig(
-                depth=decoder_depth,
-                pos_embed=decoder_pos_embed,
-                fractional_pe_mode=fractional_pe_mode,
-                fractional_pe_base=fractional_pe_base,
-                pe_ref_um=pe_ref_um,
-                head_mode=head_mode,
-                head_resample=head_resample,
-            ),
+            cfg.decoder,
             # builder-resolved extras (not authored knobs)
             n_patches=base_n_patches,
             canonical_patch_size=canonical_patch_size,

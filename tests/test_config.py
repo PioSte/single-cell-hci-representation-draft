@@ -1,12 +1,14 @@
 """Tests for the structured config, the shared-core split, and the ablation registry."""
 
 import inspect
+from dataclasses import replace
 from pathlib import Path
 
 import torch
 
 from fuse_channels import (
     ABLATIONS,
+    DEFAULT_CONFIG,
     ChannelAwareDecoder,
     ChannelFusionMAE,
     DecoderConfig,
@@ -24,6 +26,7 @@ def _tiny_base():
     return ModelConfig(
         image_size=8,
         patch_size=4,
+        pixel_size=1.0,
         core=SharedCore(dim=32, n_heads=4),
         encoder=EncoderConfig(depth=1),
         decoder=DecoderConfig(depth=1),
@@ -42,6 +45,38 @@ def test_config_matches_constructor():
     init = set(inspect.signature(ChannelFusionMAE.__init__).parameters) - {"self"}
     kw = set(ModelConfig().to_kwargs())
     assert kw == init, f"missing={sorted(init - kw)} extra={sorted(kw - init)}"
+
+
+def test_flat_defaults_come_from_the_config():
+    """The flat constructor and ModelConfig share one set of defaults."""
+    sig = inspect.signature(ChannelFusionMAE.__init__)
+    for key, value in DEFAULT_CONFIG.to_kwargs().items():
+        assert sig.parameters[key].default == value, key
+
+
+def test_from_kwargs_is_the_inverse_of_to_kwargs():
+    cfg = DEFAULT_CONFIG
+    assert ModelConfig.from_kwargs(**cfg.to_kwargs()) == cfg
+
+
+def test_resolve_is_idempotent_and_fills_the_shipped_recipe():
+    resolved = DEFAULT_CONFIG.resolve()
+    assert resolved.patch_size == 8 and resolved.patch_sizes == (8,)
+    assert resolved.decoder.pos_embed == "fractional"
+    assert resolved.encoder_pos_embed == "rope"
+    assert resolved.fusion_pos_embed == "none"
+    assert resolved.core.adaln is False
+    assert resolved.resolve() == resolved
+
+
+def test_legacy_pos_embed_is_expressible_through_the_config():
+    """Deriving the decoder PE from pos_embed must work via ModelConfig too."""
+    cfg = replace(_tiny_base(), pos_embed="learned")
+    assert cfg.decoder.pos_embed is None  # inherit, not a hardcoded value
+    resolved = cfg.resolve()
+    assert resolved.decoder.pos_embed == "learned"
+    model = ChannelFusionMAE.from_config(cfg)
+    assert model.legacy_pos_embed and model.decoder_pos_embed == "learned"
 
 
 def test_from_config_matches_flat_constructor():

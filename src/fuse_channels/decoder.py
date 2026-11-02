@@ -414,6 +414,11 @@ class ChannelAwareDecoder(nn.Module):
         dim, n_heads = core.dim, core.n_heads
         dropout, adaln = core.dropout, core.adaln
         pos_embed = cfg.pos_embed
+        if pos_embed is None:
+            # ``None`` means "inherit from the parent ModelConfig" (see
+            # ``config.ModelConfig.resolve``); a standalone decoder has no
+            # parent, so it uses the shipped decoder PE.
+            pos_embed = "fractional"
         self.mask_token = nn.Parameter(torch.zeros(dim))
         self.pos_embed = pos_embed
         self.pe_ref_um = float(cfg.pe_ref_um)

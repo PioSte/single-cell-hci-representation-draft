@@ -29,7 +29,12 @@ The three categories of parameter, and why they are separated, are:
 :class:`ModelConfig` is the authoring layer: it groups the model-level knobs,
 holds one :class:`SharedCore`, one :class:`EncoderConfig` and one
 :class:`DecoderConfig`, and flattens to the ``ChannelFusionMAE`` constructor via
-:meth:`ModelConfig.to_kwargs`.  :func:`build_model` adds an ablation registry:
+:meth:`ModelConfig.to_kwargs`.  :meth:`ModelConfig.resolve` is the one place
+the canonical patch size, the ``pos_embed`` fan-out and ``core.adaln`` are
+derived, and :meth:`ModelConfig.from_kwargs` is the inverse of ``to_kwargs``.
+The flat constructor sources its defaults from :data:`DEFAULT_CONFIG` and
+routes through both, so the flat and structured entry points share one default
+set and one resolution path.  :func:`build_model` adds an ablation registry:
 each ablation is a small transform on a :class:`ModelConfig`, so it is a
 *reviewable diff* naming exactly the config field(s) it changes, and it tracks
 default changes instead of baking values.
@@ -50,6 +55,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 from typing import Callable, Optional, Sequence
+
+#: ``pos_embed`` kinds that select the legacy fixed-grid table scheme.  The
+#: fan-out to ``encoder_pos_embed`` / ``decoder_pos_embed`` /
+#: ``fusion_pos_embed`` lives in :meth:`ModelConfig.resolve`.
+LEGACY_POS_EMBEDS = ("learned", "sincos")
+
+#: Shipped canonical patch size, used only when the caller supplies neither
+#: ``patch_size`` nor ``patch_sizes``.  Keeping the config fields at ``None``
+#: lets an explicit ``patch_sizes=`` still choose its first entry as ``p0``.
+DEFAULT_PATCH_SIZE: int = 8
 
 
 @dataclass(frozen=True)
@@ -91,11 +106,15 @@ class DecoderConfig:
     max(patch_sizes)``) into the ``canonical_patch_size`` it passes as a
     derived extra.  ``mlp_ratio`` is not part of the flat model API (it is baked
     at 4.0); it is here for callers that build a decoder directly.
+
+    ``pos_embed=None`` means "inherit from ``ModelConfig.pos_embed``";
+    :meth:`ModelConfig.resolve` fills it in.  A decoder built standalone uses
+    the shipped ``"fractional"`` because it has no parent to inherit from.
     """
 
     depth: int = 2
     mlp_ratio: float = 4.0
-    pos_embed: str = "fractional"
+    pos_embed: Optional[str] = None
     fractional_pe_mode: str = "sincos"
     fractional_pe_base: float = 10000.0
     pe_ref_um: float = 1.0
@@ -120,11 +139,14 @@ class ModelConfig:
     decoder: DecoderConfig = field(default_factory=DecoderConfig)
 
     # --- geometry / patch-pixel frame (shared by tokenizer + encoder + decoder)
-    patch_size: int | Sequence[int] | None = 8
+    # ``patch_size=None`` means "derive from patch_sizes[0]"; ``pixel_size=None"
+    # means "no model-level default, pass pixel_sizes= per call".  Both "auto"
+    # meanings are resolved by :meth:`resolve`, not duplicated in the flat API.
+    patch_size: int | Sequence[int] | None = None
     patch_sizes: Optional[Sequence[int]] = None
     flexi_random: bool = True
     max_tokens: Optional[int] = None
-    pixel_size: Optional[float] = 1.0
+    pixel_size: Optional[float] = None
     pe_space: str = "physical"
 
     # --- positional-embedding variants (decoder's lives in DecoderConfig) -----
@@ -161,6 +183,120 @@ class ModelConfig:
     num_channel_ids: int = 16
     loss: str = "mae"
     loss_reduce: str = "sample"
+
+    def resolve(self) -> "ModelConfig":
+        """Return a copy with every derived field made explicit.
+
+        This is the single implementation of the derivation the flat
+        ``ChannelFusionMAE`` constructor used to carry:
+
+        * the canonical ``patch_size`` (``patch_sizes[0]`` when unset) and the
+          sorted union ``patch_sizes`` that always contains it;
+        * the ``pos_embed -> encoder/decoder/fusion`` fan-out, including the
+          legacy fixed-grid scheme;
+        * ``core.adaln`` from ``scale_conditioning``.
+
+        ``ModelConfig().resolve()`` is the shipped recipe, and is idempotent.
+        """
+        patch_size = self.patch_size
+        patch_sizes = self.patch_sizes
+        if patch_size is None:
+            patch_size = patch_sizes[0] if patch_sizes else DEFAULT_PATCH_SIZE
+        if isinstance(patch_size, (list, tuple)):
+            patch_sizes = tuple(patch_size)
+            patch_size = patch_size[0]
+        patch_size = int(patch_size)
+        if patch_sizes is None:
+            patch_sizes = (patch_size,)
+        patch_sizes = tuple(sorted({int(p) for p in patch_sizes} | {patch_size}))
+
+        pos_embed = self.pos_embed
+        legacy = pos_embed in LEGACY_POS_EMBEDS
+        if pos_embed is not None and not legacy and pos_embed not in (
+            "fractional",
+            "rope",
+            "none",
+        ):
+            raise ValueError(
+                f"unknown pos_embed '{pos_embed}'; expected learned, sincos, "
+                "fractional, rope or none"
+            )
+        encoder_pos_embed = self.encoder_pos_embed
+        if encoder_pos_embed is None:
+            encoder_pos_embed = (
+                "none" if legacy or pos_embed == "none" else "rope"
+            )
+        decoder_pos_embed = self.decoder.pos_embed
+        if decoder_pos_embed is None:
+            if legacy:
+                decoder_pos_embed = pos_embed
+            elif pos_embed == "none":
+                decoder_pos_embed = "none"
+            else:
+                decoder_pos_embed = "fractional"
+        fusion_pos_embed = self.fusion_pos_embed
+        if fusion_pos_embed is None:
+            fusion_pos_embed = pos_embed if legacy else "none"
+        if encoder_pos_embed not in ("rope", "none"):
+            raise ValueError(f"unknown encoder_pos_embed '{encoder_pos_embed}'")
+        if decoder_pos_embed not in ("fractional", "none", *LEGACY_POS_EMBEDS):
+            raise ValueError(f"unknown decoder_pos_embed '{decoder_pos_embed}'")
+        if fusion_pos_embed not in ("none", *LEGACY_POS_EMBEDS):
+            raise ValueError(f"unknown fusion_pos_embed '{fusion_pos_embed}'")
+        if legacy and (
+            encoder_pos_embed != "none"
+            or decoder_pos_embed not in LEGACY_POS_EMBEDS
+            or fusion_pos_embed not in LEGACY_POS_EMBEDS
+        ):
+            raise ValueError(
+                "legacy pos_embed='learned'/'sincos' uses table PE on fusion and "
+                "decoder; do not combine it with encoder/fusion overrides"
+            )
+
+        return replace(
+            self,
+            core=replace(self.core, adaln=self.scale_conditioning == "adaln"),
+            decoder=replace(self.decoder, pos_embed=decoder_pos_embed),
+            patch_size=patch_size,
+            patch_sizes=patch_sizes,
+            encoder_pos_embed=encoder_pos_embed,
+            fusion_pos_embed=fusion_pos_embed,
+        )
+
+    @classmethod
+    def from_kwargs(cls, **kw: object) -> "ModelConfig":
+        """Inverse of :meth:`to_kwargs`: build from flat constructor keywords.
+
+        The flat ``ChannelFusionMAE`` constructor routes through this so its
+        defaults (sourced from :data:`DEFAULT_CONFIG`) and the structured
+        config cannot diverge.
+        """
+        unknown = set(kw) - _FLAT_KEYS
+        missing = _FLAT_KEYS - set(kw)
+        if unknown or missing:
+            raise TypeError(
+                f"flat config keywords mismatch; unknown={sorted(unknown)} "
+                f"missing={sorted(missing)}"
+            )
+        return cls(
+            core=SharedCore(
+                dim=kw["dim"], n_heads=kw["n_heads"], dropout=kw["dropout"]
+            ),
+            encoder=EncoderConfig(
+                depth=kw["encoder_depth"], n_memory=kw["n_memory"]
+            ),
+            decoder=DecoderConfig(
+                depth=kw["decoder_depth"],
+                pos_embed=kw["decoder_pos_embed"],
+                fractional_pe_mode=kw["fractional_pe_mode"],
+                fractional_pe_base=kw["fractional_pe_base"],
+                pe_ref_um=kw["pe_ref_um"],
+                head_mode=kw["head_mode"],
+                head_resample=kw["head_resample"],
+                head_patch_size=kw["head_patch_size"],
+            ),
+            **{k: kw[k] for k in _TOP_LEVEL_FLAT},
+        )
 
     def to_kwargs(self) -> dict:
         """Flatten to ``ChannelFusionMAE.__init__`` keyword names.
@@ -286,6 +422,67 @@ def describe_ablations() -> str:
     return "\n".join(rows)
 
 
+#: Flat constructor keywords that map 1:1 onto a top-level :class:`ModelConfig`
+#: field (everything except the core/encoder/decoder subconfig fields).
+_TOP_LEVEL_FLAT = (
+    "image_size",
+    "patch_size",
+    "patch_sizes",
+    "flexi_random",
+    "max_tokens",
+    "pixel_size",
+    "pe_space",
+    "pos_embed",
+    "encoder_pos_embed",
+    "fusion_pos_embed",
+    "rope_base",
+    "rope_ref_extent",
+    "rope_shared_extent",
+    "fusion",
+    "fusion_attn_dim",
+    "n_latents",
+    "n_queries",
+    "decoder_kv",
+    "p_patch",
+    "p_channel",
+    "patch_ratio",
+    "mode_sampling",
+    "min_visible_channels",
+    "max_masked_channels_frac",
+    "keep_offcell_as_context",
+    "scale_conditioning",
+    "scale_fourier_frequencies",
+    "num_channel_ids",
+    "loss",
+    "loss_reduce",
+)
+
+#: Flat keywords that live in :class:`SharedCore` / :class:`EncoderConfig` /
+#: :class:`DecoderConfig` rather than at the top level.
+_SUBCONFIG_FLAT = (
+    "dim",
+    "n_heads",
+    "dropout",
+    "encoder_depth",
+    "n_memory",
+    "decoder_depth",
+    "decoder_pos_embed",
+    "fractional_pe_mode",
+    "fractional_pe_base",
+    "pe_ref_um",
+    "head_mode",
+    "head_resample",
+    "head_patch_size",
+)
+
+_FLAT_KEYS = frozenset(_TOP_LEVEL_FLAT + _SUBCONFIG_FLAT)
+
+#: The authoring defaults: one instance shared by the ablation registry's base
+#: and by the flat ``ChannelFusionMAE.__init__`` signature defaults, so the two
+#: entry points cannot drift.
+DEFAULT_CONFIG: ModelConfig = ModelConfig()
+
+
 def ablated_config(
     name: str = "full", base: ModelConfig | None = None
 ) -> ModelConfig:
@@ -294,7 +491,7 @@ def ablated_config(
         raise KeyError(
             f"unknown ablation '{name}'; expected one of {sorted(ABLATIONS)}"
         )
-    return ABLATIONS[name](base or ModelConfig())
+    return ABLATIONS[name](base or DEFAULT_CONFIG)
 
 
 def build_model(name: str = "full", base: ModelConfig | None = None, **overrides):

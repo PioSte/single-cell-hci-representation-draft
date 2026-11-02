@@ -24,6 +24,7 @@ from .fleet import (
 )
 from .config import (
     ABLATIONS,
+    DEFAULT_CONFIG,
     DecoderConfig,
     EncoderConfig,
     ModelConfig,
