@@ -349,8 +349,8 @@ _, mean_descriptor = model.encode(images, ids, pool="mean")  # ablation
 ### Configuration and ablations
 
 `ChannelFusionMAE` also builds from a structured `ModelConfig`, and named
-ablations live in one registry so a run records *how* it differs from the
-default:
+ablations live in one registry so how a run differs from the default is a
+reviewable diff in code:
 
 ```python
 from fuse_channels import ModelConfig, SharedCore, build_model
@@ -358,10 +358,20 @@ from fuse_channels import ModelConfig, SharedCore, build_model
 cfg = ModelConfig(image_size=16, patch_size=8, core=SharedCore(dim=192, n_heads=6))
 model = ChannelFusionMAE.from_config(cfg)   # == ChannelFusionMAE(**cfg.to_kwargs())
 
-build_model("no_memory")       # cfg.encoder.n_memory = 0
-build_model("blind_decoder")   # no memory, empty decoder KV -> self-attention only
-build_model("no_scale_cond")   # scale_conditioning = "none"
+build_model("blind_decoder")                  # a named arm
+build_model("no_memory", encoder_depth=6)     # an arm plus a flat override
 ```
+
+The registered ablations, rendered by `describe_ablations()` (a test keeps
+this table in sync with `config.ABLATIONS`):
+
+| name | diff |
+| --- | --- |
+| `full` | The shipped model; the identity transform. |
+| `no_memory` | Drop encoder memory tokens: `encoder.n_memory = 0`. |
+| `blind_decoder` | `no_memory` plus an empty decoder KV: `decoder_kv = ()`. |
+| `no_scale_cond` | Drop scale conditioning: `scale_conditioning = "none"`. |
+| `grid_pe` | Use normalized grid coordinates: `pe_space = "grid"`. |
 
 Backbone invariants (`dim`, `n_heads`, `dropout`, `adaln`) live once in
 `SharedCore` and are handed to the encoder and decoder explicitly, so they

@@ -455,15 +455,10 @@ nothing.
 
 **Ablation is a first-class, reviewable diff.** The registry in
 `config.ABLATIONS` maps a name to a `ModelConfig -> ModelConfig` transform, so an
-ablation names the exact subconfig it changes and tracks default changes instead
-of baking values:
-
-| name | diff |
-| --- | --- |
-| `no_memory` | `encoder.n_memory = 0` |
-| `blind_decoder` | `no_memory` and `decoder_kv = ()` (decoder self-attention only) |
-| `no_scale_cond` | `scale_conditioning = "none"` |
-| `grid_pe` | `pe_space = "grid"` |
+ablation names the exact config field(s) it changes and tracks default changes
+instead of baking values. Each transform documents its diff and the question it
+isolates next to the code; `config.describe_ablations()` renders the current
+inventory as the table in `README.md`, and a test keeps the two in sync.
 
 `build_model(name, base, **flat_overrides)` applies the transform then the flat
 escape-hatch overrides. **The implementation rule this encodes:** when adding a
@@ -473,5 +468,4 @@ knob with no home in `EncoderConfig`/`DecoderConfig`/`ModelConfig` is a signal
 that the parameter's scope is unclear, not that it should be threaded ad hoc.
 
 `ModelConfig.to_kwargs()` is the single flattening point back to the flat
-constructor; `tests/test_config.py` asserts its key set equals the constructor's
-signature, so the two cannot drift.
+constructor.

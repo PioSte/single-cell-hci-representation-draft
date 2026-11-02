@@ -1,6 +1,7 @@
 """Tests for the structured config, the shared-core split, and the ablation registry."""
 
 import inspect
+from pathlib import Path
 
 import torch
 
@@ -15,6 +16,7 @@ from fuse_channels import (
     TransformerEncoder,
     ablated_config,
     build_model,
+    describe_ablations,
 )
 
 
@@ -92,6 +94,18 @@ def test_every_ablation_builds_and_runs():
         model = build_model(name, base=_tiny_base()).eval()
         out = model(images, ids, generator=torch.Generator().manual_seed(1))
         assert torch.isfinite(out["loss"]), name
+
+
+def test_every_ablation_documents_its_diff():
+    """The registry is the only hand-maintained inventory; docs are rendered."""
+    for name, transform in ABLATIONS.items():
+        assert (transform.__doc__ or "").strip(), f"undocumented ablation: {name}"
+
+
+def test_readme_table_matches_registry():
+    """README carries the one ablation table, rendered from the registry."""
+    readme = Path(__file__).resolve().parents[1] / "README.md"
+    assert describe_ablations() in readme.read_text(encoding="utf-8")
 
 
 def test_unknown_ablation_rejected():

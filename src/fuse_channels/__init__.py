@@ -30,6 +30,7 @@ from .config import (
     SharedCore,
     ablated_config,
     build_model,
+    describe_ablations,
 )
 from .decoder import (
     ChannelAwareDecoder,

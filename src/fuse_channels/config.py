@@ -31,19 +31,19 @@ holds one :class:`SharedCore`, one :class:`EncoderConfig` and one
 :class:`DecoderConfig`, and flattens to the ``ChannelFusionMAE`` constructor via
 :meth:`ModelConfig.to_kwargs`.  :func:`build_model` adds an ablation registry:
 each ablation is a small transform on a :class:`ModelConfig`, so it is a
-*reviewable diff* naming exactly the subconfig it changes, and it tracks
+*reviewable diff* naming exactly the config field(s) it changes, and it tracks
 default changes instead of baking values.
 
 Ablation is a first-class concern here, so the registry is the recommended way
-to spell one.  Examples::
+to spell one.  Each transform documents its diff and the question it isolates,
+next to the code that defines it; :func:`describe_ablations` renders that
+documentation as the Markdown table in ``README.md`` (a test keeps the two in
+sync), so the registry is the only hand-maintained inventory::
 
-    build_model("no_memory")        # cfg.encoder.n_memory = 0
     build_model("blind_decoder")    # no memory and no KV -> self-attention only
-    build_model("no_scale_cond")    # scale_conditioning = "none"
 
 Prefer :func:`build_model` / :meth:`ModelConfig.to_kwargs` over hand-writing a
-flat constructor call when you want to record *how* a run differs from the
-default.
+flat constructor call.
 """
 
 from __future__ import annotations
@@ -222,36 +222,68 @@ class ModelConfig:
 
 # --------------------------------------------------------------------------- #
 # Ablation registry: each entry is a transform on a ModelConfig, so it reads
-# as a diff naming the exact subconfig it changes and stays valid as defaults
-# drift.  Add new ablations here rather than editing ``forward`` by hand.
+# as a diff naming the exact config field(s) it changes and stays valid as
+# defaults drift.  Add new ablations here rather than editing ``forward`` by
+# hand, and give the transform a one-line docstring (the README table is
+# rendered from it).
 # --------------------------------------------------------------------------- #
+def _ablate_full(cfg: ModelConfig) -> ModelConfig:
+    """The shipped model; the identity transform."""
+    return cfg
+
+
 def _ablate_no_memory(cfg: ModelConfig) -> ModelConfig:
-    """Drop the memory tokens from the encoder (they leave the KV too)."""
+    """Drop encoder memory tokens: `encoder.n_memory = 0`.
+
+    Isolates what the memory/register tokens add to the representation (they
+    leave the decoder KV too).
+    """
     return replace(cfg, encoder=replace(cfg.encoder, n_memory=0))
 
 
 def _ablate_blind_decoder(cfg: ModelConfig) -> ModelConfig:
-    """No memory and an empty decoder KV -> decoder is self-attention only."""
+    """`no_memory` plus an empty decoder KV: `decoder_kv = ()`.
+
+    The decoder cross-attends to nothing, so it is self-attention over the
+    reconstruction targets only.
+    """
     return replace(_ablate_no_memory(cfg), decoder_kv=())
 
 
 def _ablate_no_scale_cond(cfg: ModelConfig) -> ModelConfig:
+    """Drop scale conditioning: `scale_conditioning = "none"`."""
     return replace(cfg, scale_conditioning="none")
 
 
 def _ablate_grid_pe(cfg: ModelConfig) -> ModelConfig:
+    """Use normalized grid coordinates: `pe_space = "grid"`."""
     return replace(cfg, pe_space="grid")
 
 
 #: Named ablations: a name maps to the ``ModelConfig -> ModelConfig`` transform
 #: that produces it from the current default.  ``"full"`` is the shipped model.
+#: Each transform's docstring is the single source for the README table.
 ABLATIONS: dict[str, Callable[[ModelConfig], ModelConfig]] = {
-    "full": lambda cfg: cfg,
+    "full": _ablate_full,
     "no_memory": _ablate_no_memory,
     "blind_decoder": _ablate_blind_decoder,
     "no_scale_cond": _ablate_no_scale_cond,
     "grid_pe": _ablate_grid_pe,
 }
+
+
+def describe_ablations() -> str:
+    """Render :data:`ABLATIONS` as a Markdown table.
+
+    The first docstring line of each transform is its ``diff`` cell, so the
+    registry is the only hand-maintained copy of the inventory; the README
+    embeds the output and a test keeps the two in sync.
+    """
+    rows = ["| name | diff |", "| --- | --- |"]
+    for name, transform in ABLATIONS.items():
+        summary = (transform.__doc__ or "").strip().splitlines()[0]
+        rows.append(f"| `{name}` | {summary} |")
+    return "\n".join(rows)
 
 
 def ablated_config(
