@@ -11,7 +11,7 @@ commands below are enough to reproduce the conversion.
 └── images/            # figure/plot blocks extracted as PNG (git-ignored)
 ```
 
-| Paper | arXiv | Extraction | Figures | MinerU doc |
+| Paper | Source | Extraction | Figures | MinerU doc |
 |---|---|---|---|---|
 | Channel Vision Transformers: An Image Is Worth 1 x 16 x 16 Words | [2309.16108](https://arxiv.org/abs/2309.16108) | [`channelvit/paper.md`](channelvit/paper.md) | 14 | `doc:b89d1b5` |
 | ChAda-ViT: Channel Adaptive Attention for Joint Representation Learning of Heterogeneous Microscopy Images | [2311.15264](https://arxiv.org/abs/2311.15264) | [`chada-vit/paper.md`](chada-vit/paper.md) | 18 | `doc:4d707b7` |
@@ -26,17 +26,32 @@ commands below are enough to reproduce the conversion.
 | FlexiViT: One Model for All Patch Sizes | [2212.08013](https://arxiv.org/abs/2212.08013) | [`flexivit/paper.md`](flexivit/paper.md) | 62 | `doc:516935e` |
 | RoFormer: Enhanced Transformer with Rotary Position Embedding | [2104.09864](https://arxiv.org/abs/2104.09864) | [`roformer/paper.md`](roformer/paper.md) | 4 | `doc:e9a481f` |
 | Rotary Position Embedding for Vision Transformer | [2403.13298](https://arxiv.org/abs/2403.13298) | [`rope-vit/paper.md`](rope-vit/paper.md) | 7 | `doc:416333c` |
+| MuViT: Multi-Resolution Vision Transformers for Learning Across Scales in Microscopy | [2602.24222](https://arxiv.org/abs/2602.24222) | [`muvit/paper.md`](muvit/paper.md) | 10 | `doc:d025dc2` |
+| Scale-MAE: A Scale-Aware Masked Autoencoder for Multiscale Geospatial Representation Learning | [2212.14532](https://arxiv.org/abs/2212.14532) | [`scale-mae/paper.md`](scale-mae/paper.md) | 8 | `doc:f227430` |
 | Evolutionary-scale prediction of atomic level protein structure with a language model (ESM-2) | [bioRxiv 2022.07.20.500902](https://doi.org/10.1101/2022.07.20.500902) | [`esm-2/paper.md`](esm-2/paper.md) | 31 | `doc:23c994c` |
+| Reducing cost of fluorescent microscopy through dye exclusion, distillation techniques, and deep learning (CR-DINO) | [Sci Rep 2026, DOI](https://doi.org/10.1038/s41598-026-69424-3) | [`cr-dino/paper.md`](cr-dino/paper.md) | 3 | `doc:95fc5bd` |
+| Cell-JEPA: Latent Representation Learning for Single-Cell Transcriptomics | [2602.02093](https://arxiv.org/abs/2602.02093) | [`cell-jepa/paper.md`](cell-jepa/paper.md) | 6 | `doc:2d88ff7` |
+| SCJEPA: Dual-Space Self-Supervised Learning for Single-Cell Representations | [OpenReview KadCjvcLOz](https://openreview.net/forum?id=KadCjvcLOz) | [`scjepa/paper.md`](scjepa/paper.md) | 4 | `doc:594c318` |
+| Self-Supervised Learning from Images with a Joint-Embedding Predictive Architecture (I-JEPA) | [2301.08243](https://arxiv.org/abs/2301.08243) | [`i-jepa/paper.md`](i-jepa/paper.md) | 8 | `doc:eddbdc0` |
+| Revisiting Feature Prediction for Learning Visual Representations from Video (V-JEPA) | [2404.08471](https://arxiv.org/abs/2404.08471) | [`v-jepa/paper.md`](v-jepa/paper.md) | 16 | `doc:fb84f79` |
+| V-JEPA 2: Self-Supervised Video Models Enable Understanding, Prediction and Planning | [2506.09985](https://arxiv.org/abs/2506.09985) | [`v-jepa-2/paper.md`](v-jepa-2/paper.md) | 35 | `doc:9cfcfde` |
+| scMorphJEPA: Self-Supervised Cell Morphology Learning via Spatial Joint-Embedding Predictive Architecture | [GitHub](https://github.com/simo1946/scMorphJEPA) | [`scmorphjepa/README.md`](scmorphjepa/README.md) | — | — |
 
 Tables are inline in each `paper.md` (markdown and/or HTML). Figure blocks that
 MinerU marked as images/charts are exported as PNG from the PDF, and the
 markdown links are rewritten to local `images/*.png` paths.
 
+scMorphJEPA has no paper or PDF; its reference implementation is checked out
+in place (commit `a0e028c`, 2026-07-17), with `README.md` as the entry point.
+SCJEPA is an LMRL workshop submission at ICLR 2026 and should be treated as
+provisional. The CR-DINO PDF is the publisher's Crossref text-mining copy.
+
 ## Reproduce
 
 All source PDFs are public. Most are arXiv papers; ESM-2 is a bioRxiv
-preprint. The directories are named after the papers, so the download loop maps
-arXiv id to directory explicitly:
+preprint, CR-DINO is a Scientific Reports article, and SCJEPA is hosted on
+OpenReview. The directories are named after the papers, so the download loop
+maps arXiv id to directory explicitly:
 
 ```bash
 mkdir -p references
@@ -57,10 +72,29 @@ done <<'IDS'
 2212.08013 flexivit
 2104.09864 roformer
 2403.13298 rope-vit
+2602.24222 muvit
+2212.14532 scale-mae
+2602.02093 cell-jepa
+2301.08243 i-jepa
+2404.08471 v-jepa
+2506.09985 v-jepa-2
 IDS
 # ESM-2 is a bioRxiv preprint, not arXiv:
 curl -L --fail -o references/esm-2/esm-2.pdf \
   'https://www.biorxiv.org/content/10.1101/2022.07.20.500902v3.full.pdf'
+
+# CR-DINO is a Scientific Reports article; use the Crossref text-mining PDF:
+curl -L --fail -o references/cr-dino/cr-dino.pdf \
+  'https://www.nature.com/articles/s41598-026-69424-3_reference.pdf'
+# SCJEPA is on OpenReview. If curl receives a browser challenge, open the PDF
+# in a browser session and save it to references/scjepa/scjepa.pdf.
+curl -L --fail -o references/scjepa/scjepa.pdf \
+  'https://openreview.net/pdf?id=KadCjvcLOz'
+# scMorphJEPA has no paper/PDF; check out the reference implementation in place.
+# Drop the nested .git so the checkout is tracked as part of this repo.
+rm -rf references/scmorphjepa
+git clone --depth 1 https://github.com/simo1946/scMorphJEPA references/scmorphjepa
+rm -rf references/scmorphjepa/.git
 ```
 
 Set up local MinerU `standard` parsing (one-time; ~2 GB models):
@@ -95,7 +129,15 @@ done <<'IDS'
 2212.08013 flexivit
 2104.09864 roformer
 2403.13298 rope-vit
+2602.24222 muvit
+2212.14532 scale-mae
 23c994c esm-2
+95fc5bd cr-dino
+2d88ff7 cell-jepa
+594c318 scjepa
+eddbdc0 i-jepa
+fb84f79 v-jepa
+9cfcfde v-jepa-2
 IDS
 ```
 
