@@ -362,7 +362,7 @@ encoder representation + memory + descriptor. The decoder never receives raw
 per-channel tokens; its KV is the fixed latent set `[B, L, D]` produced by
 spatial pooling to fixed size latent, plus memory and the trained descriptor, i.e.
 `[B·(n_memory + n_latents + 1), D]` for a given model. Which of those three
-components reach the decoder is selectable via `decoder_kv`; the default is all
+components reach the decoder is selectable via `decoder_kv_components`; the default is all
 three, and an empty set (or dropping to nothing) gives a blind decoder that
 skips cross-attention.
 

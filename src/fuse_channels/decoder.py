@@ -6,7 +6,7 @@ past a handful of channels).  Each reconstruction query is conditioned on the
 position**, then runs grouped self-attention over the target queries of its
 sample (so correlated masked channel-patches can coordinate) before
 cross-attending to the encoder's memory + latents + trained descriptor.  Those
-KV components are selectable per model via ``decoder_kv`` (see
+KV components are selectable per model via ``decoder_kv_components`` (see
 ``ChannelFusionMAE``); the default uses all three, and an empty KV skips
 cross-attention entirely.  This turns the additive channel embedding into a
 *target specification* so one shared decoder can be used for all channels.
@@ -127,7 +127,7 @@ class DecoderBlock(nn.Module):
         )
         q = q + self.dropout(self.self_out_proj(self_attn))
 
-        # then to the encoder representation.  An empty KV (``decoder_kv=()``,
+        # then to the encoder representation.  An empty KV (``decoder_kv_components=()``,
         # or only a ``n_memory=0`` memory that contributed nothing) means there
         # is no cross-attention source, so this is skipped: a blind decoder
         # that reconstructs from the mask/position/channel query alone.

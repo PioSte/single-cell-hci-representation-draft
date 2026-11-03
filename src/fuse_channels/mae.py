@@ -154,7 +154,7 @@ class ChannelFusionMAE(nn.Module):
         n_memory: int = DEFAULT_CONFIG.encoder.n_memory,
         n_latents: int = DEFAULT_CONFIG.n_latents,
         n_queries: int = DEFAULT_CONFIG.n_queries,
-        decoder_kv: Sequence[str] = DEFAULT_CONFIG.decoder_kv,
+        decoder_kv_components: Sequence[str] = DEFAULT_CONFIG.decoder_kv_components,
         num_channel_ids: int = DEFAULT_CONFIG.num_channel_ids,
         fusion: str = DEFAULT_CONFIG.fusion,
         fusion_attn_dim: int | None = DEFAULT_CONFIG.fusion_attn_dim,
@@ -228,16 +228,16 @@ class ChannelFusionMAE(nn.Module):
         # gives a blind decoder (self-attention only).  ``encode()`` is
         # unaffected -- it always returns the representation.
         allowed_kv = {"memory", "latents", "descriptor"}
-        if isinstance(decoder_kv, str):
-            decoder_kv = (decoder_kv,)
-        decoder_kv = tuple(dict.fromkeys(decoder_kv))  # dedupe, keep order
-        unknown_kv = set(decoder_kv) - allowed_kv
+        if isinstance(decoder_kv_components, str):
+            decoder_kv_components = (decoder_kv_components,)
+        decoder_kv_components = tuple(dict.fromkeys(decoder_kv_components))  # dedupe, keep order
+        unknown_kv = set(decoder_kv_components) - allowed_kv
         if unknown_kv:
             raise ValueError(
-                f"unknown decoder_kv entries {sorted(unknown_kv)}; expected a "
+                f"unknown decoder_kv_components entries {sorted(unknown_kv)}; expected a "
                 f"subset of {sorted(allowed_kv)}"
             )
-        self.decoder_kv = frozenset(decoder_kv)
+        self.decoder_kv_components = frozenset(decoder_kv_components)
         if max_tokens is not None and int(max_tokens) < 1:
             raise ValueError(f"max_tokens must be >= 1 or None, got {max_tokens}")
         if pe_space not in ("grid", "physical"):
@@ -679,18 +679,18 @@ class ChannelFusionMAE(nn.Module):
         ) = self._encode(cs, ps, scale_emb)
 
         # Decoder KV = the selected components of the encoder representation
-        # (``self.decoder_kv``).  Each component is appended with its own
+        # (``self.decoder_kv_components``).  Each component is appended with its own
         # per-sample group ids; the default (all three) is the shipped KV
         # ``[B·(n_memory + n_latents + 1), D]``.
         kv_parts, kv_groups = [], []
         samples = torch.arange(B, device=device)
-        if "memory" in self.decoder_kv:
+        if "memory" in self.decoder_kv_components:
             kv_parts.append(mem_out)
             kv_groups.append(samples.repeat_interleave(self.encoder.n_memory))
-        if "latents" in self.decoder_kv:
+        if "latents" in self.decoder_kv_components:
             kv_parts.append(latents.reshape(-1, latents.shape[-1]))
             kv_groups.append(samples.repeat_interleave(self.n_latents))
-        if "descriptor" in self.decoder_kv:
+        if "descriptor" in self.decoder_kv_components:
             kv_parts.append(desc)
             kv_groups.append(samples)
         D = latents.shape[-1]

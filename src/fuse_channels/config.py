@@ -163,7 +163,7 @@ class ModelConfig:
     # --- pooling / decoder-KV wiring -----------------------------------------
     n_latents: int = 16
     n_queries: int = 1
-    decoder_kv: tuple[str, ...] = ("memory", "latents", "descriptor")
+    decoder_kv_components: tuple[str, ...] = ("memory", "latents", "descriptor")
 
     # --- masking (DCP / HCS) --------------------------------------------------
     p_patch: float = 0.5
@@ -339,7 +339,7 @@ class ModelConfig:
             "fusion_attn_dim": self.fusion_attn_dim,
             "n_latents": self.n_latents,
             "n_queries": self.n_queries,
-            "decoder_kv": self.decoder_kv,
+            "decoder_kv_components": self.decoder_kv_components,
             "p_patch": self.p_patch,
             "p_channel": self.p_channel,
             "patch_ratio": self.patch_ratio,
@@ -377,12 +377,12 @@ def _ablate_no_memory(cfg: ModelConfig) -> ModelConfig:
 
 
 def _ablate_blind_decoder(cfg: ModelConfig) -> ModelConfig:
-    """`no_memory` plus an empty decoder KV: `decoder_kv = ()`.
+    """`no_memory` plus an empty decoder KV: `decoder_kv_components = ()`.
 
     The decoder cross-attends to nothing, so it is self-attention over the
     reconstruction targets only.
     """
-    return replace(_ablate_no_memory(cfg), decoder_kv=())
+    return replace(_ablate_no_memory(cfg), decoder_kv_components=())
 
 
 def _ablate_no_scale_cond(cfg: ModelConfig) -> ModelConfig:
@@ -441,7 +441,7 @@ _TOP_LEVEL_FLAT = (
     "fusion_attn_dim",
     "n_latents",
     "n_queries",
-    "decoder_kv",
+    "decoder_kv_components",
     "p_patch",
     "p_channel",
     "patch_ratio",

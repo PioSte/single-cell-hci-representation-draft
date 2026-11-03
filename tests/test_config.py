@@ -117,10 +117,10 @@ def test_ablated_config_changes_the_named_subconfig():
     assert base.encoder.n_memory == 4  # default
     no_mem = ablated_config("no_memory", base)
     assert no_mem.encoder.n_memory == 0
-    assert no_mem.decoder_kv == base.decoder_kv  # only the encoder changed
+    assert no_mem.decoder_kv_components == base.decoder_kv_components  # only the encoder changed
 
     blind = ablated_config("blind_decoder", base)
-    assert blind.encoder.n_memory == 0 and blind.decoder_kv == ()
+    assert blind.encoder.n_memory == 0 and blind.decoder_kv_components == ()
 
 
 def test_every_ablation_builds_and_runs():

@@ -240,7 +240,7 @@ per-channel tied Conv2d(1 -> D) patch embed, PI-resized to the current p
   as a panel-composition summary. It is trained through the MAE loss and
   appended as one token per sample to the decoder KV. The decoder KV is
   `[B·(n_memory + n_latents + 1), D]`, fixed for a given model; which of those
-  components reach the decoder is selectable via `decoder_kv` (default: all
+  components reach the decoder is selectable via `decoder_kv_components` (default: all
   three; empty = blind decoder, no cross-attention).
 * **Decoder.** One decoder is shared across all channels. Each target query is
   `mask token + target spatial PE + target channel embedding`; queries
@@ -374,7 +374,7 @@ this table in sync with `config.ABLATIONS`):
 | --- | --- |
 | `full` | The shipped model; the identity transform. |
 | `no_memory` | Drop encoder memory tokens: `encoder.n_memory = 0`. |
-| `blind_decoder` | `no_memory` plus an empty decoder KV: `decoder_kv = ()`. |
+| `blind_decoder` | `no_memory` plus an empty decoder KV: `decoder_kv_components = ()`. |
 | `no_scale_cond` | Drop scale conditioning: `scale_conditioning = "none"`. |
 | `grid_pe` | Use normalized grid coordinates: `pe_space = "grid"`. |
 
