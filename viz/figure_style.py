@@ -1,4 +1,4 @@
-"""Shared design system for the fuse-channels architecture figures (L0-L8).
+"""Shared design system for the fuse-channels architecture figures (L0-L9).
 
 One place for the palette, module-box / arrow / array-stack primitives and the
 channel colour table, so every figure reads as one authored set -- the same
@@ -20,19 +20,20 @@ Import from a figure script::
                               token_rows, grid_cells, install_rcparams, save_figure,
                               legend, role_legend, channel_legend, padded_ghost)
 
-Okabe-Ito palette (colour-blind safe).
+Okabe-Ito core palette (colour-blind safe), extended with two role colours
+(the gold memory role and the violet decoder role).
 
 Role palette -- the same *role* always gets the same colour in every figure,
-so the L0-L8 set reads as one authored system:
+so the L0-L9 set reads as one authored system:
 
-    TOKENIZER green   patch embed / tied Conv / spatial pos / channel identity z_c
-    FUSION    orange  channel fusion (ChannelFusion + IdentityGatedSum)
+    TOKENIZER green   patch embed / tied Conv / channel identity z_c
+    FUSION    orange  channel fusion (the default ChannelFusion)
     ENCODER   pink    transformer encoder + its memory-augmented blocks
     DECODER   violet  channel-aware decoder + reconstruction head
     MEMORY    gold    fixed memory / register token rows
     LOSS      red     objective / waste / -inf mask / omitted-row accent
     FUSED     blue    fused vectors, one [D] row per present location
-    POOL      sky     pooling / descriptor reduction
+    POOL      sky     pooling and its outputs: latents [B,L,D]
     GHOST     muted   geometry, brackets, never-allocated padded tensor
 
 Per-channel colours live in ``CHANNEL_COLORS`` and are used ONLY for

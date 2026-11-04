@@ -8,7 +8,8 @@ A coherent set of hand-authored, vector-first figures (PDF/SVG/PNG) that walk
 from *where the model sits in the literature* down to *the attention primitive*.
 They share one design system so they read as one authored set:
 
-* `figure_style.py` — the palette (Okabe-Ito), module-box / arrow / array-stack
+* `figure_style.py` — the role palette (Okabe-Ito core plus the gold memory
+  and violet decoder roles), module-box / arrow / array-stack
   primitives, the channel colour table, and the `save_figure` helper. It also
   exposes a shared **role palette** so the same architecture role always gets
   the same colour in every level (`TOKENIZER` green, `FUSION` orange, `ENCODER`
@@ -24,13 +25,13 @@ They share one design system so they read as one authored set:
 | **L0** | `level0_positioning.py` | single padding-free path: token list → per-(b,n) fusion → `[K_f,D]` | ChAda-ViT Fig 13 idiom |
 | **L1** | `level1_system.py` | end-to-end system: training path + `encode()` branch | Panopticon Fig 1 / Perceiver-IO Fig 2 |
 | **L2** | `level2_layout.py` | axis-labelled tensor layout (the hero figure) | Perceiver-IO Fig 2 |
-| **L3** | `level3_tokenizer.py` | PI-resized tied patch embed; channel identity carried separately (fusion routing bias + output skip); no tokenizer/fusion PE (encoder RoPE, decoder fractional PE) | ChannelViT Fig 1 / ChAda-ViT Fig 2 |
-| **L4** | `level4_fusion.py` | fusion internals: single learned query, Q/K/V projections to `D_attn=3D`, no spatial table | Panopticon Fig. 1 / Perceiver-IO Fig 5 inset |
+| **L3** | `level3_tokenizer.py` | tied patch embed (kernel PI-resized only when `p_b != P`); channel identity carried separately (fusion routing bias + output skip); no tokenizer/fusion PE (encoder RoPE, decoder fractional PE) | ChannelViT Fig 1 / ChAda-ViT Fig 2 |
+| **L4** | `level4_fusion.py` | fusion internals: single learned query, Q/K/V projections to `D_attn=3D`, identity routing bias before the channel softmax, identity output skip after `proj_out`, no spatial table | Panopticon Fig. 1 / Perceiver-IO Fig 5 inset |
 | **L5** | `level5_masking.py` | DCP Eq. 1 (patch / channel / combined) + unified HCS channel sampler; token omission | ChAda-ViT Fig 2 MASK row |
-| **L6** | `level6_objective.py` | MAE objective: trained descriptor over encoder patch tokens, RoPE/scale-conditioned encoder, target self-attention, per-`p` reconstruction heads, default reconstruction loss | Panopticon teacher–student |
+| **L6** | `level6_objective.py` | MAE objective: latent pooling over encoder patch tokens, RoPE/scale-conditioned encoder, target self-attention, per-`p` reconstruction heads, default reconstruction loss | Panopticon teacher–student |
 | **L7** | `level7_invariance.py` | measured invariance & cost (runs the real model) | ChAda-ViT scaling panels |
 | **L8** | `level8_segment_ops.py` | the padding-free grouped-attention primitive | Perceiver-IO Fig 5 |
-| **L9** | `level9_flexivit.py` | FlexiViT: one canonical kernel PI-resized to runtime `p`, patch-size sources, no PE-table resizing, per-`p` reconstruction heads | FlexiViT Fig 1 / Sec. 3 |
+| **L9** | `level9_flexivit.py` | FlexiViT: one canonical kernel (PI-resized only when `p != P`), patch-size sources and the acquisition fleet, no PE-table resizing, per-`p` reconstruction heads | FlexiViT Fig 1 / Sec. 3 |
 
 Run any level (writes into the git-ignored `viz/out/`):
 
@@ -42,15 +43,18 @@ uv run --extra viz python viz/level4_fusion.py --formats pdf svg
 ```
 
 Two visual rules carry the paper's thesis across every level: the token
-list `[ΣC·N, D]` is always the solid primary object, and the padded tensor
+list (`[ΣC·N, D]` before omission, `[V, D]` after) is always the solid primary
+object, and the padded tensor
 `[B, C_max, N, D]` only ever appears as a dashed **ghost** marked
 *never allocated* (no dense tensor is built). The shared grammar also encodes
 the data/module split: **data tensors are crossed**, module/building blocks are
 plain rectangles, channel swatches are crossed, and brackets drawn to the right
 of a stack use ticks that point back into the stack. Each level draws only
-modules and paths that exist in `src/fuse_channels/`; rejected baselines,
-hypothetical dense blocks, untied per-channel alternatives, and test-only
-reference implementations are not drawn.
+modules and paths in the **shipped default** of `src/fuse_channels/`; rejected
+baselines, hypothetical dense blocks, untied per-channel alternatives, test-only
+reference implementations, and named ablations (`IdentityGatedSum`, legacy
+learned/sincos PE tables, `attn_dim=D`, `head_mode="shared"`/`"canonical"`,
+`pe_space="grid"`, `no_memory`, `blind_decoder`) are not drawn.
 
 ## 1. Interactive behaviour — `dashboard.py` (marimo)
 
@@ -61,16 +65,17 @@ modules and recomputes every number when you move a control:
 | control | demonstrates |
 | --- | --- |
 | channel count `C` (1–60) | cardinality invariance — output shape never changes |
-| permute channel order | permutation invariance (exact) |
+| permute channel order | permutation invariance (to float32 round-off) |
 | use channel embedding | the channel identity `z_c` changes routing (logit bias + output skip) |
 | channel index to omit | omission correctness vs. the masked-padded reference |
 | MAE training steps | channel-masked reconstruction (virtual staining) |
 
 Panels: a live measurements table, a per-location **attention heatmap over
-channels**, a **fused-token mean vs. C** curve, and a **masked-channel
-reconstruction** grid. The curve is the mean of the fused `[K_f,D]` rows — a
-shape proxy, **not** the trained `[B,D]` descriptor returned by
-`encode(pool="attention")`.
+channels** (the same logits as `ChannelFusion`, including the identity routing
+bias), a **fused-token mean vs. C** curve, a 2-D **PCA trajectory** of that
+mean, the **MAE training loss**, and a **masked-channel reconstruction** grid.
+The curve is the mean of the fused `[K_f,D]` rows — a shape proxy, **not** the
+trained `[B,L,D]` latent set returned by `encode()`.
 
 ```bash
 # interactive (opens a browser)
@@ -95,21 +100,24 @@ Writes into `viz/out/`:
   store). Torchview tracing is best-effort: with some torchview/torch pairs it
   raises a `KeyError`; the script warns and still writes the schematic below.
 * `padding_free_flow.png/.svg` — a hand-drawn schematic of the set-native data
-  flow: the flattened `[ΣC·N, D]` token layout, the per-`(sample, patch)`
-  attention group, and the "masking = token omission" rule. Generic graph
-  tracers cannot express this.
+  flow: the flattened token list (`[ΣC·N, D]` before omission → `[V, D]` after),
+  the per-`(sample, patch)` attention group, and the "masking = token omission"
+  rule. Generic graph tracers cannot express this.
 
 ## 3. Paper figure — `paper_figure.py`
 
 The hand-authored, submission-quality figure in `viz/out/architecture.{pdf,svg,png}`.
-It is vector-first (PDF/SVG for the paper, PNG for preview), uses a
-colour-blind-safe Okabe-Ito palette, and annotates every module with its tensor
+It is vector-first (PDF/SVG for the paper, PNG for preview), uses the shared
+role palette from `figure_style`, and annotates every module with its tensor
 shape. Two panels:
 
-* **A** — the end-to-end padding-free channel-fusion tokenizer.
+* **A** — the end-to-end padding-free model: tied patch embed → `ChannelFusion`
+  → encoder → spatial pooling (`latents [B,L,D]`) → decoder KV →
+  channel-aware decoder → reconstruction head.
 * **B** — the set-native token layout (uneven token stacks, `(b,n)` attention groups,
-  an omitted row, the padded tensor that is never materialised) plus the
-  interchangeable fusion options and the DCP masking rule.
+  an omitted row, the padded tensor that is never materialised), the
+  `ChannelFusion` internals (identity bias + skip, no spatial PE), and the DCP
+  masking rule.
 
 ```bash
 uv run python viz/paper_figure.py                    # pdf + svg + png
@@ -128,12 +136,12 @@ number of channels. Written to `viz/out/cardinality.{pdf,svg,png}`.
 * **A** — a filmstrip of consecutive steps for one sample: input channel set →
   tied embed; identity `z_c` carried alongside (no pre-LN add) → per-location
   channel fusion (the `C` tokens at each `(b,n)` collapse to one `[D]` vector,
-  so the present locations form `[K_f,D]`), then the fixed `[B,L,D]` latent set
-  from spatial pooling to fixed size latent, memory and descriptor. The variable-height channel
-  axis is the thing you watch vanish.
+  so the present locations form `[K_f,D]`) → encoder with `M` memory tokens →
+  spatial pooling to fixed size latent: the `[B,L,D]` latent set. The
+  variable-height channel axis is the thing you watch vanish.
 * **B** — the invariance itself: `C=1`, `C=3`, `C=5` token stacks (input length
-  `ΣC·N`) all funnel through the *same* fusion and produce the *same*
-  `[K_f,D] → [B,D]` output.
+  `ΣC·N`) all funnel through the *same* fusion and pooling and produce the *same*
+  `[K_f,D] → [B,L,D]` output.
 
 ```bash
 uv run python viz/cardinality_figure.py
@@ -147,17 +155,18 @@ of `ChannelFusionMAE`. A grid of cells is a literal picture of the tensor
 axes (rows = channels grouped by sample, columns = spatial patches, `D` = depth)
 and the channel axis is the thing you watch collapse:
 
-`[C_b, 1, H, W]` → `[ΣC, 1, H, W]` → `[ΣC, N, D]` → `[Kf, D]` → `[B, L, D]`
-→ `[B, D]` → `[Σ p²]`, with the DCP masking `[Kf, D]` and the
-memory `[B·M + Kf, D]` in between. The point the animation makes visually: `C`
-appears only in the input length and is **summed away** by the channel fusion,
-never padded to a `C_max`. One simplification: the DCP masking is drawn as
-location-level removal, whereas the real masker selects per channel-patch token
-*before* the fusion. `[B, L, D]` is the fixed `n_latents` output of spatial
-pooling to fixed size latent, so
-the decoder KV no longer grows with `N`. `[B, D]` is the **trained** descriptor:
-the training forward pools `tok_out` (content tokens only) and appends it to the
-decoder KV; `encode(pool="attention")` returns the same vector.
+`[C_b, 1, H, W]` → `[ΣC, 1, H, W]` → `[ΣC, N, D]` → `[Kf, D]` →
+`[B, L, D]` → decoder KV `[B·(M+L), D]` → targets `[Kt, D]` →
+`[Σ p²]`, with the DCP masking `[Kf, D]` and the encoder memory
+`[B·M + Kf, D]` in between. `B` is a batch of one in the scene, as marked. The
+latent set is the pooled read of `tok_out` (content tokens only). The point the
+animation makes visually: `C` appears only in
+the input length and is **summed away** by the channel fusion, never padded to a
+`C_max`. One simplification: the DCP masking is drawn as location-level
+removal, whereas the real masker selects per channel-patch token *before* the
+fusion. `[B, L, D]` is the fixed `n_latents` output of spatial pooling to fixed
+size latent; it is trained and forms the decoder KV together with the memory
+tokens, whose length does not grow with `N`. `encode()` returns it.
 
 ```bash
 # check, preview in the browser, or render (MP4 / GIF / frames)
@@ -177,26 +186,32 @@ A deeper animation of the **default** fusion path (`ChannelFusion`). It zooms
 into one `(sample, patch)` location and follows
 its channel tokens through every operation, one at a time:
 
-`x_c` → `LayerNorm` → `W_K`/`W_V` → per-head `q_h · k_{c,h} / √D_h` → `softmax`
-over the `C` channels → `Σ_c α_c v_c` → `concat` heads → `proj_out` Linear →
-one row per present location `[Kf, D]` → add the post-fusion spatial PE. `ChannelFusion` is
+`x_c` → `norm_kv` → `W_K`/`W_V`, with `q = W_Q(norm_q(θ))` → per-head
+`q_h · k_{c,h} / √D_h` → **+ `identity_bias(z_c)`** → `softmax` over the `C`
+channels → `Σ_c α_c v_c` → `concat` heads → `proj_out` Linear →
+**+ `identity_skip(Σ_c w̄_c z_c)`** (with `w̄_c` the head-mean of `α_{c,h}`) →
+one row per present location `[Kf, D]`.
+No post-fusion spatial PE exists on the default path. `ChannelFusion` is
 single-query (one learned `[1,1,D]` query for every location) and follows
 Panopticon's Q/K/V recipe: `W_Q/W_K/W_V` project into `D_attn = 3D` by default,
-and `proj_out` projects back to `D`.
+and `proj_out` projects back to `D`. The channel identity `z_c` is a routing bias
+and an output skip, never added to the content tokens.
 
 The two dot-product steps are drawn with `k.matrix_product` (each score/entry is
 shown cell by cell while its query row and key/value column are highlighted), and
 every element group at each step is **named, highlighted and pointed at with a
 callout** — the channel block, the keys/values, the query, each head, the query /
-keys / scores, the attention weights, the values, the head output, the projection,
-the concat and the fused vector, plus present vs. absent locations. The numbers
-come from a real forward pass at `dim=4, n_heads=2` — small enough to read; the
-model default is `dim=192, n_heads=6`. It makes three structural points explicit:
-keys and values come from separate learned projections (`W_K`, `W_V`), the query
-is `W_Q` applied to one learned parameter vector shared by every sample and every
-patch (so `ChannelFusion` has no `n_queries`), and the softmax axis is the channel
-axis — never patches or samples. The animation uses `D_attn = D` for readability;
-the model default is `D_attn = 3D`.
+keys / scores, the identity bias, the logits, the attention weights, the values,
+the head output, the projection, the pooled identity, the skip and the fused
+vector, plus present vs. absent locations. The numbers come from a real forward
+pass at `dim=4, n_heads=2` — small enough to read; the model default is
+`dim=192, n_heads=6`. It makes four structural points explicit: keys and values
+come from separate learned projections (`W_K`, `W_V`), the query is `W_Q`
+applied to one learned parameter vector shared by every sample and every patch
+(so `ChannelFusion` has no `n_queries`), the softmax axis is the channel axis —
+never patches or samples — and the channel identity enters as a pre-softmax
+routing bias plus a post-`proj_out` skip. The animation uses `D_attn = D` for
+readability; the model default is `D_attn = 3D`.
 
 ```bash
 uv run kinemo check --strict viz/fusion_flow.py

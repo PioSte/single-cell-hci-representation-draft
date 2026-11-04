@@ -7,7 +7,7 @@ import torch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from examples.linear_probe import (
-    extract_descriptors,
+    extract_features,
     probe_accuracy,
     split_indices,
     train_linear_probe,
@@ -45,7 +45,7 @@ def test_linear_probe_smoke():
     model.eval()
     model.requires_grad_(False)
 
-    features, labels = extract_descriptors(model, ds, train_idx, target_channel=0, batch_size=8)
+    features, labels = extract_features(model, ds, train_idx, target_channel=0, batch_size=8)
     assert features.shape == (len(train_idx), dim)
     assert labels.shape == (len(train_idx),)
     assert torch.isfinite(features).all()
@@ -58,7 +58,7 @@ def test_linear_probe_smoke():
     assert math.isfinite(train_acc)
     assert 0.0 <= train_acc <= 1.0
 
-    test_features, test_labels = extract_descriptors(
+    test_features, test_labels = extract_features(
         model, ds, test_idx, target_channel=0, batch_size=8
     )
     assert test_features.shape == (len(test_idx), dim)

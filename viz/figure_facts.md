@@ -13,7 +13,8 @@ All shapes below are read from the code, not invented. Notation:
 | `p_b` | runtime patch size for sample `b` | `patch_sizes[b]` |
 | `N_b` | patches per channel for sample `b`, `= floor(H/p_b)·floor(W/p_b)` | `n_patches_per_sample[b]` |
 | `N` | batch-maximum patch count, `= max_b N_b` | `ChannelSet.n_patches` |
-| `c` | canonical reconstruction-head grid, `= head_patch_size or max(patch_sizes)` | `PatchReconstructionHead.canonical_patch_size` |
+| `c` | canonical reconstruction-head grid, `= head_patch_size or max(patch_sizes)` (only `head_mode="shared"`/`"canonical"`) | `PatchReconstructionHead.canonical_patch_size` |
+| `µ` | `pixel_size`, micrometres per pixel (required metadata) | `pixel_size` |
 | `D` | token/embedding dim | `dim` |
 | `M` | fixed memory/register tokens per sample | `n_memory` |
 | `L` | latents per sample from spatial pooling to fixed size latent | `n_latents` |
@@ -24,9 +25,38 @@ All shapes below are read from the code, not invented. Notation:
 | `C_u` | number of unique channel instances in the batch | `unique(channel_group_id)` |
 
 The fusion output is one token per location, so there is **no query-count
-axis** in the fused tensor. `n_queries` exists only on the PMA poolers
-(`n_latents` for spatial pooling to fixed size latent, `n_queries` for the
-descriptor; see below), never on `ChannelFusion`.
+axis** in the fused tensor. The only learned-query set in the model is the
+latent pooler's; `ChannelFusion` has no query count. `L` always means the
+latent count; encoder depth is written `depth` and encoder block count as
+`encoder.depth`.
+
+## Shipped defaults — `config.py::DEFAULT_CONFIG`
+
+These are the values a figure may print; anything else is an ablation. Read
+them from the config, do not hard-code a second copy in prose.
+
+| field | default |
+|---|---|
+| `image_size`, `patch_size` | `16`, `8` (canonical kernel `P`) |
+| `dim`, `n_heads`, `dropout` | `192`, `6`, `0.0` |
+| `encoder.depth`, `n_memory` | `4`, `4` (`M`) |
+| `decoder.depth` | `2` |
+| `n_latents` | `16` (`L`) |
+| `decoder_kv_components` | `("memory", "latents")` |
+| `pos_embed` (encoder / decoder / fusion) | `"rope"` / `"fractional"` / `"none"` |
+| `pe_space` | `"physical"` (µm coordinates) |
+| `fusion`, `fusion_attn_dim` | `"attention"`, `None` → `3D` |
+| `head_mode`, `head_resample` | `"per_p"`, `"area"` |
+| `scale_conditioning` | `"add"` (Fourier `[log p, log pixel_size]`) |
+| `p_patch`, `p_channel`, `patch_ratio` | `0.5`, `0.5`, `0.75` |
+| `mode_sampling`, `min_visible_channels` | `"batch"`, `1` |
+| `loss`, `loss_reduce` | `"mae"`, `"sample"` |
+| `flexi_random`, `pixel_size` | `True`, `None` (per-call metadata is required) |
+
+`IdentityGatedSum`, learned/sincos tables, `attn_dim=D`, `head_mode`
+`"shared"`/`"canonical"`, `scale_conditioning="adaln"`,
+`pe_space="grid"` and the named registry ablations are **not** the default
+path and are not drawn.
 
 ## Tokenizer — `patch_embed.py` (L3)
 
@@ -37,7 +67,9 @@ descriptor; see below), never on `ChannelFusion`.
   It has **no positional embedding and no `spatial_pos` parameter**.
 - `feat = proj(x).flatten(2).transpose(1,2)` → `[ΣC, N, D]`; flatten →
   `[ΣC·N, D]`. The optional DCP **visible** mask is applied to rows →
-  `[V, D]`.
+  `[V, D]`; the conv is evaluated on every patch, and the dropped rows are
+  simply not selected. The kernel is resized only when `p != P` (with the
+  shipped single canonical `P` it is the identity).
 - `ChannelTokenizer` looks up the channel embedding
   `ChannelEmbedding.embed = nn.Embedding(num_channel_ids, D)`, indexed by the
   dataset-level `channel_id` (not the panel position `channel_idx`), and
@@ -66,22 +98,32 @@ descriptor; see below), never on `ChannelFusion`.
   - otherwise, if more than one `patch_sizes` is configured and
     `flexi_random=True` in training → one `p` sampled per step/batch;
   - otherwise → canonical `P`.
+- The fleet supplies the pixel sizes: `p_b = max(1, floor(target_um / pixel_size_b + 0.5))`
+  (`crops.patch_size_for_pixel_size`), and `pixel_size_b` must be a member of
+  `fleet.FLEET_PIXEL_SIZES` at ingest. There is no snap of `p` and no
+  "unknown pixel size" state.
 - Each sample derives `N_b = floor(H/p_b)·floor(W/p_b)`,
   `grid_h = H//p_b`, `grid_w = W//p_b`; the border smaller than `p_b` is
   cropped. The masker uses `[C_b, N_b]`, targets use `p_b`, and
   `ChannelSet.n_patches = max_b N_b`.
-- No positional table is resized: encoder `2-D axial RoPE` uses normalized
-  `(row,col)`, decoder uses factorized fractional PE from `(r,c,g_h,g_w)`,
-  and `ChannelFusion` adds no spatial table.
+- No positional table is resized: the encoder's `2-D axial RoPE` uses metric
+  token-centre coordinates `(index + 0.5)·p·pixel_size` (default
+  `pe_space="physical"`; normalized grid fractions are the `grid_pe`
+  ablation), the decoder's factorized fractional PE uses the same metric
+  `(r + 0.5)·p·pixel_size / pe_ref_um` (`grid_h/grid_w` enter only the grid
+  fraction ablation), and `ChannelFusion` adds no spatial table.
 - `scale_conditioning="add"` (default) embeds `[log(p), log(pixel_size)]` with
   Fourier features + MLP and adds it to encoder tokens and to the decoder
   target channel embedding before `target_proj`.
 - The reconstruction head keeps one `Linear(D, p²)` per configured `p`
-  (`head_mode="per_p"`, default). An unseen `p` uses the nearest configured
-  head with `p_head >= p` and bilinear point-sampling; `head_mode="canonical"`
-  keeps the single `Linear(D, c²)` head with `c = head_patch_size or
-  max(patch_sizes)` as the ablation. With mixed per-sample `p`, predictions are
-  padded to `max_b p_b²` and accompanied by a validity mask.
+  (`head_mode="per_p"`, default), so a configured `p` is exact. An unseen `p`
+  falls back to the nearest configured head with `p_head >= p` and bilinear
+  point-sampling, and refuses to upsample. `head_mode="shared"` (one p-free
+  head at `c`, resampled both ways) and `"canonical"` (legacy single head,
+  bilinear, no upsampling) are ablations.
+- The head output is the flat `[Σ p²]` pixel array of `losses.patch_offsets`:
+  row `i` is `p_i²` contiguous pixels. A mixed per-sample `p` batch needs no
+  padded block and no validity mask.
 
 ## Masking — `masking.py` (L5)
 
@@ -130,11 +172,15 @@ visible channel token).
 - `q = q_proj(norm_q(queries))` with `queries: [1, 1, D]` — **exactly one
   learned query, shared by every sample and every spatial location** — expanded
   to `[Kf, 1, H, Dh]`. There is no `n_queries` argument and no multi-query path.
-- `grouped_pool_attention(q, k, v, lookup, Kf)` → `[Kf, 1, H, Dh]`
-  (**separate learned `W_Q/W_K/W_V` projections**, Panopticon's channel
-  cross-attention recipe).
-- `proj_out: Linear(D_attn, D)` maps back → `[Kf, D]` (returned as-is);
-  add `spatial_pos` only in legacy mode.
+- Channel identity is a **routing bias and an output skip**, never added to
+  `tokens`: `identity_bias: Linear(D, n_heads)` adds a per-head bias to the
+  channel logits before the softmax; `identity_skip: Linear(D, D)` adds a
+  residual of the attention-pooled `channel_embed` after `proj_out`.
+- `grouped_pool_attention(q, k, v, lookup, Kf, logit_bias=...)` →
+  `[Kf, 1, H, Dh]` plus the channel weights (**separate learned `W_Q/W_K/W_V`
+  projections**, Panopticon's channel cross-attention recipe).
+- `proj_out: Linear(D_attn, D)` maps back → `[Kf, D]`, then
+  `+ identity_skip(Σ_c w_c·z_c)`; add `spatial_pos` only in legacy mode.
 - Cost: `O(C·D·D_attn)` per `(b,n)` location plus `O(D·D_attn)` for
   `proj_out` — **`O(C)` scaling**, not a dense `C×C` per-location block.
   ChannelViT and ChAda-ViT attend over the full `C·N` sequence
@@ -148,7 +194,7 @@ visible channel token).
 - `weight_net` (Linear → GELU → Linear → 1) is evaluated **once per channel
   instance** (`channel_group_id`), then broadcast to all of that channel's
   patches: `logits: [V]`.
-- Values `= out_norm(value_proj(tokens)): [V, D]`.
+- Values `= out_norm(value_proj(content_norm(tokens))): [V, D]`.
 - `weights = grouped_softmax(logits, location_group_id, Kf)` over the channel
   axis at each `(b,n)`; `Σ_c w_c · V_c` via `index_add_` → `[Kf, D]`;
   then `+ spatial_pos` only in legacy mode.
@@ -161,29 +207,19 @@ visible channel token).
 `ChannelFusion` math on a materialised `[B, C_max, N, D]` tensor plus an
 attention mask. It is **not** in the model path.
 
-## Descriptor pooler — `fusion.py` / `mae.py` (L1, L2, L6)
+## Latent pooler — `fusion.py` / `mae.py` (L1, L2, L6)
 
 - `MultiheadAttentionPooling` is a **PMA readout**, separate from the fusion
-  modules:
-  - learned queries `[1, n_queries, D]` (`n_queries` defaults to 1; this is the
-    only remaining query-count knob);
-  - standard `q_proj / k_proj / v_proj / out_proj` projections;
-  - `grouped_pool_attention` over the real tokens of each **sample** group;
-  - optional post-SAB over the `n_queries` outputs when `n_queries > 1`;
-  - `readout="mean"` averages the query outputs → `[B, D]`.
-- `ChannelFusionMAE` applies PMA twice to `tok_out` (the encoder's **content
+  modules: learned queries, standard `q_proj / k_proj / v_proj / out_proj`
+  projections, and `grouped_pool_attention` over the real tokens of each
+  **sample** group.
+- `ChannelFusionMAE` applies it once, to `tok_out` (the encoder's **content
   tokens only**, not the memory tokens):
-  - `latents = latent_pooler(tok_out, enc_group_id, B)` with
-    `n_queries = n_latents` and `readout="flat"` → `[B, L·D]`, reshaped to
-    `[B, L, D]`. This is spatial pooling to fixed size latent, independent of
-    `C` and `N`.
-  - `desc = pooler(tok_out, enc_group_id, B)` with `readout="mean"` →
-    `[B, D]`. It is appended as one extra per-sample token to the decoder KV
-    and therefore **trained** through the reconstruction loss.
-    `encode(pool="attention")` returns that same descriptor.
-- `encode(return_latents=True)` also returns the fixed `[B, L, D]` latent set.
-- `pool="mean"` is the content-token mean ablation; `pool="memory"` does not
-  exist.
+  `latents = latent_pooler(tok_out, enc_group_id, B)` with
+  `n_queries = n_latents` and `readout="flat"` → `[B, L·D]`, reshaped to
+  `[B, L, D]`. This is spatial pooling to fixed size latent, independent of
+  `C` and `N`, and it is **trained** through the reconstruction loss.
+  `encode()` returns it.
 
 ## Encoder — `encoder.py` (L2, L6)
 
@@ -196,14 +232,15 @@ attention mask. It is **not** in the model path.
 - `TransformerEncoder` is a stack of standard pre-norm `TransformerBlock`s:
   explicit Q/K/V/O projections + MLP, with
   `grouped_projected_self_attention` (bucketed equal-length groups) per
-  sample. 2-D axial RoPE rotates q/k from normalized `(row, col)` coordinates;
-  memory tokens get zero rotation. Default `scale_conditioning="add"` adds a
-  Fourier embedding of `[log(p), log(pixel_size)]` to the encoder tokens;
-  `"adaln"` instead modulates the LayerNorms. Final `LayerNorm`.
+  sample. 2-D axial RoPE rotates q/k from metric `(row, col)` token-centre
+  coordinates (µm); memory tokens get zero rotation. Default
+  `scale_conditioning="add"` adds a Fourier embedding of
+  `[log(p), log(pixel_size)]` to the encoder tokens; `"adaln"` instead
+  modulates the LayerNorms. Final `LayerNorm`.
 - Returns `mem_out [B·M, D]`, `tok_out [Kf, D]`; `tok_out` is then pooled
-  to `latents [B, L, D]` and `desc [B, D]`.
-- Final decoder KV is `enc_all = cat([mem_out, latents, desc])` →
-  `[B·(M + L + 1), D]`, with matching per-sample group ids. The KV length is
+  to `latents [B, L, D]`.
+- Final decoder KV is `enc_all = cat([mem_out, latents])` →
+  `[B·(M + L), D]`, with matching per-sample group ids. The KV length is
   fixed for a given model and does not grow with the patch count.
 
 ## Decoder — `decoder.py` (L6)
@@ -211,18 +248,20 @@ attention mask. It is **not** in the model path.
 - Targets: per sample `~visible[b]` → `(channel, patch)` pairs; `tgt_group_id`,
   `tgt_patch`, `tgt_channel_embed [Kt, D]` indexed by the **global** channel
   instance (`channel_id` → `ChannelEmbedding`).
-- `q = mask_token [D] + fractional_pe(row, col, grid_h, grid_w)
-  + target_proj(tgt_channel_embed + scale_emb)` → `[Kt, D]`. The same
-  channel-embedding table serves two roles: input identity (fusion routing
-  bias + output skip; never added to `tokens`) and target specification
-  (decoder query). With the default
-  `scale_conditioning="add"`, the per-sample scale embedding is folded into the
-  target channel embedding; with `"adaln"` it conditions the decoder blocks.
+- `q = mask_token [D] + fractional_pe(row, col, step_um)
+  + target_proj(tgt_channel_embed + scale_emb)` → `[Kt, D]`. The fractional PE
+  is metric by default: `(r + 0.5)·p·pixel_size / pe_ref_um`; `grid_h/grid_w`
+  are used only by the `pe_space="grid"` ablation. The same channel-embedding
+  table serves two roles: input identity (fusion routing bias + output skip;
+  never added to `tokens`) and target specification (decoder query). With the
+  default `scale_conditioning="add"`, the per-sample scale embedding is folded
+  into the target channel embedding; with `"adaln"` it conditions the decoder
+  blocks.
 - Each `DecoderBlock`:
   1. **target self-attention** over the queries of each sample
      (`grouped_projected_self_attention`, bucketed);
   2. **cross-attention** to the encoder representation
-     (`mem_out + latents + desc`) using the general grouped primitive
+     (`mem_out + latents`) using the general grouped primitive
      `grouped_attention`;
   3. MLP.
 - `norm` then the per-`p` head: `Linear(D, p²)` for configured `p`; an unseen
@@ -236,9 +275,12 @@ attention mask. It is **not** in the model path.
 ## Loss — `losses.py` (L6)
 
 - Default objective: standardise each target patch (`(t - mean) / std`), then
-  MSE. No per-channel normalisation. The model path uses `patch_row_terms` on
-  the flat pixel layout (per-row segment sums, no mask);
-  `normalized_patch_mse` is the `[K, p²]` reference form of the same math.
+  MSE, averaged with `loss_reduce="sample"` (one mean squared error per
+  sample, i.e. one vote per crop; `"token"` weights rows equally and is the
+  ablation). No
+  per-channel normalisation. The model path uses `patch_row_terms` on the flat
+  pixel layout (per-row segment sums, no mask); `normalized_patch_mse` is the
+  `[K, p²]` reference form of the same math.
 - Ablation `cha_maevit_recon_loss(pred, target, lambda_f=0.01)`:
   `(1-λ)·MSE(raw pixels) + λ·L1(|rFFT₂(pred)|, |rFFT₂(target)|)` —
   ChA-MAEViT Eq. 2. Selected with `loss="cha_maevit"`.
@@ -246,12 +288,9 @@ attention mask. It is **not** in the model path.
 ## Inference — `mae.py::encode` (L1, L2)
 
 - No masking (`visible = all True`); same tokenizer + fusion + encoder.
-- `pool="attention"` (default) applies the trained descriptor pooler to
-  `tok_out`; `pool="mean"` averages the content tokens. Both return a
-  `[B, D]` descriptor; `encode` also returns `mem_out [B·M, D]`.
-- `encode(return_latents=True)` adds the fixed `latents [B, L, D]` from
-  spatial pooling to fixed size latent.
-- There is no memory-pool readout.
+- Returns `(mem_out [B·M, D], latents [B, L, D])`: the two components of the
+  decoder KV. `latents` is the fixed set from spatial pooling to fixed size
+  latent.
 
 ## The claim the figures must carry
 
@@ -261,11 +300,10 @@ attention mask. It is **not** in the model path.
   present locations, so `N` never enters a tensor either.
 - The encoder's token sequence is `[Kf, D]`, but the model applies spatial
   pooling to fixed size latent, giving `[B, L, D]` (`L = n_latents`). The decoder KV
-  `[B·(M + L + 1), D]` is independent of both `C` and the patch count `N`.
+  `[B·(M + L), D]` is independent of both `C` and the patch count `N`.
 - `[B, C_max, N, D]` is **never allocated/built** (never materialised) — draw it
   only as a dashed ghost.
 - Masking / missing channels are handled by **omitting rows**, not zeroing or
   attention masks.
-- The `[B, D]` descriptor is trained, comes from content tokens only, and is
-  appended to the decoder KV. A plot of `fused.mean(dim=1)` is a **fused-token
-  mean**, not this descriptor.
+- The `[B, L, D]` latent set is trained and comes from content tokens only. A
+  plot of `fused.mean(dim=1)` is a **fused-token mean**, not this latent set.

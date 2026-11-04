@@ -2,13 +2,17 @@
 
 One hand-authored, vector-first figure (PDF/SVG/PNG) with two panels:
 
-* **A** -- the end-to-end padding-free channel-fusion tokenizer.
-* **B** -- the set-native token layout and the interchangeable components
-  (channel fusion, DCP masking).
+* **A** -- the end-to-end padding-free channel-fusion MAE: channel-tied
+  tokenizer -> ChannelFusion -> transformer encoder -> spatial pooling to a
+  fixed size latent -> channel-aware decoder + head.  The decoder KV is drawn
+  as ``[mem_out; latents]``; ``tok_out`` is deliberately absent.
+* **B** -- the set-native token layout, the **default** ``ChannelFusion``
+  (single-query PMA with identity bias + skip), DCP masking, the ragged/padded
+  visual rules, and a symbol/role legend.
 
-Unlike ``draw_architecture.py`` (a traced op graph + a diagnostic schematic),
-this file is the *submission* figure: modules, not ops; tensor shapes on every
-block; the set-native semantics made visually explicit.
+Only the shipped default path is drawn.  Ablations (``IdentityGatedSum``,
+learned/sincos post-fusion PE, ...) are intentionally omitted;
+``viz/figure_facts.md`` is the shared source of truth for the shapes.
 
 Usage::
 
@@ -25,333 +29,388 @@ from pathlib import Path
 import matplotlib
 
 matplotlib.use("Agg")
-import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
-from matplotlib.patches import FancyArrowPatch, FancyBboxPatch, Rectangle
+
+from figure_style import (  # noqa: E402
+    INK, MUTED, CHANNEL_COLORS,
+    TOKENIZER, FUSION, ENCODER, DECODER, MEMORY, LOSS, FUSED, POOL, GHOST,
+    tint, rrect, box, arrow, token_rows, sq_bracket, panel_header,
+    legend, padded_ghost, install_rcparams, save_figure,
+)
 
 OUT = Path(__file__).resolve().parent / "out"
-OUT.mkdir(parents=True, exist_ok=True)
+
+# NOTE: role colours come from ``figure_style`` and are the L0-L9 palette:
+#   TOKENIZER green, FUSION orange, ENCODER pink, DECODER violet,
+#   MEMORY gold, LOSS red, FUSED blue, POOL sky, GHOST muted.
+
 
 # --------------------------------------------------------------------------- #
-# Design system
+# Local primitives
 # --------------------------------------------------------------------------- #
-# Okabe-Ito, colour-blind safe.
-BLUE = "#0072B2"
-GREEN = "#009E73"
-ORANGE = "#E69F00"
-SKY = "#56B4E9"
-RED = "#D55E00"
-PURPLE = "#CC79A7"
-VIOLET = "#6A4C93"
-INK = "#1A1A1A"
-MUTED = "#5C5C5C"
-
-
-def tint(color: str, amount: float = 0.86):
-    """Mix ``color`` toward white by ``amount`` (fills for node bodies)."""
-    r, g, b = mcolors.to_rgb(color)
-    return (r + (1 - r) * amount, g + (1 - g) * amount, b + (1 - b) * amount)
-
-
-def node(
-    ax,
-    x,
-    y,
-    w,
-    h,
-    title,
-    sub="",
-    edge=BLUE,
-    title_size=8.2,
-    sub_size=6.7,
-    lw=1.5,
-):
-    """Rounded module box with a title and a smaller shape/role annotation."""
-    ax.add_patch(
-        FancyBboxPatch(
-            (x, y),
-            w,
-            h,
-            boxstyle="round,pad=0.0,rounding_size=0.7",
-            linewidth=lw,
-            edgecolor=edge,
-            facecolor=tint(edge),
-            zorder=2,
-        )
-    )
+def data_cell(ax, x, y, w, h, edge, title, sub=None, tsize=7.6, ssize=5.3):
+    """Crossed data cell (token / embedding / array), optional sub-line."""
+    rrect(ax, x, y, w, h, edge=edge, face=tint(edge, 0.82), lw=1.3,
+          rounding=0.5, z=3, crossed=True)
     cx = x + w / 2
+    bbox = dict(boxstyle="round,pad=0.12", facecolor="white",
+                edgecolor="none", alpha=0.85)
     if sub:
-        ax.text(
-            cx, y + h * 0.64, title, ha="center", va="center",
-            fontsize=title_size, fontweight="bold", color=INK, zorder=3,
-        )
-        ax.text(
-            cx, y + h * 0.30, sub, ha="center", va="center",
-            fontsize=sub_size, color=MUTED, linespacing=1.35, zorder=3,
-        )
+        ax.text(cx, y + h * 0.64, title, ha="center", va="center",
+                fontsize=tsize, color=INK, fontweight="bold", zorder=5,
+                bbox=bbox)
+        ax.text(cx, y + h * 0.28, sub, ha="center", va="center",
+                fontsize=ssize, color=MUTED, zorder=5, bbox=bbox)
     else:
-        ax.text(
-            cx, y + h / 2, title, ha="center", va="center",
-            fontsize=title_size, fontweight="bold", color=INK, zorder=3,
-        )
-    return (x, y, w, h)
+        ax.text(cx, y + h / 2, title, ha="center", va="center",
+                fontsize=tsize, color=INK, fontweight="bold", zorder=5,
+                bbox=bbox)
 
 
-def arrow(ax, p0, p1, color=INK, lw=1.7, style="-|>", rad=0.0, ms=11):
-    ax.add_patch(
-        FancyArrowPatch(
-            p0, p1,
-            arrowstyle=style,
-            mutation_scale=ms,
-            linewidth=lw,
-            color=color,
-            connectionstyle=f"arc3,rad={rad}",
-            shrinkA=1.5, shrinkB=1.5,
-            zorder=4,
-        )
-    )
-
-
-def panel_header(ax, x, y, letter, text, color=INK):
-    ax.text(
-        x, y, letter, ha="left", va="center",
-        fontsize=15, fontweight="bold", color=color,
-    )
-    ax.text(
-        x + 2.6, y, text, ha="left", va="center",
-        fontsize=12.5, fontweight="bold", color=color,
-    )
+def route(ax, pts, color=INK, lw=1.5, ms=9):
+    """Orthogonal poly-line with an arrowhead on the final segment."""
+    for a, b in zip(pts[:-2], pts[1:-1]):
+        ax.plot([a[0], b[0]], [a[1], b[1]], color=color, lw=lw,
+                solid_capstyle="round", zorder=6)
+    arrow(ax, pts[-2], pts[-1], color=color, lw=lw, ms=ms)
 
 
 # --------------------------------------------------------------------------- #
 # Panel A -- end-to-end pipeline
 # --------------------------------------------------------------------------- #
-def draw_pipeline(ax) -> None:
-    ax.set_xlim(-2, 102)
-    ax.set_ylim(0, 24)
+def _draw_kv(ax, x, y, w, h):
+    """Decoder KV ``enc_all = [mem_out; latents]`` (fixed length)."""
+    rows = [("mem_out", MEMORY), ("latents", POOL)]
+    rh, pitch = 2.9, 3.25
+    y0 = y + h / 2 - (len(rows) - 1) * pitch / 2 - rh / 2
+    for i, (name, color) in enumerate(rows):
+        yy = y0 + (len(rows) - 1 - i) * pitch  # mem_out at the top
+        rrect(ax, x, yy, w, rh, edge=color, face=tint(color, 0.78), lw=1.2,
+              rounding=0.3, z=3, crossed=True)
+        ax.text(x + w / 2, yy + rh / 2, name, ha="center", va="center",
+                fontsize=6.0, color=INK, fontweight="bold", zorder=5)
+    top = y0 + (len(rows) - 1) * pitch + rh
+    sq_bracket(ax, x - 1.0, y0, top, color=MUTED, lw=1.1, tick=0.55)
+    # Left-aligned so the routed encoder/pool arrow (at the stack centre)
+    # drops past the text instead of through it.
+    lx = x - 4.5
+    ax.text(lx, top + 3.3,
+            "$enc\\_all=[\\,mem\\_out;\\ latents\\,]$", ha="left",
+            va="center", fontsize=5.7, color=INK, fontweight="bold")
+    ax.text(lx, top + 1.6,
+            "$[B(M{+}L),D]$ fixed, independent of $C,N$;\n"
+            "raw $tok\\_out\\notin$ KV",
+            ha="left", va="center", fontsize=5.1, color=MUTED,
+            linespacing=1.3)
+    return top
+
+
+def draw_pipeline(ax):
+    ax.set_xlim(0, 140)
+    ax.set_ylim(0, 56)
     ax.axis("off")
-    panel_header(ax, -1, 22.8, "A", "Padding-free channel-fusion tokenizer")
+    panel_header(ax, 1.0, 53.0, "A",
+                 "End-to-end padding-free channel-fusion MAE")
 
+    # ---- row 1: tokenizer -> fusion -> encoder -> pool -------------------- #
+    y1, h1, w1 = 30.0, 12.5, 19.0
+    xs = [3.0 + i * 23.0 for i in range(6)]
     stages = [
-        ("Variable channel set", "$\\{I_c\\in\\mathbb{R}^{1\\times H\\times W}\\}$\n"
-         "$C_b\\in\\{1,\\dots,60{+}\\}$; order-free", BLUE),
-        ("Channel-tied embed", "shared $1{\\to}D$ conv\n"
-         "no spatial PE", GREEN),
-        ("Channel identity", "$z_c$ routing bias\n+ output skip\nper channel id", ORANGE),
-        ("Padding-free tokens", "$[\\,\\Sigma C\\cdot N,\\; D\\,]$ $+$ idx\n"
-         "$(b,c,n)$; no pad row", SKY),
-        ("Channel fusion (PMA)", "single query per $(b,n)$\n"
-         "$+$ post-fusion pos $\\to[K_f,D]$", RED),
-        ("Transformer encoder", "$+M$ memory tokens\n"
-         "grouped self-attn\n$\\to[B{\\cdot}M{+}K_f,D]$", PURPLE),
-        ("Channel-aware decoder", "target self-attn\n"
-         "cross-attn: mem$+$tok$+$desc\n$\\to$ pixels", VIOLET),
+        ("Variable channel set",
+         "$\\{I_c\\in\\mathbb{R}^{1\\times H\\times W}\\}$\n"
+         "$C_b$ variable, order-free\n$C_b \\leq C_{\\max}$", GHOST),
+        ("Channel-tied embed",
+         "shared $1{\\to}D$ conv (kernel $P$)\nPI-resized to $p_b$\n"
+         "$+$ identity $z_c$ (carried)", TOKENIZER),
+        ("Padding-free tokens",
+         "ragged $[\\Sigma C\\cdot N,\\ D]$\n"
+         "$(b,c,n)$ index; no pad row", TOKENIZER),
+        ("ChannelFusion",
+         "single-query PMA at each $(b,n)$\nidentity bias $+$ skip, no PE\n"
+         "$\\to[K_f,\\ D]$", FUSION),
+        ("Transformer encoder",
+         "$+M$ memory tokens, depth 4\n2-D axial RoPE, metric $p_b\\mu$\n"
+         "$\\to tok\\_out[K_f,D],\\ mem\\_out[B{\\cdot}M,D]$", ENCODER),
+        ("Spatial pool (PMA)",
+         "$L$ learned queries pool $tok\\_out$:\n"
+         "$\\to latents\\ [B,L,D]$\n"
+         "loss-trained, independent of $C,N$", POOL),
     ]
+    for x, (title, sub, edge) in zip(xs, stages):
+        box(ax, x, y1, w1, h1, title, sub, edge=edge,
+            title_size=7.2, sub_size=5.3)
+    for i in range(5):
+        arrow(ax, (xs[i] + w1, y1 + h1 / 2), (xs[i + 1], y1 + h1 / 2),
+              lw=1.6)
 
-    n = len(stages)
-    x0, x1 = 1.0, 101.0
-    w = 12.8
-    gap = (x1 - x0 - n * w) / (n - 1)
-    y, h = 5.6, 9.8
+    # the padded tensor never exists: attach the headline to a small dashed
+    # ghost so the claim is not carried by a leader into empty space.
+    gx, gw, gh, gy = 76.0, 22.0, 3.4, 43.6
+    ax.text(gx, 50.3, "no $[B,\\,C_{\\max},\\,N,\\,D]$ tensor anywhere",
+            ha="center", va="center", fontsize=8.4, fontweight="bold",
+            color=LOSS)
+    arrow(ax, (gx, 49.6), (gx, gy + gh + 0.2), color=LOSS, lw=1.1, ms=7,
+          dashed=True)
+    padded_ghost(ax, gx - gw / 2, gy, gw, gh,
+                 shape="$[B,\\,C_{\\max},\\,N,\\,D]$",
+                 note="never materialised")
+    ax.text(xs[2] + w1 / 2, 27.4,
+            "solid ragged token list: the only token container",
+            ha="center", va="center", fontsize=5.8, color=MUTED,
+            style="italic")
 
-    centers = []
-    for i, (title, sub, color) in enumerate(stages):
-        x = x0 + i * (w + gap)
-        node(ax, x, y, w, h, title, sub, edge=color)
-        centers.append((x, w))
+    # ---- row 2: KV -> decoder -> head ------------------------------------- #
+    y2, h2 = 4.5, 12.5
+    kv_x, kv_w = 6.0, 18.0
+    kv_top = _draw_kv(ax, kv_x, y2, kv_w, h2)
 
-    for i in range(n - 1):
-        xa = centers[i][0] + centers[i][1]
-        xb = centers[i + 1][0]
-        arrow(ax, (xa, y + h / 2), (xb, y + h / 2))
+    box(ax, 40.0, y2, 52.0, h2, "Channel-aware decoder",
+        "target self-attn  $\\cdot$  cross-attn to KV\n"
+        "fractional metric PE, depth 2", edge=DECODER,
+        title_size=7.2, sub_size=5.3)
+    box(ax, 104.0, y2, 32.0, h2, "Reconstruction head",
+        "$\\mathrm{Linear}(D,p^2)$ per configured $p$\n"
+        "mixed $p$: flat $[\\Sigma p^2]$ pixels\n"
+        "no padded block, no validity mask",
+        edge=DECODER, title_size=7.2, sub_size=4.9)
 
-    # headline callout: the tensor that never exists
-    cx = centers[3][0] + centers[3][1] / 2
-    ax.text(
-        cx, 20.4, "no $[B,\\,C_{\\max},\\,N,\\,D]$ tensor anywhere",
-        ha="center", va="center", fontsize=9.2, fontweight="bold", color=RED,
-    )
-    arrow(ax, (cx, 19.7), (cx, y + h + 0.4), color=RED, lw=1.3, style="-|>", ms=9)
+    arrow(ax, (kv_x + kv_w, y2 + h2 / 2), (40.0, y2 + h2 / 2), lw=1.6,
+          color=DECODER)
+    arrow(ax, (92.0, y2 + h2 / 2), (104.0, y2 + h2 / 2), lw=1.6,
+          color=DECODER)
 
-    # footnote ribbon: what makes the path a set function
-    ax.text(
-        1.0, 2.2,
-        "Masking, padding and cardinality are handled by omitting rows — not by zeroing or "
-        "attention masks: the encoder is a set function of the present tokens.",
-        ha="left", va="center", fontsize=8.2, color=MUTED, style="italic",
-    )
+    # encoder / pool -> KV wrap (routed through the clear corridor)
+    route(ax, [(xs[5] + w1 / 2, y1), (xs[5] + w1 / 2, 23.4),
+               (kv_x + kv_w / 2, 23.4), (kv_x + kv_w / 2, kv_top + 0.35)],
+          color=POOL, lw=1.4, ms=9)
+    ax.text(70.0, 24.6,
+            "spatial pool to fixed size latent  $\\to$  decoder KV",
+            ha="center", va="center", fontsize=5.8, color=POOL,
+            style="italic")
 
 
 # --------------------------------------------------------------------------- #
-# Panel B -- token layout + interchangeable components
+# Panel B -- token layout, ChannelFusion detail, masking, legends
 # --------------------------------------------------------------------------- #
-def draw_token_grid(ax) -> None:
-    cell, pitch = 5.4, 6.25
+def draw_token_grid(ax):
+    cell, pitch = 4.6, 5.3
+    y_top = 56.0  # y of the bottom edge of the top channel row
 
-    # column labels
-    for n in range(4):
-        ax.text(
-            4 + n * pitch + cell / 2, 44.6, f"$n_{n}$",
-            ha="center", va="center", fontsize=8.2, color=MUTED,
-        )
-
-    def draw_sample(x0, n_ch, label, missing=None, group_col=None, gcolor=RED):
+    def sample(x0, n_ch, label, missing=None, group_col=None):
         rows = []
         for c in range(n_ch):
-            yy = 38.0 - c * pitch
+            yy = y_top - c * pitch
             rows.append(yy)
             for n in range(4):
                 xx = x0 + n * pitch
                 is_missing = missing == (c, n)
-                ax.add_patch(
-                    FancyBboxPatch(
-                        (xx, yy), cell, cell,
-                        boxstyle="round,pad=0.0,rounding_size=0.5",
-                        linewidth=1.1,
-                        edgecolor=(MUTED if is_missing else BLUE),
-                        facecolor=("#FFFFFF" if is_missing else tint(BLUE, 0.8)),
-                        linestyle=("--" if is_missing else "solid"),
-                        zorder=2,
-                    )
-                )
+                rrect(ax, xx, yy, cell, cell,
+                      edge=(LOSS if is_missing else FUSED),
+                      face=("#FFFFFF" if is_missing else tint(FUSED, 0.80)),
+                      lw=1.1, rounding=0.35, z=3, dashed=is_missing,
+                      crossed=not is_missing)
                 if is_missing:
-                    ax.text(
-                        xx + cell / 2, yy + cell / 2, "omitted",
-                        ha="center", va="center", fontsize=6.3,
-                        color=RED, style="italic", zorder=3,
-                    )
-            ax.text(
-                x0 - 1.1, yy + cell / 2, f"$c_{c}$",
-                ha="right", va="center", fontsize=7.6, color=MUTED,
-            )
+                    ax.text(xx + cell / 2, yy + cell / 2, "omitted",
+                            ha="center", va="center", fontsize=5.3,
+                            color=LOSS, style="italic", zorder=5)
+            ax.text(x0 - 1.1, yy + cell / 2, f"$c_{c}$", ha="right",
+                    va="center", fontsize=7.0, color=MUTED)
         if group_col is not None:
             gx = x0 + group_col * pitch
-            ax.add_patch(
-                Rectangle(
-                    (gx - 0.35, rows[-1] - 0.35), cell + 0.7,
-                    (rows[0] - rows[-1]) + cell + 0.7,
-                    fill=False, edgecolor=gcolor, linewidth=2.3, zorder=3,
-                )
-            )
-        ax.text(
-            x0 + 2 * pitch - 0.15, 15.4, label,
-            ha="center", va="center", fontsize=8.4, color=INK, fontweight="bold",
-        )
+            rrect(ax, gx - 0.35, rows[-1] - 0.35, cell + 0.7,
+                  (rows[0] - rows[-1]) + cell + 0.7, edge=FUSION,
+                  face="none", lw=2.0, rounding=0.5, z=4)
+        ax.text(x0 + 1.5 * pitch, 38.3, label, ha="center", va="center",
+                fontsize=7.4, color=INK, fontweight="bold")
 
-    draw_sample(4.0, 4, "sample A  ($C=4$)", group_col=1)
-    draw_sample(34.0, 3, "sample B  ($C=3$)", missing=(1, 2), group_col=2)
+    for n in range(4):
+        ax.text(6.0 + n * pitch + cell / 2, y_top + cell + 1.5, f"$n_{n}$",
+                ha="center", va="center", fontsize=7.4, color=MUTED)
 
-    # group annotation
-    gx = 4.0 + 1 * pitch + cell / 2
-    ax.text(
-        gx, 46.8, "attention group $(b,n)$",
-        ha="center", va="center", fontsize=8.0, fontweight="bold", color=RED,
-    )
-    arrow(ax, (gx, 46.2), (gx, 38.0 + cell + 0.35), color=RED, lw=1.2, ms=9)
-    ax.text(
-        34.0 + 2 * pitch + cell / 2, 46.8, "same rule, other sample",
-        ha="center", va="center", fontsize=8.0, color=RED,
-    )
+    sample(6.0, 4, "sample A  ($C_b{=}4$)", group_col=1)
+    sample(34.0, 3, "sample B  ($C_b{=}3$)", missing=(1, 2), group_col=2)
 
-    # the padded tensor that never exists
-    ax.add_patch(
-        FancyBboxPatch(
-            (3.0, 2.5), 52.0, 8.2,
-            boxstyle="round,pad=0.0,rounding_size=0.6",
-            linewidth=1.4, edgecolor=MUTED, facecolor="#F4F4F4",
-            linestyle="--", zorder=2,
-        )
-    )
-    ax.plot([3.0, 55.0], [2.9, 10.3], color=RED, lw=2.4, zorder=4, alpha=0.85)
-    ax.text(
-        29.0, 6.6,
-        "the padded tensor $[B,\\,C_{\\max},\\,N,\\,D]$ is never materialised",
-        ha="center", va="center", fontsize=8.8, color=MUTED,
-        style="italic", zorder=5, fontweight="bold",
-    )
+    # leader arrow lands in the clear gap between the n_1 and n_2 columns,
+    # never on a column label.
+    gap_x = 6.0 + 1.5 * pitch + cell / 2
+    ax.text(gap_x, 64.0, "attention group $(b,n)$", ha="center", va="center",
+            fontsize=7.2, fontweight="bold", color=FUSION)
+    arrow(ax, (gap_x, 63.2), (gap_x, y_top + cell + 0.6), color=FUSION,
+          lw=1.2, ms=9)
+    ax.text(34.0 + 2.5 * pitch, 64.0, "same rule, other sample",
+            ha="center", va="center", fontsize=7.2, color=FUSION)
+    ax.text(30.0, 34.9,
+            "each row $=$ a channel's $N_b$ patches; $V$ visible tokens "
+            "in all.\na masked token is an absent (dashed) row, never a "
+            "zeroed one.",
+            ha="center", va="center", fontsize=5.6, color=MUTED,
+            style="italic", linespacing=1.4)
 
 
-def draw_components(ax) -> None:
-    # --- fusion alternatives -------------------------------------------------
-    ax.add_patch(
-        FancyBboxPatch(
-            (60.0, 24.0), 41.0, 21.0,
-            boxstyle="round,pad=0.0,rounding_size=0.7",
-            linewidth=1.5, edgecolor=RED, facecolor=tint(RED, 0.9), zorder=2,
-        )
-    )
-    ax.text(
-        80.5, 42.9, "Channel fusion — interchangeable",
-        ha="center", va="center", fontsize=10.0, fontweight="bold", color=INK,
-    )
-    ax.text(
-        62.0, 38.9, "PMA attention",
-        ha="left", va="center", fontsize=8.6, fontweight="bold", color=RED,
-    )
-    ax.text(
-        62.0, 36.1,
-        "$\\mathrm{softmax}\\!\\left(qK^{\\top}/\\sqrt{d}\\right)V$",
-        ha="left", va="center", fontsize=9.6, color=INK,
-    )
-    ax.text(
-        62.0, 33.5, "$O(C)$ per location $\\cdot$ data-dependent weights",
-        ha="left", va="center", fontsize=7.4, color=MUTED,
-    )
-    ax.text(
-        62.0, 30.2, "IdentityGatedSum (channel-routed)",
-        ha="left", va="center", fontsize=8.6, fontweight="bold", color=RED,
-    )
-    ax.text(
-        62.0, 27.4,
-        "$\\sum_c \\mathrm{softmax}_c(\\mathrm{MLP}(z_c))\\,V_c$",
-        ha="left", va="center", fontsize=9.2, color=INK,
-    )
-    ax.text(
-        62.0, 25.0, "$O(C)$; MLP once per channel, broadcast to patches",
-        ha="left", va="center", fontsize=7.0, color=MUTED,
-    )
+def draw_fusion_detail(ax):
+    x, y, w, h = 64.0, 38.0, 74.0, 26.0
+    rrect(ax, x, y, w, h, edge=FUSION, face=tint(FUSION, 0.92), lw=1.5,
+          rounding=0.7, z=2)
+    ax.text(x + w / 2, y + h - 2.1, "ChannelFusion (default)", ha="center",
+            va="center", fontsize=9.0, fontweight="bold", color=INK, zorder=5)
+    ax.text(x + w / 2, y + h - 4.4,
+            "single-query PMA over the channel axis at each present $(b,n)$",
+            ha="center", va="center", fontsize=6.3, color=MUTED, zorder=5)
 
-    # --- DCP masking ---------------------------------------------------------
-    ax.add_patch(
-        FancyBboxPatch(
-            (60.0, 2.0), 41.0, 19.0,
-            boxstyle="round,pad=0.0,rounding_size=0.7",
-            linewidth=1.5, edgecolor=GREEN, facecolor=tint(GREEN, 0.9), zorder=2,
-        )
-    )
-    ax.text(
-        80.5, 19.1, "DCP masking = token omission",
-        ha="center", va="center", fontsize=10.0, fontweight="bold", color=INK,
-    )
+    lines = [
+        ("$q=W_Q(\\mathrm{norm}_q(query))$; $k,v$ from "
+         "$\\mathrm{norm}_{kv}(tokens)$", FUSION),
+        ("$\\alpha_{c,h}=\\mathrm{softmax}_c\\!\\left("
+         "q_h k_{c,h}^{\\top}/\\sqrt{D_h}+b_{c,h}\\right)$"
+         "   identity bias", FUSION),
+        ("$y_j=\\mathrm{proj\\_out}\\!\\left(\\sum_c \\alpha_{c,h}"
+         " v_{c,h}\\right)+\\mathrm{identity\\_skip}\\!\\left("
+         "\\sum_c \\bar{w}_c z_c\\right)$", FUSION),
+        ("$\\to y_j\\in[K_f,D]$: one row per present location; "
+         "an absent $(b,n)$ owns no row", FUSED),
+        ("no positional table; $z_c$ is a routing bias $+$ output skip, "
+         "never added to tokens", MUTED),
+        ("$O(C\\cdot D\\cdot D_{attn})+O(D\\cdot D_{attn})$,  "
+         "$D_{attn}=3D$", MUTED),
+    ]
+    yy = y + h - 6.8
+    for text, color in lines:
+        ax.text(x + 1.7, yy, text, ha="left", va="center", fontsize=6.2,
+                color=color, zorder=5)
+        yy -= 3.2
+
+
+def draw_dcp(ax):
+    x, y, w, h = 64.0, 20.0, 74.0, 15.0
+    rrect(ax, x, y, w, h, edge=LOSS, face=tint(LOSS, 0.93), lw=1.5,
+          rounding=0.7, z=2)
+    ax.text(x + w / 2, y + h - 1.8, "DCP masking $=$ token omission",
+            ha="center", va="center", fontsize=9.0, fontweight="bold",
+            color=INK, zorder=5)
     bullets = [
-        "Eq. 1: patch, channel, or combined region",
-        "patch: fixed $\\lfloor N \\cdot r_p\\rfloor$ per channel",
-        "channel: unified HCS $m{\\sim}U\\{1..C\\}$, then subset",
-        "masked channel-patch = dropped row; never zeroed/padded",
+        "Eq. 1 region: patch, channel, or combined",
+        "patch: fixed $\\lfloor N\\cdot r_p\\rfloor$ per channel",
+        "channel: unified HCS $m\\sim U\\{1..C\\}$, then subset",
+        "masked channel-patch $=$ dropped row ($K_t$ target); never a "
+        "zero/pad row",
     ]
     for i, b in enumerate(bullets):
-        yy = 16.2 - i * 3.3
-        ax.text(61.6, yy, "$\\bullet$", ha="left", va="center",
-                fontsize=8.0, color=GREEN)
-        ax.text(62.8, yy, b, ha="left", va="center", fontsize=7.6, color=INK)
+        yy = y + h - 4.4 - i * 2.7
+        ax.text(x + 1.7, yy, "$\\bullet$", ha="left", va="center",
+                fontsize=7.0, color=LOSS, zorder=5)
+        ax.text(x + 3.0, yy, b, ha="left", va="center", fontsize=6.2,
+                color=INK, zorder=5)
 
 
-def draw_token_panel(ax) -> None:
-    ax.set_xlim(-2, 102)
-    ax.set_ylim(0, 52)
+def draw_ragged_and_ghost(ax):
+    # the solid ragged token list -- the primary object
+    x, w, h, pitch = 4.0, 10.0, 1.8, 2.0
+    specs = [
+        (CHANNEL_COLORS[0], False),
+        (LOSS, True),   # masked -> absent (dashed) row, never zeroed
+        (CHANNEL_COLORS[1], False),
+        (CHANNEL_COLORS[2], False),
+        (CHANNEL_COLORS[3], False),
+    ]
+    top = token_rows(ax, x, 21.5, w, h, pitch, specs)
+    ax.text(x + w / 2, top + 1.4, "$[\\Sigma C\\cdot N,\\ D]$", ha="center",
+            va="center", fontsize=6.4, fontweight="bold", color=INK)
+    ax.text(x + w / 2, top + 2.9, "solid ragged list", ha="center",
+            va="center", fontsize=5.7, color=FUSED)
+    ax.text(x + w / 2, top + 4.2, "the only token container", ha="center",
+            va="center", fontsize=5.4, color=MUTED, style="italic")
+
+    # the padded tensor that is never materialised -- dashed ghost only
+    padded_ghost(ax, 22.0, 21.5, 34.0, 8.5,
+                 shape="$[B,\\,C_{\\max},\\,N,\\,D]$",
+                 note="never materialised")
+
+
+def draw_legends(ax):
+    legend(
+        ax, 3.0, 17.0,
+        [("tokenizer: patch embed $+$ $z_c$", TOKENIZER, "fill"),
+         ("channel fusion", FUSION, "fill"),
+         ("encoder (TransformerEncoder)", ENCODER, "fill"),
+         ("decoder $+$ head", DECODER, "fill"),
+         ("memory tokens", MEMORY, "cross"),
+         ("fused $[K_f,D]$", FUSED, "cross"),
+         ("latent pool", POOL, "cross"),
+         ("masked row (omitted)", LOSS, "omit"),
+         ("padded ghost (never built)", GHOST, "ghost")],
+        title="module roles / data", pitch=1.6, sw=1.2, fontsize=5.8,
+        title_size=6.6, label_gap=0.9,
+    )
+
+    ax.text(46.0, 17.8, "symbols / glossary", ha="left", va="center",
+            fontsize=6.6, fontweight="bold", color=INK)
+    cols = [
+        (46.0, [
+            ("$B$", "batch size"),
+            ("$C_b$", "channels of sample $b$ ($C$ generic)"),
+            ("$C_{\\max}$", "$\\max_b C_b$"),
+            ("$\\Sigma C$", "channels across batch"),
+            ("$N_b$", "patches/channel, sample $b$"),
+            ("$N$", "$\\max_b N_b$ (fused grid)"),
+            ("$H,W$", "image side (pixels)"),
+        ]),
+        (70.0, [
+            ("$P$", "canonical patch (kernel)"),
+            ("$p$", "runtime patch (pixels)"),
+            ("$p_b$", "runtime patch, sample $b$"),
+            ("$\\mu$", "pixel size (µm/px)"),
+            ("$D$", "token / embedding dim"),
+            ("$V$", "visible tokens"),
+            ("$K_f$", "present $(b,n)$ locations"),
+        ]),
+        (94.0, [
+            ("$K_t$", "decoder targets (masked)"),
+            ("$M$", "memory tokens / sample"),
+            ("$L$", "latents / sample"),
+            ("$n_q$", "PMA query count"),
+            ("$z_c$", "channel identity vector"),
+            ("$\\bar{w}_c$", "head-mean attn weight"),
+            ("$\\alpha_{c,h}$", "channel attn weight"),
+        ]),
+        (114.0, [
+            ("$y_j$", "fused row (per location)"),
+            ("PMA", "attention pooling"),
+            ("RoPE", "2-D axial rotary PE"),
+            ("DCP", "row-omitting mask sampler"),
+            ("$r_p$", "DCP patch-mask ratio"),
+            ("ghost", "never-built padded tensor"),
+            ("$\\Sigma p^2$", "flat head output"),
+        ]),
+    ]
+    for x0, entries in cols:
+        yy = 15.7
+        for sym, meaning in entries:
+            ax.text(x0, yy, sym, ha="left", va="center", fontsize=5.4,
+                    color=INK, fontweight="bold")
+            ax.text(x0 + 5.0, yy, meaning, ha="left", va="center",
+                    fontsize=5.2, color=MUTED)
+            yy -= 1.9
+
+
+def draw_token_panel(ax):
+    ax.set_xlim(0, 140)
+    ax.set_ylim(0, 68)
     ax.axis("off")
-    panel_header(ax, -1, 50.6, "B", "Set-native token layout and components")
+    panel_header(ax, 1.0, 66.0, "B",
+                 "Set-native token layout, ChannelFusion, masking, symbols")
     draw_token_grid(ax)
-    draw_components(ax)
+    draw_fusion_detail(ax)
+    draw_dcp(ax)
+    draw_ragged_and_ghost(ax)
+    draw_legends(ax)
 
 
 # --------------------------------------------------------------------------- #
 def build() -> plt.Figure:
-    figsize = (13.0, 9.5)
-    fig = plt.figure(figsize=figsize)
+    fig = plt.figure(figsize=(15.0, 13.6))
     gs = fig.add_gridspec(
-        2, 1, height_ratios=[24, 52], hspace=0.02,
-        left=0.01, right=0.99, top=0.985, bottom=0.01,
+        2, 1, height_ratios=[56, 68], hspace=0.03,
+        left=0.005, right=0.995, top=0.995, bottom=0.005,
     )
     ax_a = fig.add_subplot(gs[0])
     ax_a.set_aspect("equal", adjustable="box")
@@ -369,21 +428,10 @@ def main() -> None:
     ap.add_argument("--stem", default="architecture")
     args = ap.parse_args()
 
-    plt.rcParams.update({
-        "font.family": "sans-serif",
-        "font.sans-serif": ["DejaVu Sans", "Helvetica", "Arial"],
-        "pdf.fonttype": 42,
-        "ps.fonttype": 42,
-        "svg.fonttype": "none",
-        "mathtext.fontset": "dejavusans",
-    })
+    install_rcparams()
 
     fig = build()
-    stem = args.stem
-    for fmt in args.formats:
-        path = OUT / f"{stem}.{fmt}"
-        fig.savefig(path, dpi=300, bbox_inches="tight", facecolor="white")
-        print(f"wrote {path}")
+    save_figure(fig, OUT, args.stem, args.formats)
     plt.close(fig)
 
 

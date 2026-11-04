@@ -214,15 +214,14 @@ class MultiheadAttentionPooling(nn.Module):
 
     A learned query (``n_queries`` of them) cross-attends to every real token
     of each group through standard Q/K/V/O projections and emits a fixed-size
-    descriptor per group.  This module is *trained* through the MAE objective,
-    so it is a real PMA readout rather than an inference-only artifact.
+    pooled output per group.  This module is *trained* through the MAE
+    objective, so it is a real PMA readout rather than an inference-only
+    artifact.
 
-    ``ChannelFusionMAE`` uses it twice: with ``n_queries=n_latents`` as the
-    spatial pooling to fixed size latent whose output becomes the decoder KV
-    (``readout="flat"``, reshaped to ``[B, n_latents, D]``), and with
-    ``n_queries`` learned descriptor queries (``readout="mean"``) for the
-    per-sample ``[B, D]`` descriptor.  Both outputs are independent of the
-    number of tokens in each group.
+    ``ChannelFusionMAE`` uses it for the spatial pooling to fixed size latent:
+    ``n_queries=n_latents``, ``readout="flat"``, reshaped to
+    ``[B, n_latents, D]``.  The output is independent of the number of tokens
+    in each group.
 
     Parameters
     ----------

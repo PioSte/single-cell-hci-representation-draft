@@ -148,23 +148,20 @@ def test_encoder_output_is_fixed_size_across_patch_counts():
     finally:
         handle.remove()
 
-    expected = B * (model.encoder.n_memory + model.n_latents + 1)
+    expected = B * (model.encoder.n_memory + model.n_latents)
     assert kv_lengths == [expected, expected]
     assert latents_shapes[0] == latents_shapes[1]
 
 
-def test_encode_can_return_fixed_size_latents():
+def test_encode_returns_the_decoder_kv():
+    """``encode`` returns exactly the two KV components: memory + latents."""
     model = _model()
     model.eval()
     images, ids = _batch()
-    mem, latents, pooled = model.encode(images, ids, return_latents=True)
+    mem, latents = model.encode(images, ids)
+    assert mem.shape == (3 * model.encoder.n_memory, 32)
     assert latents.shape == (3, model.n_latents, 32)
-    assert pooled.shape == (3, 32)
     assert torch.isfinite(latents).all()
-    # Backwards-compatible two-tuple without the flag.
-    mem2, pooled2 = model.encode(images, ids)
-    assert torch.equal(mem, mem2)
-    assert torch.equal(pooled, pooled2)
 
 
 def test_overfit_single_batch():
@@ -198,15 +195,12 @@ def test_memory_tokens_optional():
 
 
 def test_decoder_kv_components_ablatable():
-    """Any subset of {memory, latents, descriptor} (and empty) is a valid KV."""
+    """Any subset of {memory, latents} (and empty) is a valid KV."""
     images, ids = _batch()
     subsets = [
         ("memory",),
         ("latents",),
-        ("descriptor",),
         ("memory", "latents"),
-        ("memory", "descriptor"),
-        ("latents", "descriptor"),
         (),
     ]
     for kv in subsets:
@@ -220,8 +214,7 @@ def test_decoder_kv_components_ablatable():
     assert torch.isfinite(out["loss"])
     # encode() is unaffected by decoder_kv_components
     model = _model(decoder_kv_components=()).eval()
-    _mem, latents, pooled = model.encode(images, ids, return_latents=True)
-    assert pooled.shape == (3, 32)
+    _mem, latents = model.encode(images, ids)
     assert latents.shape == (3, model.n_latents, 32)
     # unknown component rejected
     try:
@@ -236,94 +229,40 @@ def test_encode_inference():
     model = _model()
     model.eval()
     images, ids = _batch()
-    _mem, pooled = model.encode(images, ids)
-    assert pooled.shape == (3, 32)
-    assert torch.isfinite(pooled).all()
-
-
-def test_encode_attention_pool_replaces_mean():
-    """The descriptor is attention-pooled by default (no longer a mean pool)."""
-    model = _model()
-    model.eval()
-    images, ids = _batch()
-    _, pooled_attn = model.encode(images, ids, pool="attention")
-    _, pooled_mean = model.encode(images, ids, pool="mean")
-    assert pooled_attn.shape == pooled_mean.shape == (3, 32)
-    assert torch.isfinite(pooled_attn).all()
-    assert not torch.allclose(pooled_attn, pooled_mean)
+    _mem, latents = model.encode(images, ids)
+    assert latents.shape == (3, model.n_latents, 32)
+    assert torch.isfinite(latents).all()
 
     # pooling still works with no memory tokens
     model0 = _model(n_memory=0)
     model0.eval()
-    _, pooled0 = model0.encode(images, ids, pool="attention")
-    assert pooled0.shape == (3, 32)
-    assert torch.isfinite(pooled0).all()
+    _mem0, latents0 = model0.encode(images, ids)
+    assert latents0.shape == (3, model0.n_latents, 32)
+    assert torch.isfinite(latents0).all()
 
 
-def test_descriptor_is_trained_by_the_mae_loss():
-    """Every pooler parameter receives a gradient from the reconstruction loss."""
+def test_latent_pooler_is_trained_by_the_mae_loss():
+    """Every latent-pooler parameter receives a gradient from the loss."""
     model = _model()
     images, ids = _batch()
     out = model(images, ids, generator=torch.Generator().manual_seed(1))
     out["loss"].backward()
-    for pooler in (model.pooler, model.latent_pooler):
-        missing = [name for name, p in pooler.named_parameters() if p.grad is None]
-        assert not missing, f"pooler parameters without gradients: {missing}"
+    missing = [n for n, p in model.latent_pooler.named_parameters() if p.grad is None]
+    assert not missing, f"pooler parameters without gradients: {missing}"
 
 
-def test_decoder_consumes_the_descriptor():
-    """The trained descriptor is a decoder KV token and affects predictions."""
-    model = _model()
-    model.eval()
-    images, ids = _batch()
-    visible = _fixed_visible(images, model.masker, seed=2)
-    B = len(images)
-    captured = {}
-
-    handles = [
-        model.pooler.register_forward_hook(
-            lambda _m, _i, out: captured.__setitem__("desc", out.detach())
-        ),
-        model.decoder.register_forward_pre_hook(
-            lambda _m, args: captured.__setitem__("kv", args[0].detach())
-        ),
-    ]
-    try:
-        with torch.no_grad():
-            out = model(images, ids, visible=visible)
-    finally:
-        for handle in handles:
-            handle.remove()
-
-    assert out["pred"] is not None
-    # The decoder KV ends with the per-sample descriptor token.
-    assert torch.allclose(captured["kv"][-B:], captured["desc"])
-    assert torch.allclose(out["descriptor"], captured["desc"], atol=1e-6)
-
-    # Perturbing only the pooler output must change the reconstruction.  The
-    # delta is non-constant because a constant shift cancels in LayerNorm.
-    delta = torch.linspace(-1.0, 1.0, captured["desc"].shape[-1])
-    handle = model.pooler.register_forward_hook(lambda _m, _i, out: out + delta)
-    try:
-        with torch.no_grad():
-            out_perturbed = model(images, ids, visible=visible)
-    finally:
-        handle.remove()
-    assert not torch.allclose(out["pred"], out_perturbed["pred"])
-
-
-def test_forward_and_encode_share_the_descriptor():
-    """encode(pool='attention') returns the descriptor trained in forward."""
+def test_forward_and_encode_share_the_latents():
+    """encode() returns the same latent pooler output that forward() builds."""
     model = _model()
     model.eval()
     images, ids = _batch()
     visible = [torch.ones(im.shape[0], model.n_patches, dtype=torch.bool) for im in images]
     with torch.no_grad():
         out = model(images, ids, visible=visible)
-        _, pooled = model.encode(images, ids, pool="attention")
+        _mem, latents = model.encode(images, ids)
     assert out["pred"] is None  # nothing masked
-    assert out["descriptor"].shape == pooled.shape == (3, 32)
-    assert torch.allclose(out["descriptor"], pooled, atol=1e-6)
+    assert out["latents"].shape == latents.shape == (3, model.n_latents, 32)
+    assert torch.allclose(out["latents"], latents, atol=1e-6)
 
 
 def test_default_pe_lives_in_encoder_and_decoder_not_fusion():
@@ -338,18 +277,6 @@ def test_default_pe_lives_in_encoder_and_decoder_not_fusion():
     legacy = _model(pos_embed="learned")
     assert tuple(legacy.fusion.spatial_pos.shape) == (1, legacy.n_patches, 32)
     assert not hasattr(legacy.tokenizer.patch_embed, "spatial_pos")
-
-
-def test_multi_query_descriptor_smoke():
-    model = _model(n_queries=3)
-    images, ids = _batch()
-    out = model(images, ids, generator=torch.Generator().manual_seed(1))
-    assert torch.isfinite(out["loss"])
-    out["loss"].backward()
-    model.eval()
-    _, pooled = model.encode(images, ids, pool="attention")
-    assert pooled.shape == (3, 32)
-    assert torch.isfinite(pooled).all()
 
 
 def test_identity_gated_fusion_mae():
@@ -425,7 +352,7 @@ def test_attention_primitives_route_self_and_cross_attention(monkeypatch):
 
     assert out["pred"] is not None
     # Encoder blocks plus the latent pooler's post-SAB (it runs in the same
-    # module namespace); the one-query descriptor pooler has no post-SAB.
+    # module namespace).
     expected_encoder_self = len(model.encoder.blocks) + int(
         model.latent_pooler.post_sab is not None
     )

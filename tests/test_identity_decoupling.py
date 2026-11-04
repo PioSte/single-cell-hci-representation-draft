@@ -232,9 +232,9 @@ def test_mae_end_to_end(fusion_name):
     assert model.fusion.identity_skip.weight.grad is not None
     assert model.fusion.identity_skip.weight.grad.norm() > 0
 
-    _, descriptor = model.encode(images, ids, patch_sizes=[8, 16])
-    assert descriptor.shape[0] == 2
-    assert torch.isfinite(descriptor).all()
+    _, latents = model.encode(images, ids, patch_sizes=[8, 16])
+    assert latents.shape[0] == 2
+    assert torch.isfinite(latents).all()
 
 
 def test_fusion_requires_channel_embed():

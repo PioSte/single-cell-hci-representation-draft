@@ -10,12 +10,14 @@ SDPA over groups of equal length, and scatter-back.
   by the decoder; it loops per group, so query and key/value tokens may have
   different lengths per group.
 * ``grouped_pool_attention`` — one learned query set per group, used by channel
-  fusion and the descriptor pooler.
-* ``grouped_softmax`` — the per-group softmax used by ``IdentityGatedSum``.
+  fusion and the latent pooler.
 
 Groups are samples for the encoder, decoder, and pooler, and ``(sample, patch)``
 locations for channel fusion. This is padding-free batching, **not** grouped-query
 attention: there are no head groups and no shared K/V across query heads.
+
+The non-default ``IdentityGatedSum`` fusion uses a separate ``grouped_softmax``;
+it is not part of the shipped primitive set and is not drawn here.
 
 Tokens from different groups never interact, so the primitive needs no padding
 tokens and no ``-inf`` attention mask.
@@ -38,7 +40,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 from figure_style import (  # noqa: E402
-    BLUE, GREEN, ORANGE, FUSED, LOSS, INK, MUTED,
+    BLUE, GREEN, ORANGE, GHOST, LOSS, INK, MUTED,
     tint, rrect, box, arrow, sq_bracket_mirror, panel_header, legend,
     install_rcparams, save_figure,
 )
@@ -146,8 +148,10 @@ def draw_sorted_tokens(ax, x):
 def draw_batched_groups(ax, x):
     """Batched SDPA: equal-length groups batched into one call each.
 
-    The L=3 bucket keeps stage-2's vertical order for g0/g2 (g2 orange above
-    g0 blue); the L=2 bucket sits below with its heading immediately above it.
+    Rows in a bucket are ordered by ascending group id, and are drawn in that
+    order top-to-bottom so the picture reads like the gathered ``[M, L]`` block:
+    row 0 (g0) on top, row 1 (g2) below.  The L=2 bucket sits below with its
+    heading immediately above it.
     """
     cell, cpitch = 2.8, 3.2
 
@@ -157,18 +161,19 @@ def draw_batched_groups(ax, x):
                   face=tint(c, 0.75), lw=1.1, rounding=0.3, crossed=True)
         return x + (n - 1) * cpitch + cell
 
-    # --- L = 3, batch M = 2 (groups g2 orange, then g0 blue) --------------- #
-    orange_y, blue_y = Y0 + 14.0, Y0 + 10.5
-    right3 = row(orange_y, 3, ORANGE)
-    row(blue_y, 3, BLUE)
+    # --- L = 3, batch M = 2 (row 0 = g0 blue on top, row 1 = g2 orange) --- #
+    blue_y, orange_y = Y0 + 14.0, Y0 + 10.5
+    right3 = row(blue_y, 3, BLUE)
+    row(orange_y, 3, ORANGE)
     ax.text(x + 4.6, Y0 + 20.0, "length $L{=}3$", ha="center", va="center",
             fontsize=7.5, fontweight="bold", color=INK)
-    ax.text(x + 4.6, Y0 + 18.3, "batch $M{=}2$: $g_2 + g_0$", ha="center",
+    ax.text(x + 4.6, Y0 + 18.3,
+            "batch $M{=}2$: row 0 $g_0$, row 1 $g_2$", ha="center",
             va="center", fontsize=6.2, color=MUTED)
-    ax.text(right3 + 0.7, orange_y + cell / 2, "$g_2$", ha="left",
-            va="center", fontsize=6.4, color=ORANGE, fontweight="bold")
     ax.text(right3 + 0.7, blue_y + cell / 2, "$g_0$", ha="left",
             va="center", fontsize=6.4, color=BLUE, fontweight="bold")
+    ax.text(right3 + 0.7, orange_y + cell / 2, "$g_2$", ha="left",
+            va="center", fontsize=6.4, color=ORANGE, fontweight="bold")
 
     # --- L = 2, batch M = 1 (group g1 green) ------------------------------- #
     green_y = Y0 + 3.0
@@ -214,11 +219,11 @@ def build() -> plt.Figure:
     _top1, group_right = draw_input_tokens(ax, 3.5)
 
     # Stage 2: sort by group
-    ax.text(41.0, head_y, "② sort by group", ha="center", va="center",
+    ax.text(39.0, head_y, "② sort by group", ha="center", va="center",
             fontsize=8.0, fontweight="bold", color=INK)
-    ax.text(41.0, sub_y, "$\\mathtt{order} = \\mathtt{argsort(group\\_id, stable)}$",
+    ax.text(39.0, sub_y, "$\\mathtt{order} = \\mathtt{argsort(group\\_id, stable)}$",
             ha="center", va="center", fontsize=6.8, color=MUTED)
-    draw_sorted_tokens(ax, 34.0)
+    draw_sorted_tokens(ax, 32.0)
 
     # Stage 3: batched SDPA by equal length
     ax.text(64.5, head_y, "③ batched SDPA", ha="center", va="center",
@@ -228,7 +233,18 @@ def build() -> plt.Figure:
             ha="center", va="center", fontsize=6.2, color=MUTED)
     ax.text(64.5, sub_y - 1.7, "general cross-attn: loops per group",
             ha="center", va="center", fontsize=6.2, color=MUTED)
-    draw_batched_groups(ax, 58.0)
+    draw_batched_groups(ax, 60.0)
+
+    # bucketing detail, between stages 2 and 3: no padding tokens
+    for i, line in enumerate([
+        "after stable sort:",
+        "lengths/offsets =",
+        "bincount + cumsum",
+        "idx = offsets + arange(L)",
+        "→ [M, L] block / bucket",
+    ]):
+        ax.text(52.5, 66.2 - 1.15 * i, line, ha="center", va="center",
+                fontsize=4.7, color=MUTED)
 
     # Stage 4: scatter back
     ax.text(91.0, head_y, "④ scatter back", ha="center", va="center",
@@ -238,29 +254,27 @@ def build() -> plt.Figure:
     draw_output_tokens(ax, 84.0)
 
     # ---- inter-stage arrows (same y so the flow reads straight) ----------- #
-    arrow(ax, (group_right + 0.6, ARROW_Y), (33.0, ARROW_Y))
-    arrow(ax, (54.5, ARROW_Y), (57.0, ARROW_Y))
-    arrow(ax, (71.0, ARROW_Y), (83.0, ARROW_Y))
+    arrow(ax, (group_right + 0.6, ARROW_Y), (31.0, ARROW_Y))
+    arrow(ax, (47.5, ARROW_Y), (58.5, ARROW_Y))
+    arrow(ax, (72.2, ARROW_Y), (83.0, ARROW_Y))
 
     # ---- right-hand side notes -------------------------------------------- #
     box(ax, 104.0, Y0 + 16.2, 33.0, 10.4,
         "Grouped SDPA primitives",
-        "projected self-attn (bucketed)\n"
-        "general cross-attn (per-group loop)\n"
-        "channel fusion and descriptor pooler: both Q/K/V projected",
-        edge=FUSED, title_size=8.8, sub_size=5.9)
+        "grouped_pool_attention — fusion, pooler\n"
+        "grouped_projected_self_attention — encoder\n"
+        "grouped_attention — decoder cross-attn",
+        edge=GHOST, title_size=8.8, sub_size=5.7)
 
     rrect(ax, 104.0, Y0 + 4.0, 33.0, 11.0, edge=LOSS, face=tint(LOSS, 0.92),
           lw=1.5, rounding=0.6)
     ax.text(120.5, Y0 + 13.5, "HARD CONSTRAINT", ha="center",
             va="center", fontsize=6.2, fontweight="bold", color=LOSS)
-    ax.text(120.5, Y0 + 11.2, "Tokens from different", ha="center",
+    ax.text(120.5, Y0 + 10.9, "Tokens from different", ha="center",
             va="center", fontsize=7.2, fontweight="bold", color=INK)
-    ax.text(120.5, Y0 + 8.9, "groups NEVER interact", ha="center",
+    ax.text(120.5, Y0 + 8.5, "groups NEVER interact", ha="center",
             va="center", fontsize=7.2, fontweight="bold", color=INK)
-    ax.text(120.5, Y0 + 6.4, "encoder/decoder/pooler: groups = samples", ha="center",
-            va="center", fontsize=5.9, color=MUTED, style="italic")
-    ax.text(120.5, Y0 + 5.1, "fusion: groups = (sample, patch)", ha="center",
+    ax.text(120.5, Y0 + 6.1, "no padding tokens · no $-\\infty$ mask", ha="center",
             va="center", fontsize=5.9, color=MUTED, style="italic")
 
     # ---- glossary (compact notation + RoPE scope) ------------------------- #
@@ -269,22 +283,22 @@ def build() -> plt.Figure:
     ax.text(105.2, 46.6, "symbols / glossary", ha="left", va="center",
             fontsize=7.0, fontweight="bold", color=INK)
     glossary = [
-        "$T$ total real tokens ($=V$ elsewhere);  $D$ token dim",
-        "group $g_i$ = one independent attention set",
-        "$L$ group length;  $M$ batch of equal-length groups",
-        "encoder/decoder/pooler: 1 group per sample",
-        "fusion: 1 group per $(sample, patch)$ location",
-        "SDPA scaled dot-product attention;  $K/V$ keys/values",
-        "$\\mathtt{group\\_id}$ per-token id;  $\\mathtt{order}$ stable argsort",
+        "$T$ tokens in the flattened set;  $D$ token dim",
+        "$g_i$ / $\\mathtt{group\\_id}$ = one independent attention set",
+        "$L$ group length;  $L_g$ = token count of group $g$",
+        "$M$ equal-length groups in the current bucket",
+        "(not the data batch size)",
+        "$H$ attention heads; scores $[M, H, L, L]$ per bucket",
+        "SDPA scaled dot-product attention;",
+        "$\\mathtt{order}$ stable argsort;  $\\mathtt{out[order]}$ scatter-back",
         "group colours = group IDs, not channel identity",
-        "default encoder: 2-D axial RoPE on q/k before grouping",
-        "(the primitive itself is unchanged)",
+        "the encoder applies 2-D axial RoPE to q/k before grouping",
     ]
     gy = 44.5
     for line in glossary:
         ax.text(105.2, gy, line, ha="left", va="center",
                 fontsize=5.2, color=MUTED)
-        gy -= 1.35
+        gy -= 1.28
 
     # ---- legends (group colours are NOT channel identity) ----------------- #
     legend(ax, 2.0, 43.0,
@@ -292,9 +306,10 @@ def build() -> plt.Figure:
             ("$g_2$", ORANGE, "cross")],
            title="group IDs (not channel identity)", pitch=2.3, fontsize=6.6)
     legend(ax, 52.0, 43.0,
-           [("SDPA primitive", FUSED, "fill"),
+           [("data token (crossed)", GHOST, "cross"),
+            ("operation / SDPA primitive (fill)", GHOST, "fill"),
             ("hard constraint", LOSS, "fill")],
-           title="roles", pitch=2.3, fontsize=6.6)
+           title="marks", pitch=2.3, fontsize=6.6)
 
     # answer "what are the groups?" right beside the stage-1 group legend
     note_x, note_y = 22.0, 42.6
@@ -314,9 +329,9 @@ def build() -> plt.Figure:
 
     # ---- footer note ------------------------------------------------------ #
     ax.text(2.0, 31.3,
-            "Grouped attention over uneven token groups: one equal-length batch at a time, "
-            "$O(T \\cdot D)$ working memory.",
-            ha="left", va="center", fontsize=7.0, color=MUTED, style="italic")
+            "Grouped attention over uneven token groups: one equal-length bucket at a time; "
+            "token buffers $O(T \\cdot D)$, SDPA scores $O(M \\cdot H \\cdot L^2)$ per bucket.",
+            ha="left", va="center", fontsize=6.6, color=MUTED, style="italic")
 
     return fig
 

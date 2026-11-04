@@ -9,9 +9,10 @@ present, not directly on the panel size, and a channel-count or mean-pixel
 shortcut cannot read it off (channel count only changes its prior).
 
 The script optionally pretrains the MAE on the train split for a few steps,
-freezes every model parameter, extracts ``encode(pool="attention")``
-descriptors with ``torch.no_grad``, standardizes them using train statistics,
-and trains a single linear layer with Adam.  It prints train and test accuracy.
+freezes every model parameter, extracts the fixed latent set via ``encode``
+with ``torch.no_grad`` (mean over the ``n_latents`` queries -> one ``[D]``
+vector per sample), standardizes it using train statistics, and trains a single
+linear layer with Adam.  It prints train and test accuracy.
 """
 
 from __future__ import annotations
@@ -92,21 +93,21 @@ def pretrain(
     return last_loss
 
 
-def extract_descriptors(
+def extract_features(
     model: ChannelFusionMAE,
     ds: Dataset,
     indices: Sequence[int],
     target_channel: int,
     batch_size: int = 32,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Return raw ``[N, D]`` descriptors and ``[N]`` labels."""
+    """Return raw ``[N, D]`` features (mean over the latent set) and ``[N]`` labels."""
     loader = _loader(ds, indices, batch_size, shuffle=False)
     model.eval()
     features, labels = [], []
     with torch.no_grad():
         for images, ids, pixel_sizes in loader:
-            _, pooled = model.encode(images, ids, pool="attention", pixel_sizes=pixel_sizes)
-            features.append(pooled)
+            _, latents = model.encode(images, ids, pixel_sizes=pixel_sizes)
+            features.append(latents.mean(dim=1))
             labels.append(channel_presence_labels(ids, target_channel))
     return torch.cat(features, dim=0), torch.cat(labels, dim=0)
 
@@ -299,8 +300,8 @@ def main() -> None:
     model.eval()
     model.requires_grad_(False)
 
-    train_features, train_targets = extract_descriptors(model, ds, train_idx, args.target_channel)
-    test_features, test_targets = extract_descriptors(model, ds, test_idx, args.target_channel)
+    train_features, train_targets = extract_features(model, ds, train_idx, args.target_channel)
+    test_features, test_targets = extract_features(model, ds, test_idx, args.target_channel)
     assert torch.equal(train_targets, train_labels)
     assert torch.equal(test_targets, test_labels)
 

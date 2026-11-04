@@ -24,7 +24,7 @@ order is meaningless, and panels differ across labs. We need a representation
 whose size is independent of `C`:
 
 ```
-f({E_1 .. E_C}) -> [N, D] per sample -> spatial pooling to fixed size latent [L, D] -> [D] descriptor,
+f({E_1 .. E_C}) -> [N, D] per sample -> spatial pooling to fixed size latent [L, D],
 ```
 
 without concatenation blow-up, with channel identity preserved, and with **no
@@ -34,7 +34,7 @@ fused output is `[K_f, D]`, one vector per *present* `(b, n)` location
 absent locations own no row). **Spatial pooling to fixed size latent** then maps those encoder
 tokens to `L` latents per sample, `[B, L, D]` (`n_latents = L` is a
 hyperparameter), so the model-level encoder output and the decoder KV are
-independent of both `C` and `N`; the pooled descriptor is `[B, D]`. The decoder
+independent of both `C` and `N`. The decoder
 still emits one prediction row per requested reconstruction target (the DCP mask
 complement), not per encoder token. See “Naming this stage” below for the
 nuances of the phrase.
@@ -145,11 +145,9 @@ per-channel tied Conv2d(1 -> D) patch embed, PI-resized to the current p
     -> padding-free transformer encoder over [present locations, D]
        with fixed-count memory tokens and 2-D axial RoPE on q/k
     -> spatial pooling to fixed size latent (PMA) [B, L, D]
-       (L independent of C and N)
-    -> trained PMA descriptor over encoder patch tokens [B, D]  (appended to KV)
+       (L independent of C and N; trained through the loss)
     -> channel-aware shared decoder: target-identity + fractional target-position
-       queries, target self-attention, cross-attention to memory + latents +
-       descriptor
+       queries, target self-attention, cross-attention to memory + latents
 ```
 
 * **Channel-tied projection.** One canonical `Conv2d(1, D, kernel_size=p0,
@@ -227,25 +225,22 @@ per-channel tied Conv2d(1 -> D) patch embed, PI-resized to the current p
   (`[present locations, D]`, the fusion output as-is) with fixed-count memory
   tokens. A second PMA
   pooler then applies **spatial pooling to fixed size latent**: `L =
-  n_latents` learned queries pool the per-location tokens to `[B, L, D]`
-  (default 16). `L` is a hyperparameter, so the encoder output and the decoder
+  n_latents` learned queries pool the per-location tokens to `[B, L, D]`.
+  `L` is a hyperparameter, so the encoder output and the decoder
   KV do not grow with `C` or with the patch count `N`: varying `N` changes
   encoder compute, not the representation size. This is a hybrid — token-level
   encoder attention followed by spatial pooling to fixed size latent — not the
   Perceiver's pool-before-processing architecture; the Perceiver paper does not
   ablate this placement (`references/perceiver/paper.md:531-558`).
-* **Encoder and descriptor.** The `[B, D]` descriptor is a separate PMA-style
-  pool over the encoder's *patch* tokens (not the memory tokens or the latents
-  produced by spatial pooling); it therefore carries the identity skip, which the decoder can use
-  as a panel-composition summary. It is trained through the MAE loss and
-  appended as one token per sample to the decoder KV. The decoder KV is
-  `[B·(n_memory + n_latents + 1), D]`, fixed for a given model; which of those
-  components reach the decoder is selectable via `decoder_kv_components` (default: all
-  three; empty = blind decoder, no cross-attention).
+* **Encoder and decoder KV.** The decoder KV is the fixed set of `n_memory`
+  memory tokens plus the `n_latents` pooled latents, `[B·(n_memory +
+  n_latents), D]` and fixed for a given model; which of those components reach
+  the decoder is selectable via `decoder_kv_components` (default: both; empty =
+  blind decoder, no cross-attention).
 * **Decoder.** One decoder is shared across all channels. Each target query is
   `mask token + target spatial PE + target channel embedding`; queries
   self-attend within each sample, then cross-attend to the encoder's
-  memory + the fixed latent set + descriptor. A fully dropped channel has no encoder
+  memory + the fixed latent set. A fully dropped channel has no encoder
   evidence, only its identity query, so identity acts as a **target
   specification** as well as an input feature. The reconstruction head has
   three modes. `head_mode="per_p"` (default) keeps a separate linear
@@ -299,8 +294,7 @@ literal, but each word carries weight:
   is called fixed size even though the encoder input length (`Kf`) varies.
 - **latent** — used in the singular as the name of the stage, but the tensor
   is a set of `L` latents. `L = 1` gives one latent vector `[B, D]`; `L > 1`
-  gives `[B, L, D]`. This is **not** the descriptor, which is a separate
-  `[B, D]` pool over the same encoder tokens.
+  gives `[B, L, D]`.
 * It is a **pooling step**, not a second encoder: the encoder still runs
   token-level attention over every present location. It is also not the
   Perceiver's pool-before-processing latent bottleneck, and the Perceiver paper
@@ -345,10 +339,9 @@ ids = [torch.randint(0, 32, (3,)), torch.randint(0, 32, (7,))]
 out = model(images, ids)
 out["loss"].backward()
 
-# inference representation (no masking): fixed latent set + trained descriptor
-mem, latents, descriptor = model.encode(images, ids, return_latents=True)
-# memory: [B*n_memory, D], latents: [B, n_latents, D], descriptor: [B, D]
-_, mean_descriptor = model.encode(images, ids, pool="mean")  # ablation
+# inference representation (no masking): memory tokens + the fixed latent set
+mem, latents = model.encode(images, ids)
+# memory: [B*n_memory, D], latents: [B, n_latents, D]
 ```
 
 ### Configuration and ablations
@@ -431,7 +424,7 @@ fused, present, cs = cft(images, ids, pixel_sizes=0.65)
 ```
 
 It owns the identity table and the two primitives; scale conditioning, the
-encoder, the latent/descriptor poolers, and the decoder are outside it. `build`
+encoder, the latent pooler, and the decoder are outside it. `build`
 is the convenience constructor — pass an already-built `ChannelTokenizer` and
 fusion to wrap the modules of an existing model instead (that is how the stage
 can be applied to `ChannelFusionMAE`'s weights without touching its state-dict
@@ -450,7 +443,7 @@ keys).
   channel and broadcast to that channel's patches.
 * `grouped_attention` (and the other `grouped_*` primitives) means
   padding-free batching by integer group id, **not** grouped-query attention.
-  Encoder, decoder, and descriptor pooling group by sample; fusion groups by
+  Encoder, decoder, and latent pooling group by sample; fusion groups by
   `(sample, patch)` location.
 
 ## Layout
@@ -520,12 +513,11 @@ Covered by `tests/`:
   (`test_encoder_output_is_fixed_size_across_patch_counts`)
 - DCP Eq. 1 regions and HCS counts (`test_masking.py`); channels dropped by DCP
   are reconstruction targets (`test_dcp_dropped_channel_is_a_reconstruction_target`)
-- `n_latents` and descriptor poolers are trained through the MAE loss; the
-  descriptor is appended to the decoder KV, and `encode(pool="attention")`
-  matches the forward descriptor
-  (`test_descriptor_is_trained_by_the_mae_loss`,
-  `test_decoder_consumes_the_descriptor`,
-  `test_forward_and_encode_share_the_descriptor`)
+- the `n_latents` pooler is trained through the MAE loss and its output is the
+  decoder KV alongside the memory tokens; `encode()` matches the forward latents
+  (`test_latent_pooler_is_trained_by_the_mae_loss`,
+  `test_forward_and_encode_share_the_latents`,
+  `test_encode_returns_the_decoder_kv`)
 - loss variants (`test_losses.py`) and the frozen linear-probe smoke test
   (`test_linear_probe.py`)
 - single-batch MAE loss decreases (`test_overfit_single_batch`)
@@ -583,10 +575,9 @@ uv run python viz/cardinality_figure.py      # -> viz/out/cardinality.{pdf,svg,p
 
 The implementation differs from the earlier reference designs in several
 specifics: HCS and DCP's channel region are unified into one channel-subset
-sampler; the decoder consumes the encoder representation + memory + a trained
-descriptor and conditions on the target channel embedding, not "unmasked
-channel tokens"; the descriptor is trained rather than inference-only; the
-default loss is patch-normalized MSE with ChA-MAEViT as an ablation;
+sampler; the decoder consumes the pooled latent set + memory and conditions on
+the target channel embedding, not "unmasked channel tokens"; the latent pooler
+is trained rather than inference-only; the default loss is patch-normalized MSE with ChA-MAEViT as an ablation;
 `IdentityGatedSum` replaces the misleading `HypernetworkWeightedSum` name;
 position now follows the FLEXIVIT.md target (encoder RoPE + decoder fractional PE,
 no fusion table), with the legacy table retained as an ablation; the decoder

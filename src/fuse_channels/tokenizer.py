@@ -21,7 +21,7 @@ The stage stops at the fused token set on purpose. It excludes:
 * scale conditioning (``log(p)`` / ``log(pixel_size)``), which is added to the
   fused tokens as encoder input;
 * the encoder (2-D axial RoPE and attention);
-* spatial pooling to fixed size latent, the descriptor pool;
+* spatial pooling to fixed size latent;
 * the decoder and its reconstruction head.
 
 Position is born downstream, in the encoder's RoPE and the decoder's fractional

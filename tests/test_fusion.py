@@ -162,7 +162,7 @@ def test_pooling_query_is_shared_across_locations():
 
 
 def test_multihead_attention_pooling():
-    """PMA descriptor pool: padding-free, permutation-invariant, empty->0."""
+    """PMA pool: padding-free, permutation-invariant, empty->0."""
     torch.manual_seed(0)
     pool = MultiheadAttentionPooling(D, n_heads=HEADS, n_queries=1)
     pool.eval()
@@ -245,7 +245,7 @@ def test_channel_fusion_is_single_query():
     assert fused.shape == (2 * N, D)
     assert present.all()
 
-    # The descriptor pooler still supports the k>1 research ablation.
+    # The PMA pool module still supports the multi-query / mean-readout paths.
     torch.manual_seed(0)
     pool = MultiheadAttentionPooling(D, n_heads=HEADS, n_queries=3, post_sab=True, readout="flat")
     x = torch.randn(6, D)

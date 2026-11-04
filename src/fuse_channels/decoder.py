@@ -5,9 +5,9 @@ past a handful of channels).  Each reconstruction query is conditioned on the
 **target channel's embedding** and the **target's fractional spatial
 position**, then runs grouped self-attention over the target queries of its
 sample (so correlated masked channel-patches can coordinate) before
-cross-attending to the encoder's memory + latents + trained descriptor.  Those
-KV components are selectable per model via ``decoder_kv_components`` (see
-``ChannelFusionMAE``); the default uses all three, and an empty KV skips
+cross-attending to the encoder's memory + latents.  Those KV components are
+selectable per model via ``decoder_kv_components`` (see
+``ChannelFusionMAE``); the default uses both, and an empty KV skips
 cross-attention entirely.  This turns the additive channel embedding into a
 *target specification* so one shared decoder can be used for all channels.
 

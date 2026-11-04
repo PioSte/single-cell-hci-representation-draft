@@ -8,8 +8,7 @@ ids.
 The mechanism follows ChA-MAEViT §3.2
 (``references/cha-maevit/paper.md:109-113``): ``n_memory`` learnable embeddings
 are prepended to the input sequence, processed by the encoder, and excluded
-from the final representation (the descriptor is pooled over patch tokens
-only).  ChA-MAEViT, in turn, credits the idea to register tokens (Darcet et
+from the final representation (the latent pooler reads patch tokens only).  ChA-MAEViT, in turn, credits the idea to register tokens (Darcet et
 al., *Vision Transformers Need Registers*); that primary paper is not in
 ``references/``, so the citation here is the second-hand source.
 

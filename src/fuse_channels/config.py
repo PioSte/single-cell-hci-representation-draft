@@ -162,8 +162,7 @@ class ModelConfig:
 
     # --- pooling / decoder-KV wiring -----------------------------------------
     n_latents: int = 16
-    n_queries: int = 1
-    decoder_kv_components: tuple[str, ...] = ("memory", "latents", "descriptor")
+    decoder_kv_components: tuple[str, ...] = ("memory", "latents")
 
     # --- masking (DCP / HCS) --------------------------------------------------
     p_patch: float = 0.5
@@ -338,7 +337,6 @@ class ModelConfig:
             "fusion": self.fusion,
             "fusion_attn_dim": self.fusion_attn_dim,
             "n_latents": self.n_latents,
-            "n_queries": self.n_queries,
             "decoder_kv_components": self.decoder_kv_components,
             "p_patch": self.p_patch,
             "p_channel": self.p_channel,
@@ -440,7 +438,6 @@ _TOP_LEVEL_FLAT = (
     "fusion",
     "fusion_attn_dim",
     "n_latents",
-    "n_queries",
     "decoder_kv_components",
     "p_patch",
     "p_channel",
