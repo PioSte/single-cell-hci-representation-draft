@@ -302,3 +302,63 @@ def test_probability_regions_select_the_expected_mode(p_patch, p_channel, expect
     for seed in range(10):
         masker(imgs, generator=torch.Generator().manual_seed(seed))
         assert masker.last_modes == [expected] * len(imgs)
+
+
+# ── MultiBlockTargetSampler: targets vs context ────────────────────────────
+
+
+def _multi_block(grid_hw, **kw):
+    from fuse_channels import MultiBlockTargetSampler
+
+    return MultiBlockTargetSampler(**kw)
+
+
+def test_multi_block_context_is_the_target_complement_at_scale_one():
+    """`context_scale=(1.0, 1.0)` is the complement, i.e. the reference optimum."""
+    masker = _multi_block([(4, 4), (7, 5)], context_scale=(1.0, 1.0))
+    targets, contexts = masker([(4, 4), (7, 5)], generator=torch.Generator().manual_seed(0))
+    for target, context, (gh, gw) in zip(targets, contexts, [(4, 4), (7, 5)], strict=True):
+        assert target.numel() == gh * gw and context.numel() == gh * gw
+        assert not bool((target & context).any())
+        assert torch.equal(context, ~target)
+
+
+def test_multi_block_context_scale_drops_a_border_strip():
+    """Below 1.0 the context is a rectangle minus the targets: strictly smaller."""
+    grid = [(6, 6)] * 8
+    whole = _multi_block(grid, context_scale=(1.0, 1.0))
+    narrow = _multi_block(grid, context_scale=(0.5, 0.5))
+    for seed in range(8):
+        g = torch.Generator().manual_seed(seed)
+        whole_targets, whole_context = whole(grid, generator=torch.Generator().manual_seed(seed))
+        narrow_targets, narrow_context = narrow(grid, generator=g)
+        assert torch.equal(whole_targets[0], narrow_targets[0]), "targets must not depend on it"
+        assert bool(narrow_context[0].any())
+        assert not bool((narrow_targets[0] & narrow_context[0]).any())
+        assert int(narrow_context[0].sum()) < int(whole_context[0].sum())
+
+
+def test_multi_block_context_masks_accept_explicit_targets_without_rng():
+    """`context_masks` at scale 1.0 draws no random numbers."""
+    masker = _multi_block([(4, 4)], context_scale=(1.0, 1.0))
+    target = [torch.zeros(16, dtype=torch.bool).index_fill_(0, torch.tensor([0, 1, 2]), True)]
+    context, returned = masker.context_masks(target, [(4, 4)])
+    assert torch.equal(returned[0], target[0])
+    assert torch.equal(context[0], ~target[0])
+
+
+def test_multi_block_releases_a_target_when_it_covers_the_grid():
+    """A 1x1 grid with a full target has no context, so one target is released."""
+    masker = _multi_block([(1, 1)], n_blocks=1, target_scale=(1.0, 1.0))
+    targets, contexts = masker([(1, 1)], generator=torch.Generator().manual_seed(0))
+    assert not bool(targets[0].any())
+    assert bool(contexts[0].all())
+
+
+def test_multi_block_targets_are_never_empty_on_tiny_grids():
+    # A 1x1 grid cannot host a non-empty target and a non-empty context at once,
+    # so it is covered by the release test above; here we require both to exist.
+    masker = _multi_block([(2, 2), (3, 3)], n_blocks=3, target_scale=(0.01, 0.01))
+    targets, contexts = masker([(2, 2), (3, 3)], generator=torch.Generator().manual_seed(1))
+    assert all(bool(t.any()) for t in targets)
+    assert all(bool(c.any()) for c in contexts)

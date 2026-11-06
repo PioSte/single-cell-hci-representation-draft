@@ -1,5 +1,6 @@
 """Tests for the JEPA path: target encoder, feature predictor, and MAE coexistence."""
 
+import pytest
 import torch
 import torch.nn.functional as F
 
@@ -315,3 +316,135 @@ def test_jepa_overfits_a_fixed_batch():
         model.update_target_encoder()
         losses.append(float(out["loss"].detach()))
     assert losses[-1] < losses[0], losses
+
+
+def test_jepa_context_scale_shrinks_the_student_encoder_input():
+    """A sub-1.0 context rectangle must reach the student as fewer tokens."""
+    images, ids = _batch(image_size=8)
+    targets_seen = {}
+
+    def _run(context_scale):
+        model = _model(
+            jepa=JEPAConfig(
+                target_blocks=1,
+                target_scale=(0.5, 0.5),
+                target_aspect=(1.0, 1.0),
+                context_scale=context_scale,
+            )
+        )
+        rows = []
+        handle = model.encoder.register_forward_pre_hook(
+            lambda _m, args: rows.append(args[0].shape[0])
+        )
+        try:
+            out = model(images, ids, generator=torch.Generator().manual_seed(0))
+        finally:
+            handle.remove()
+        targets_seen[context_scale] = out["target_locations"]
+        return rows[0], out
+
+    whole_rows, whole = _run((1.0, 1.0))
+    narrow_rows, narrow = _run((0.5, 0.5))
+    # The targets are sampled before the context rectangle, so they match.
+    assert torch.equal(targets_seen[(1.0, 1.0)][0], targets_seen[(0.5, 0.5)][0])
+    assert narrow_rows < whole_rows
+    assert int(narrow["context_locations"][0].sum()) < int(whole["context_locations"][0].sum())
+
+
+def test_jepa_rejects_overlapping_context_and_target():
+    model = _model()
+    images, ids = _batch()
+    targets = _targets()
+    with pytest.raises(ValueError, match="disjoint"):
+        model(images, ids, target_locations=targets, context_locations=[t.clone() for t in targets])
+
+
+def test_jepa_regularizer_consumes_projected_rows():
+    model = _model(
+        jepa=JEPAConfig(
+            target_blocks=1,
+            target_scale=(0.5, 0.5),
+            target_aspect=(1.0, 1.0),
+            context_scale=(1.0, 1.0),
+            use_ema=False,
+            regularizer="sigreg",
+            reg_weight=0.01,
+            proj_dim=16,
+            reg_kwargs={"num_slices": 16},
+        )
+    )
+    images, ids = _batch()
+    out = model(
+        images, ids, target_locations=_targets(), generator=torch.Generator().manual_seed(4)
+    )
+    assert out["pred"].shape[1] == 16
+    assert out["reg_dim"] == 16
+    assert out["reg_rows"] == out["pred"].shape[0]
+    # The regularizer's input is the projected student rows, not the pooled latent.
+    assert out["reg_loss"] != 0
+    assert torch.allclose(out["loss"], out["jepa_loss"] + 0.01 * out["reg_loss"])
+
+
+def test_jepa_no_projector_uses_encoder_width():
+    model = _model(
+        jepa=JEPAConfig(
+            target_blocks=1,
+            target_scale=(0.5, 0.5),
+            target_aspect=(1.0, 1.0),
+            context_scale=(1.0, 1.0),
+            use_ema=False,
+            regularizer="sigreg",
+            reg_weight=0.01,
+            use_projector=False,
+            reg_kwargs={"num_slices": 16},
+        )
+    )
+    images, ids = _batch()
+    out = model(
+        images, ids, target_locations=_targets(), generator=torch.Generator().manual_seed(5)
+    )
+    assert out["pred"].shape[1] == 32
+    assert out["reg_dim"] == 32
+    assert model.jepa_projector is None
+
+
+def test_jepa_ema_updates_the_projector_copy():
+    model = _model(
+        jepa=JEPAConfig(
+            target_blocks=1,
+            target_scale=(0.5, 0.5),
+            target_aspect=(1.0, 1.0),
+            context_scale=(1.0, 1.0),
+        )
+    )
+    assert model.jepa_projector is not None
+    assert model.target_projector is not None
+    before = [p.detach().clone() for p in model.target_projector.parameters()]
+    with torch.no_grad():
+        for p in model.jepa_projector.parameters():
+            p.add_(0.5)
+    model.update_target_encoder(momentum=0.5)
+    changed = any(
+        not torch.equal(b, a)
+        for b, a in zip(before, model.target_projector.parameters(), strict=True)
+    )
+    assert changed
+
+
+def test_feature_spread_flags_within_sample_collapse():
+    from fuse_channels import feature_spread
+
+    g = torch.Generator().manual_seed(0)
+    varied = torch.randn(32, 8, generator=g)
+    collapsed = varied[:1].repeat(32, 1)
+    varied_stats = feature_spread(varied)
+    collapsed_stats = feature_spread(collapsed)
+    assert varied_stats["effective_rank"] > 4.0
+    assert collapsed_stats["effective_rank"] < 1.5
+    assert collapsed_stats["within_sample_std"] < 1e-5
+    # A per-image-constant pattern is invisible to the row distribution: the
+    # regularizer sees the same values, just repeated.
+    groups = torch.arange(32) // 4
+    replicated = varied[:8].repeat_interleave(4, dim=0)
+    rep_stats = feature_spread(replicated, groups)
+    assert rep_stats["within_sample_std"] < 1e-5

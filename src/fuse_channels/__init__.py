@@ -51,6 +51,7 @@ from .jepa import ChannelFusionJEPA, build_jepa
 from .losses import (
     cha_maevit_recon_loss,
     feature_prediction_loss,
+    feature_spread,
     normalized_patch_mse,
     patch_offsets,
     patch_row_terms,
@@ -139,6 +140,7 @@ __all__ = [
     "collate_crops",
     "describe_ablations",
     "feature_prediction_loss",
+    "feature_spread",
     "fleet_patch_sizes",
     "fractional_1d_sincos",
     "get_2d_sincos_pos_embed",

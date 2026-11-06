@@ -35,7 +35,7 @@ semantic target.
 ```
 teacher (eval, no grad; EMA copy or the student itself when use_ema=False):
     images (all C, all N) -> tokenizer_bar -> fusion_bar -> encoder_bar
-    -> H_bar[N, D] -> gather target locations -> sg(target) [K_t, D]
+    -> H_bar[N, D] -> gather target locations -> projector_bar -> sg(target) [K_t, D_proj]
 
 student:
     images (context locations; optional visible-channel subset)
@@ -46,11 +46,12 @@ predictor:
     q = mask_token + fractional_pe(target row, col, grid, step_um[d])
         + optional scale condition
     q -> decoder blocks cross-attending to memory + latents
-      -> LayerNorm -> predicted features [K_t, D]
+      -> LayerNorm -> predicted features [K_t, D] -> projector -> [K_t, D_proj]
 
 loss:
-    L1 (default) or L2 between predicted and stop-grad target features,
-    reduced per sample, plus reg_weight * regularizer(latents.mean(dim=1)).
+    L1 (default) or L2 between the projected predicted and stop-grad target
+    features, reduced per sample, plus reg_weight * regularizer(projected student
+    rows).  The projector is discarded at inference.
 ```
 
 The target is detached; only the student and predictor receive gradients.
@@ -70,22 +71,29 @@ The JEPA name is shared; the collapse-prevention mechanism is a config choice:
 | `use_ema` | `regularizer` | Meaning |
 | --- | --- | --- |
 | `True` | `"none"` | Shipped recipe: EMA target encoder + stop-gradient. |
-| `True` | `"sigreg"` / `"vicreg"` | EMA plus an auxiliary distribution regularizer on `latents.mean(dim=1)`. |
-| `False` | `"sigreg"` / `"vicreg"` | No target copy; detached student full-view target plus the regularizer. |
+| `True` | `"sigreg"` / `"vicreg"` | EMA plus an auxiliary distribution regularizer on the projected student rows. |
+| `False` | `"sigreg"` / `"vicreg"` | No target copy; detached student full-view target plus the regularizer on the projected rows. |
 
 `SIGReg` (`src/fuse_channels/regularizers.py`) is the LeJEPA Epps-Pulley
 objective: `num_slices` random unit directions, a 17-point trapezoid quadrature
 on `[-5, 5]` with the Gaussian window `exp(-t²/2)`, and an all-reduced empirical
 characteristic function for DDP. `VICReg` is the single-view variance +
 covariance regularizer; the invariance term is the prediction loss, so only
-`mu * variance_hinge + nu * covariance` is added. Both consume
-`latents.mean(dim=1)`, the fixed-size deployment representation; change that
-line if per-location collapse is the concern.
+`mu * variance_hinge + nu * covariance` is added. Both consume the **projected
+student rows** — the same tensor the prediction loss regresses — following
+VICReg (the variance/covariance terms act on the discarded expander output) and
+LeJEPA (SIGReg and the invariance loss share the projected embedding while the
+probe reads the backbone). `encode() -> latents` remains the deployment
+representation and is never constrained by the prior.
 
 Regularizer weights are not portable across methods: SIGReg, VICReg and the
-prediction loss have different numeric scales, and the SIGReg statistic grows
-with the minibatch size. Sweep `reg_weight` per regularizer rather than reusing
-the default. The local references are
+prediction loss have different numeric scales, and the statistic's value depends
+on the row count and embedding width. `SIGReg(reduce="mean")` (default) drops
+the explicit row-count factor of Algorithm 1; `reduce="sum"` reproduces the
+published statistic verbatim. `VICReg(bias_correct=True)` removes the
+`(D - 1) / (rows - 1)` covariance sampling floor. Sweep `reg_weight` per
+regularizer **and** per `(rows, D)` regime, and record that regime next to the
+number. The local references are
 `references/lejepa/paper.md` (Algorithm 1), `references/lejepa/MINIMAL.md`,
 `references/vicreg/paper.md`, and `references/visreg/paper.md`. VISReg is
 checked in as a reference but is not yet exposed by `JEPAConfig`; SIGReg and
@@ -104,6 +112,15 @@ to infer a semantic region (`references/i-jepa/paper.md`, Tables 6, 8-10).
 Target locations are removed for **all** channels, so the student cannot copy a
 partially visible token at a target position.
 
+The sampler also produces the student's **context block** — I-JEPA's second mask,
+with a different distribution from the targets. `context_scale=(1.0, 1.0)`
+(the default) makes the context the exact target complement. A lower value draws
+one large rectangle and removes the targets from it, so a border strip is neither
+target nor context; that is I-JEPA's context-size axis (Table 9: 31.2 at
+(0.40, 1.0) vs 54.2 at (0.85, 1.0)) and, in a padding-free model, also an
+encoder-cost knob. The targets are sampled *before* the context rectangle, so
+changing `context_scale` does not perturb them for a fixed seed.
+
 With `JEPAConfig.channel_dropout=True`, the student context additionally sees
 only an HCS-sampled subset of whole channels while the teacher still sees every
 channel. The target is then the full-channel fused feature, so the objective
@@ -121,11 +138,11 @@ leaks the context token at the same position.
 
 | | MAE (`ChannelFusionMAE`) | JEPA (`ChannelFusionJEPA`) |
 | --- | --- | --- |
-| Target | masked channel-patch pixels | EMA encoder per-location features |
-| Mask | DCP channel-patch visibility | multi-block target locations (+ optional whole-channel dropout) |
+| Target | masked channel-patch pixels | EMA encoder per-location features, optionally projected |
+| Mask | DCP channel-patch visibility | multi-block target locations + I-JEPA context block (+ optional whole-channel dropout) |
 | Decoder output | flattened `p²` pixels per target row | `D`-wide feature per target location |
 | Target identity | target channel embedding in the query | none; the target is channel-fused |
-| Collapse control | reconstruction objective | EMA or no-EMA + SIGReg/VICReg |
+| Collapse control | reconstruction objective | EMA or no-EMA + SIGReg/VICReg on projected rows |
 | Inference representation | `encode() -> memory, latents` | same |
 
 ## Usage
@@ -143,6 +160,12 @@ model = build_jepa(jepa=JEPAConfig(channel_dropout=True))
 # No-EMA ablation (requires a non-zero regularizer weight)
 # model = build_jepa(jepa=JEPAConfig(use_ema=False, regularizer="sigreg", reg_weight=0.1))
 
+# Disable the projector (predict in encoder feature space)
+# model = build_jepa(jepa=JEPAConfig(use_projector=False))
+
+# Restrict the student's context block (I-JEPA context-size axis)
+# model = build_jepa(jepa=JEPAConfig(context_scale=(0.5, 1.0)))
+
 opt = torch.optim.AdamW(model.parameters(), lr=1e-3)
 
 for images, ids, pixel_sizes in loader:
@@ -159,6 +182,29 @@ mem, latents = model.encode(images, ids, pixel_sizes=pixel_sizes)
 objective-specific knobs live in `JEPAConfig` because they belong to the
 predictor/target pair, not the shared backbone.
 
+## Novelty inventory
+
+This inventory separates what is taken from a reference, what is derived here,
+and what is genuinely novel. It is the honest map for a reader comparing the
+implementation against I-JEPA/V-JEPA and LeJEPA/VICReg.
+
+| Property | I-JEPA / V-JEPA | LeJEPA / VICReg | Ours | Status |
+| --- | --- | --- | --- | --- |
+| Predict in feature space | yes | yes (invariance) | yes | cited |
+| Multi-block target rectangles | yes | no masking | yes | cited |
+| Context block distinct from targets | yes | no | yes (`context_scale`) | cited (I-JEPA Table 9) |
+| EMA target encoder + stop-grad | yes | no | yes (default) | cited |
+| No-EMA masked prediction + distribution regularizer | no | no | yes | **novel** |
+| Regularizer on the aligned tensor, discarded at inference | VICReg expander | LeJEPA projector | yes | cited convention |
+| SIGReg `reduce="mean"` row convention | — | Algorithm 1 is `sum` | mean default | **derived** |
+| VICReg `bias_correct` covariance floor | — | paper uses the floor | opt-in correction | **derived** |
+| Within-sample collapse diagnostic (`feature_spread`) | — | — | yes | **novel** |
+| Channel-completion as the augmentation-free second view | — | — | yes (`channel_dropout`) | **novel** |
+| Per-location targets on a fused channel representation | — | — | yes | **novel** |
+
+The last four rows are the claims to defend in an experiment; the first six are
+borrowed machinery and should be attributed.
+
 ## What to ablate first
 
 - **Spatial targets only vs. spatial + channel dropout.** This is the direct
@@ -173,6 +219,12 @@ predictor/target pair, not the shared backbone.
   regularizer. Use the same target/mask and compare frozen probes.
 - **EMA + regularizer vs. EMA alone.** This isolates whether the regularizer
   helps on top of the EMA rather than replacing it.
+- **Projector on vs. off.** The projector is discarded at inference; on turns
+  the regularizer into a prior on a throwaway space (the reference convention),
+  off regularizes the deployment representation directly. Compare frozen probes.
+- **Context block size.** `context_scale=(0.5, 1.0)` vs `(1.0, 1.0)` is
+  I-JEPA's Table 9 axis; in a padding-free model it also changes encoder cost.
 - **Regularizer weight and slice count.** SIGReg/VICReg scales differ; do not
-  reuse one weight. SIGReg's paper ablates 256/1024/2048 slices and finds the
-  quadrature domain/point count has little effect.
+  reuse one weight. Record `(rows, D)` with the weight. SIGReg's paper ablates
+  256/1024/2048 slices and finds the quadrature domain/point count has little
+  effect.

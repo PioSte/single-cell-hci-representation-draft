@@ -64,6 +64,66 @@ def feature_prediction_loss(
     return (per_group / counts.clamp_min(1.0)).mean()
 
 
+def feature_spread(features: torch.Tensor, group_id: torch.Tensor | None = None) -> dict:
+    """Within-sample spread and effective rank of a batch of location features.
+
+    This is the diagnostic for the collapse mode that no distribution-matching
+    regularizer and no pooled probe can see: *within-sample* trivialisation,
+    where every location of an image carries the same vector while the vectors
+    of different images stay varied and isotropic.  In that state the
+    prediction loss goes to zero (the predictor reads the per-image value out of
+    its KV), ``SIGReg``/``VICReg`` are satisfied (the row distribution is
+    unchanged: it is the same value repeated), and a probe on the pooled latent
+    still looks healthy.
+
+    Args:
+        features: ``[K, D]`` per-location features (predicted or target).
+        group_id: ``[K]`` sample index per row, or ``None`` for one group.
+
+    Returns:
+        ``rows``, ``dim``, ``within_sample_std`` (mean over samples of the mean
+        per-dimension standard deviation across that sample's locations) and
+        ``effective_rank`` (participation ratio ``(Σσ²)²/Σσ⁴`` of the row
+        matrix, in ``[1, min(rows, dim)]``; 1 means the rows are all equal up to
+        scale).
+    """
+    if features.ndim != 2:
+        raise ValueError(f"features must be [K, D], got {tuple(features.shape)}")
+    rows, dim = features.shape
+    out = {
+        "rows": int(rows),
+        "dim": int(dim),
+        "within_sample_std": float("nan"),
+        "effective_rank": float("nan"),
+    }
+    if rows == 0:
+        return out
+
+    work = features.detach().float()
+    if group_id is None:
+        groups = torch.zeros(rows, dtype=torch.long, device=work.device)
+    else:
+        if group_id.numel() != rows:
+            raise ValueError(f"group_id must have {rows} entries, got {group_id.numel()}")
+        _, groups = torch.unique(group_id, return_inverse=True)
+
+    spreads = []
+    for g in range(int(groups.max().item()) + 1):
+        rows_g = work[groups == g]
+        if rows_g.shape[0] > 1:
+            spreads.append(rows_g.std(dim=0, unbiased=False).mean())
+    if spreads:
+        out["within_sample_std"] = float(torch.stack(spreads).mean())
+
+    centered = work - work.mean(dim=0, keepdim=True)
+    sv = torch.linalg.svdvals(centered)
+    power = sv.square()
+    denom = power.square().sum()
+    if float(denom) > 0.0:
+        out["effective_rank"] = float(power.sum().square() / denom)
+    return out
+
+
 def patch_offsets(patch_sizes) -> torch.Tensor:
     """Row boundaries of the flat pixel layout: ``[K + 1]`` cumulative offsets.
 

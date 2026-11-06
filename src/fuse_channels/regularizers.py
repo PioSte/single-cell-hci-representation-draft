@@ -4,17 +4,37 @@ EMA + stop-gradient is the default collapse-prevention mechanism.  A JEPA can
 instead train without an EMA target encoder and regularize the student's
 embedding distribution directly; SIGReg (LeJEPA / Epps-Pulley) and VICReg
 (variance + covariance) are the two supported ablations.  Both consume one
-``[B, D]`` batch of embeddings and return a scalar; the invariance term of
+``[rows, D]`` batch of embeddings and return a scalar; the invariance term of
 VICReg is the JEPA feature-prediction loss, not part of the regularizer.
+
+**Row convention.**  ``SIGReg`` defaults to ``reduce="mean"``, which drops the
+explicit ``* rows`` factor of Algorithm 1, so the value is not multiplied by the
+row count; ``reduce="sum"`` reproduces the published statistic verbatim.  VICReg
+is already a per-row statistic (not multiplied by the row count), but its
+covariance term carries a finite-batch floor (below).  Neither convention makes
+``reg_weight`` independent of the batch regime: record ``(rows, D)`` next to any
+weight you recommend.
+
+**Regimes matter more than the weight.**  Both statistics are *estimated from a
+finite batch*, so their value is signal plus a sampling floor that depends on
+``rows`` and ``D``:
+
+* SIGReg's minibatch bias vanishes at rate ``O(1/N)`` (the paper finds it
+  negligible from ``N=16``), and the estimator's variance grows as the row count
+  falls relative to ``D``.
+* VICReg's covariance term has expectation ``~(D-1)/(rows-1)`` even for
+  independent features, so it is never zero and its gradient asks for a
+  decorrelation the batch cannot support.  ``bias_correct=True`` removes that
+  known floor; the paper's own recipe (batch 2048, expander 8192) runs with the
+  floor in place, which is why this is opt-in rather than the default.
 
 References
 ----------
-* SIGReg: Balestriero & LeCun, *LeJEPA*, arXiv:2511.08544v3.  The implementation
-  follows Algorithm 1: ``num_slices`` random unit directions, a 17-point
-  trapezoid quadrature on ``[-5, 5]``, the standard-normal characteristic
-  function ``exp(-t**2/2)`` as both target and Gaussian window, and an
-  all-reduced empirical characteristic function for DDP.  The ``O(1/N)``
-  minibatch bias is documented in the paper.
+* SIGReg: Balestriero & LeCun, *LeJEPA*, arXiv:2511.08544v3, Algorithm 1:
+  ``num_slices`` random unit directions seeded per step, a 17-point trapezoid
+  quadrature on ``[-5, 5]``, the standard-normal characteristic function
+  ``exp(-t**2/2)`` as both target and Gaussian window, and an all-reduced
+  empirical characteristic function for DDP.
 * VICReg: Bardes, Ponce & LeCun, arXiv:2105.04906v3.  The variance hinge uses
   the batch standard deviation, not the variance, because the variance's
   gradient vanishes as the embeddings collapse.  Defaults are the paper's
@@ -23,6 +43,7 @@ References
 The scMorphJEPA reference checkout contains MIT-licensed implementations of the
 same regularizers; these are independent adaptations of the published
 equations, kept small so the loss scale is explicit and testable.
+``reduce`` (SIGReg) and ``bias_correct`` (VICReg) are ours, not from the papers.
 """
 
 from __future__ import annotations
@@ -65,16 +86,21 @@ class SIGReg(nn.Module):
     Parameters
     ----------
     num_slices:
-        Number of random unit directions.  LeJEPA's paper default is 256 and
-        its recommended starting point is 1024; 256 keeps the cost small.
+        Number of random unit directions.  LeJEPA's paper default is 256; 256
+        keeps the cost small.
     knots:
         Number of trapezoid quadrature points on ``[-t_max, t_max]``.
     t_max:
-        Integration half-width.  The paper recommends ``[-5, 5]``.
+        Integration half-width.  The paper uses ``[-5, 5]``.
+    reduce:
+        ``"mean"`` (default) divides by the row count, so the value is a
+        per-row statistic and ``reg_weight`` does not have to be retuned when
+        the batch size, the number of target locations or ``D`` changes.
+        ``"sum"`` reproduces Algorithm 1 verbatim.
 
-    Input is ``[B, D]``.  The projections are seeded from a module buffer so all
-    DDP ranks use the same directions on the same training step; the empirical
-    characteristic function is all-reduced across ranks.
+    Input is ``[rows, D]``.  The projections are seeded from a module buffer so
+    all DDP ranks use the same directions on the same training step; the
+    empirical characteristic function is all-reduced across ranks.
     """
 
     # registered buffers
@@ -82,7 +108,13 @@ class SIGReg(nn.Module):
     phi: torch.Tensor
     _step: torch.Tensor
 
-    def __init__(self, num_slices: int = 256, knots: int = 17, t_max: float = 5.0) -> None:
+    def __init__(
+        self,
+        num_slices: int = 256,
+        knots: int = 17,
+        t_max: float = 5.0,
+        reduce: str = "mean",
+    ) -> None:
         super().__init__()
         if num_slices < 1:
             raise ValueError(f"num_slices must be >= 1, got {num_slices}")
@@ -90,6 +122,9 @@ class SIGReg(nn.Module):
             raise ValueError(f"knots must be >= 2, got {knots}")
         if t_max <= 0:
             raise ValueError(f"t_max must be positive, got {t_max}")
+        if reduce not in ("mean", "sum"):
+            raise ValueError(f"reduce must be 'mean' or 'sum', got {reduce!r}")
+        self.reduce = reduce
         self.num_slices = int(num_slices)
         t = torch.linspace(-float(t_max), float(t_max), int(knots), dtype=torch.float32)
         self.register_buffer("t", t)
@@ -116,9 +151,10 @@ class SIGReg(nn.Module):
         imag = _all_reduce_mean(x_t.sin().mean(dim=0))
         ecf = torch.complex(real, imag)
         err = (ecf - self.phi).abs().square() * self.phi
-        n = z.shape[0] * world
-        statistic = torch.trapz(err, self.t, dim=-1) * n
-        return statistic.mean()
+        statistic = torch.trapz(err, self.t, dim=-1).mean()
+        if self.reduce == "sum":
+            statistic = statistic * (z.shape[0] * world)
+        return statistic
 
 
 class VICReg(nn.Module):
@@ -139,6 +175,7 @@ class VICReg(nn.Module):
         eps: float = 1e-4,
         var_weight: float = 25.0,
         cov_weight: float = 1.0,
+        bias_correct: bool = False,
     ) -> None:
         super().__init__()
         if gamma <= 0:
@@ -151,10 +188,25 @@ class VICReg(nn.Module):
         self.eps = float(eps)
         self.var_weight = float(var_weight)
         self.cov_weight = float(cov_weight)
+        self.bias_correct = bool(bias_correct)
+
+    @staticmethod
+    def covariance_floor(rows: int, dim: int) -> float:
+        """Expected covariance term for ``dim`` *independent* features, ``rows`` rows.
+
+        A sample covariance entry estimated from ``n`` rows has variance
+        ``~1/(n-1)`` under independence, and the term is the mean of the squared
+        off-diagonal entries, so the floor is ``(dim - 1) / (rows - 1)``.  It is
+        the part of the regularizer that carries no information about
+        redundancy; ``bias_correct=True`` subtracts it.
+        """
+        if rows < 2 or dim < 1:
+            return 0.0
+        return (dim - 1) / (rows - 1)
 
     def forward(self, z: torch.Tensor) -> torch.Tensor:
         if z.ndim != 2:
-            raise ValueError(f"VICReg expects [B, D], got {tuple(z.shape)}")
+            raise ValueError(f"VICReg expects [rows, D], got {tuple(z.shape)}")
         B, D = z.shape
         if B < 2:
             return z.new_zeros(())
@@ -164,6 +216,8 @@ class VICReg(nn.Module):
         var_loss = F.relu(self.gamma - std).mean()
         cov = (work.T @ work) / (B - 1)
         cov_loss = _off_diagonal(cov).pow(2).sum() / D
+        if self.bias_correct:
+            cov_loss = (cov_loss - self.covariance_floor(B, D)).clamp_min(0.0)
         return self.var_weight * var_loss + self.cov_weight * cov_loss
 
 

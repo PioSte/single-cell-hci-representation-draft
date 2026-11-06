@@ -134,10 +134,22 @@ class JEPAConfig:
     two.  ``target_scale`` is a *fraction of the grid*, not a physical extent,
     so it is independent of the realized patch size and pixel size.
 
-    ``use_ema=False`` removes the target-encoder copy and requires a non-zero
-    ``reg_weight`` for ``sigreg`` or ``vicreg``; ``reg_kwargs`` is forwarded to
-    the regularizer constructor.  With ``use_ema=True`` the regularizer is an
-    optional auxiliary term on the pooled latents.
+    ``use_ema=False`` removes the target-encoder copy; the regularizer is then
+    the only collapse-prevention mechanism and ``reg_weight`` must be non-zero.
+    Either way the regularizer consumes the predicted rows the loss regresses
+    (see :class:`~fuse_channels.jepa.ChannelFusionJEPA`), not the pooled latents.
+    ``reg_kwargs`` is forwarded to the regularizer constructor.
+
+    ``reg_weight`` is a *per-row* weight and is only meaningful together with the
+    number of rows and the embedding width it was tuned at: SIGReg's statistic
+    scales with the row count, and VICReg's covariance term carries a
+    ``(D - 1) / (rows - 1)`` sampling floor.  Record the regime with the weight.
+
+    ``context_scale`` is the fraction of the grid the student's context block may
+    be drawn from, before target removal (I-JEPA's context block, scale
+    0.85-1.0 there).  ``(1.0, 1.0)`` makes the context the exact target
+    complement; lower values additionally drop a random border strip, which is a
+    partial-field-of-view and encoder-cost knob.
     """
 
     loss: str = "l1"
@@ -146,10 +158,13 @@ class JEPAConfig:
     regularizer: str = "none"
     reg_weight: float = 0.0
     reg_kwargs: dict[str, Any] = field(default_factory=dict)
+    use_projector: bool = True
+    proj_dim: int | None = None
+    proj_hidden: int | None = None
     target_blocks: int = 4
     target_scale: tuple[float, float] = (0.15, 0.2)
     target_aspect: tuple[float, float] = (0.75, 1.5)
-    context_scale: tuple[float, float] = (0.85, 1.0)
+    context_scale: tuple[float, float] = (1.0, 1.0)
     channel_dropout: bool = False
     min_visible_channels: int = 1
 
@@ -167,9 +182,13 @@ class JEPAConfig:
         if not self.use_ema and (self.regularizer == "none" or self.reg_weight <= 0):
             raise ValueError(
                 "use_ema=False needs a non-zero regularizer weight "
-                "('sigreg' or 'vicreg'); EMA is otherwise the only "
-                "collapse-prevention mechanism"
+                "('sigreg' or 'vicreg'): without the EMA target encoder the "
+                "regularizer is the only collapse-prevention mechanism left"
             )
+        for name in ("proj_dim", "proj_hidden"):
+            value = getattr(self, name)
+            if value is not None and value < 1:
+                raise ValueError(f"{name} must be >= 1 or None, got {value}")
         if self.target_blocks < 1:
             raise ValueError(f"target_blocks must be >= 1, got {self.target_blocks}")
         for name, (lo, hi) in (

@@ -331,25 +331,42 @@ class DCPVisibilitySampler:
 
 
 class MultiBlockTargetSampler:
-    """I-JEPA/V-JEPA-style multi-block target locations for a JEPA objective.
+    """I-JEPA/V-JEPA-style multi-block target and context locations.
 
-    Unlike :class:`DCPVisibilitySampler`, this samples **locations** rather than
-    per-channel channel-patches.  A target location is removed from the context
-    for *all* channels, so the predictor cannot read a partially visible token
-    at the target position.  The complement is the spatial context; an optional
-    context rectangle (``context_scale``) can leave a border that is neither
-    target nor context.
+    A JEPA needs **two** masks with different distributions, and they answer
+    different questions:
 
-    The target is a union of ``n_blocks`` rectangles with scale sampled from
-    ``target_scale`` and aspect ratio from ``target_aspect``.  That follows
-    I-JEPA's finding that a few large, semantic blocks are better than random
-    patch masking.  The context is the remaining locations (optionally inside a
-    sampled context rectangle), with a guard that both target and context are
-    non-empty even on very small grids.
+    ``target``
+        what the predictor must infer.  A union of ``n_blocks`` rectangles with
+        area fraction from ``target_scale`` and aspect ratio from
+        ``target_aspect``, following I-JEPA's finding that a few large semantic
+        blocks beat random patch masking (Table 6: 54.2 vs 17.6 top-1 at 1%
+        labels).  Removed for *all* channels, so no partially visible token is
+        left at a target position.
 
-    Channel selection is deliberately *not* part of this sampler:
+    ``context``
+        what the student encoder may see.  One rectangle with area fraction from
+        ``context_scale`` (unit aspect) minus every target location.  This is
+        I-JEPA's context block (0.85-1.0 there); its size is a real axis —
+        I-JEPA Table 9: 31.2 at (0.40, 1.0), 54.2 at (0.85, 1.0).
+
+    Unlike :class:`DCPVisibilitySampler`, both masks are over **locations**, not
+    per-channel channel-patches: after channel fusion there is one feature per
+    location, so a per-channel mask would define no target set and would leave
+    the fused token visible.
+
+    ``context_scale=(1.0, 1.0)`` (the default) makes the context the exact
+    complement of the targets, which is what a target-only masker produces and
+    what I-JEPA's best context row reports.  Any lower value additionally drops
+    a randomly placed border strip that is neither target nor context, which
+    shrinks the student's token count (encoder cost) and restricts its field of
+    view.  Channel selection is deliberately *not* part of this sampler:
     :class:`~fuse_channels.jepa.ChannelFusionJEPA` applies optional whole-channel
     dropout to the context with :class:`HierarchicalChannelSampler`.
+
+    Both masks are guarded non-empty: an empty target reveals one location, and
+    an empty context reveals one non-target location (or, on a grid fully
+    covered by targets, releases one target).
     """
 
     def __init__(
@@ -357,7 +374,7 @@ class MultiBlockTargetSampler:
         n_blocks: int = 4,
         target_scale: tuple[float, float] = (0.15, 0.2),
         target_aspect: tuple[float, float] = (0.75, 1.5),
-        context_scale: tuple[float, float] = (0.85, 1.0),
+        context_scale: tuple[float, float] = (1.0, 1.0),
     ) -> None:
         if n_blocks < 1:
             raise ValueError(f"n_blocks must be >= 1, got {n_blocks}")
@@ -387,20 +404,23 @@ class MultiBlockTargetSampler:
         c0 = int(torch.randint(0, gw - w + 1, (1,), device=device, generator=generator).item())
         return r0, r0 + h, c0, c0 + w
 
-    def __call__(self, grid_hw: Sequence[tuple[int, int]], generator=None):
-        """Return ``(target, context)`` lists of ``[N_b]`` boolean location masks.
+    @property
+    def _whole_grid_context(self) -> bool:
+        """True when the context is the target complement (no rectangle drawn)."""
+        return self.context_scale == (1.0, 1.0)
 
-        ``grid_hw`` is one ``(grid_h, grid_w)`` pair per sample.  ``target``
-        marks locations to predict; ``context`` marks locations the student
-        encoder may see.  The two are disjoint by construction.
-        """
+    def _pick(self, free: torch.Tensor, device, generator) -> tuple[int, int]:
+        index = int(torch.randint(free.shape[0], (1,), device=device, generator=generator).item())
+        row, col = free[index].tolist()
+        return int(row), int(col)
+
+    def sample_targets(self, grid_hw: Sequence[tuple[int, int]], generator=None):
+        """Return one ``[N_b]`` boolean target-location mask per sample."""
         device = generator.device if generator is not None else torch.device("cpu")
-        out_target: list[torch.Tensor] = []
-        out_context: list[torch.Tensor] = []
+        out: list[torch.Tensor] = []
         for gh, gw in grid_hw:
             gh, gw = int(gh), int(gw)
-            N = gh * gw
-            if N < 1:
+            if gh * gw < 1:
                 raise ValueError(f"grid {(gh, gw)} leaves no locations")
             target = torch.zeros(gh, gw, dtype=torch.bool, device=device)
             for _ in range(self.n_blocks):
@@ -408,30 +428,56 @@ class MultiBlockTargetSampler:
                 aspect = self._uniform(*self.target_aspect, device, generator)
                 r0, r1, c0, c1 = self._rect(gh, gw, scale, aspect, device, generator)
                 target[r0:r1, c0:c1] = True
-
-            scale = self._uniform(*self.context_scale, device, generator)
-            context = torch.zeros(gh, gw, dtype=torch.bool, device=device)
-            if scale >= 1.0:
-                context[:] = True
-            else:
-                r0, r1, c0, c1 = self._rect(gh, gw, scale, 1.0, device, generator)
-                context[r0:r1, c0:c1] = True
-
-            # Guards: target non-empty, context non-empty, and disjoint.
             if not bool(target.any()):
                 target.view(-1)[0] = True
-            context = context & ~target
-            if not bool(context.any()):
-                free = (~target).nonzero(as_tuple=False)
-                if free.numel() == 0:
-                    # Tiny grid covered by target blocks: release one location.
-                    target.view(-1)[-1] = False
-                    free = (~target).nonzero(as_tuple=False)
-                pick = int(
-                    torch.randint(free.shape[0], (1,), device=device, generator=generator).item()
-                )
-                context[tuple(free[pick].tolist())] = True
+            out.append(target.reshape(-1))
+        return out
 
-            out_target.append(target.reshape(-1))
-            out_context.append(context.reshape(-1))
-        return out_target, out_context
+    def context_masks(self, target, grid_hw: Sequence[tuple[int, int]], generator=None):
+        """Return ``(context, target)`` location masks for one sample-group.
+
+        ``target`` is one ``[N_b]`` mask per sample, either from
+        :meth:`sample_targets` or supplied by the caller; it is returned
+        alongside the context because a grid fully covered by targets forces one
+        target location to be released (there would be no context at all).  The
+        context is disjoint from every target and non-empty.  At
+        ``context_scale=(1.0, 1.0)`` this draws no random numbers, so changing
+        any other mask knob leaves the sampled targets bit-identical; below it,
+        one context rectangle is drawn per sample.
+        """
+        device = generator.device if generator is not None else torch.device("cpu")
+        out: list[torch.Tensor] = []
+        released: list[torch.Tensor] = []
+        for t, (gh, gw) in zip(target, grid_hw, strict=True):
+            gh, gw = int(gh), int(gw)
+            t = t.reshape(gh, gw).to(device=device, dtype=torch.bool)
+            if self._whole_grid_context:
+                context = ~t
+            else:
+                scale = self._uniform(*self.context_scale, device, generator)
+                r0, r1, c0, c1 = self._rect(gh, gw, scale, 1.0, device, generator)
+                context = torch.zeros(gh, gw, dtype=torch.bool, device=device)
+                context[r0:r1, c0:c1] = True
+                context &= ~t
+            if not bool(context.any()):
+                free = (~t).nonzero(as_tuple=False)
+                if free.numel() == 0:
+                    # Grid fully covered by targets: release one target location.
+                    t = t.clone()
+                    t.view(-1)[-1] = False
+                    free = (~t).nonzero(as_tuple=False)
+                context[self._pick(free, device, generator)] = True
+            out.append(context.reshape(-1))
+            released.append(t.reshape(-1))
+        return out, released
+
+    def __call__(self, grid_hw: Sequence[tuple[int, int]], generator=None):
+        """Return ``(target, context)`` lists of ``[N_b]`` boolean location masks.
+
+        ``grid_hw`` is one ``(grid_h, grid_w)`` pair per sample.  ``target``
+        marks locations to predict; ``context`` marks locations the student
+        encoder may see.  The two are disjoint by construction.
+        """
+        target = self.sample_targets(grid_hw, generator=generator)
+        context, target = self.context_masks(target, grid_hw, generator=generator)
+        return target, context
