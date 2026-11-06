@@ -1,4 +1,4 @@
-# fuse-channels
+# single-cell-hci-representation-draft
 
 A PyTorch implementation of the **padding-free channel-fusion tokenizer** for a
 high-content-imaging (HCI) foundation model, plus a channel-aware Masked

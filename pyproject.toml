@@ -1,5 +1,5 @@
 [project]
-name = "fuse-channels"
+name = "single-cell-hci-representation-draft"
 version = "0.1.0"
 description = "Padding-free channel-set fusion tokenizer for high-content-imaging foundation models"
 readme = "README.md"
