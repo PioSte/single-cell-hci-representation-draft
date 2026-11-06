@@ -657,3 +657,7 @@ identity/content balance is patch-size invariant, a placement deviation from
 ChannelViT's additive token that keeps its finding that per-channel identity is
 load-bearing; and the acceptance claims are limited to what the tests cover. Rationale, trade-offs,
 and the corrected reference claims are in [`docs/design.md`](docs/design.md).
+
+## License
+
+Apache License 2.0 — see [`LICENSE`](LICENSE).
