@@ -39,7 +39,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 from figure_style import (  # noqa: E402
-    GREEN, INK, MUTED, CHANNEL_COLORS,
+    GREEN, INK, MUTED, CHANNEL_COLORS, GHOST, LOSS,
     TOKENIZER, FUSION, ENCODER, FUSED,
     tint, rrect, box, arrow, edge_label, sq_bracket_mirror,
     token_rows, grid_cells, legend, channel_legend, padded_ghost,
@@ -75,7 +75,7 @@ LIST_TOP = LIST_BOT + 3 * _LIST_TAB_H + 2 * LIST_GAP
 
 # channel fusion (grouped_pool_attention) + its primitive annotation
 FUSE_BOX_Y = 33.8
-FUSE_BOX_H = 5.2
+FUSE_BOX_H = 6.2
 ANNOT_Y = 32.4
 
 # fused vectors, one per present (b, n)
@@ -119,6 +119,10 @@ def draw_input(ax):
         ax.plot([xx + 0.8, xx + cw - 0.8],
                 [INPUT_TILE_Y + cw - 1.0, INPUT_TILE_Y + 0.8],
                 color=c, lw=0.9, alpha=0.4, zorder=4)
+    rrect(ax, 54.5, 62.6, 19.0, 6.8, edge=GHOST, face="none", lw=1.0,
+          dashed=True, rounding=0.4, z=2)
+    ax.text(53.8, 66.5, "input set $[\\Sigma C, 1, H, W]$", ha="right",
+            va="center", fontsize=5.8, color=MUTED)
     ax.text(CX, INPUT_LABEL_Y, "$C_b$ channels · order-free",
             ha="center", va="center", fontsize=7.8, color=MUTED)
 
@@ -134,10 +138,19 @@ def draw_token_list(ax):
         col = CHANNEL_COLORS[c]
         rrect(ax, x_list, y_block, LIST_BAR_W, _LIST_TAB_H, edge=col, face=col,
               lw=0.8, rounding=0.15, z=4)
+        specs = [(FUSED, False)] * N_PATCH
+        if c == 2:
+            specs = [(FUSED, False), (FUSED, False), (LOSS, True)]
         token_rows(ax, x_list + LIST_BAR_W, y_block, LIST_W - LIST_BAR_W,
-                   LIST_H_ROW, LIST_PITCH, [(FUSED, False)] * N_PATCH,
+                   LIST_H_ROW, LIST_PITCH, specs,
                    rounding=0.2, z=3)
         y_block += _LIST_TAB_H + LIST_GAP
+
+    # dashed top row = omitted (masked) token; name it explicitly
+    omitted_y = (LIST_BOT + 2 * (_LIST_TAB_H + LIST_GAP)
+                 + 2 * LIST_PITCH + LIST_H_ROW / 2)
+    ax.text(x_list - 0.6, omitted_y, "omitted", ha="right", va="center",
+            fontsize=5.2, color=LOSS, style="italic", zorder=5)
 
     # bracket to the RIGHT of the stack: ticks point left to embrace it
     sq_bracket_mirror(ax, x_list + LIST_W + 0.6, LIST_BOT, LIST_TOP)
@@ -145,7 +158,7 @@ def draw_token_list(ax):
             "$[V, D]$", ha="left", va="center",
             fontsize=7.2, color=FUSED, fontweight="bold")
     ax.text(x_list + LIST_W + 1.2, (LIST_BOT + LIST_TOP) / 2 - 1.4,
-            "visible rows only\n$V \\leq \\Sigma C{\\cdot}N$",
+            "visible rows only\n$V \\leq \\Sigma_b C_b{\\cdot}N_b$",
             ha="left", va="center", fontsize=5.8, color=MUTED,
             linespacing=1.3)
 
@@ -174,27 +187,32 @@ def draw_fused(ax):
 # --------------------------------------------------------------------------- #
 def draw_panel(ax):
     """The single padding-free hero panel."""
-    rrect(ax, FRAME_X, FRAME_Y, FRAME_W, FRAME_H, edge=GREEN,
-          face=tint(GREEN, 0.965), lw=2.2, rounding=1.0, z=0)
+    rrect(ax, FRAME_X, FRAME_Y, FRAME_W, FRAME_H, edge=GHOST,
+          face=tint(GHOST, 0.96), lw=2.2, rounding=1.0, z=0)
+    ax.text(CX, 72.0, "ChannelFusionTokenizer", ha="center", va="center",
+            fontsize=7.8, fontweight="bold", color=INK)
 
     draw_input(ax)
 
     # tokenizer path: tied conv (PI-resized kernel); identity carried separately
-    arrow(ax, (CX, INPUT_TILE_Y), (CX, LIST_TOP + 0.3), color=TOKENIZER, lw=1.5)
-    ax.text(CX + 2.2, (INPUT_TILE_Y + LIST_TOP) / 2,
-            "tied conv · kernel PI-resized\ncontent token; carry $z_c$",
+    arrow(ax, (CX, 63.0), (CX, LIST_TOP + 0.3), color=TOKENIZER, lw=1.5)
+    ax.text(CX + 2.2, 59.0,
+            "tied conv · kernel PI-resized\n"
+            "when $p \\neq P$ (identity at the shipped $P$)\n"
+            "content token; carry $z_c$",
             ha="left", va="center", fontsize=6.0, color=TOKENIZER,
             linespacing=1.3)
 
     draw_token_list(ax)
 
     # channel fusion -- the O(C) primitive lives here
-    box(ax, X0, FUSE_BOX_Y, COL_W, FUSE_BOX_H, "Channel fusion",
+    box(ax, X0, FUSE_BOX_Y, COL_W, FUSE_BOX_H, "ChannelFusion",
         "one shared query · $W_Q/W_K/W_V$ to $D_{attn}\\!=\\!3D$ · proj_out\n"
-        "no fusion PE · $O(C{\\cdot}D{\\cdot}D_{attn})$ per location",
+        "identity routing bias + output skip · no fusion PE\n"
+        "$O(C{\\cdot}D{\\cdot}D_{attn}) + O(D{\\cdot}D_{attn})$ per location",
         edge=FUSION,
         title_size=7.8, sub_size=5.9)
-    ax.text(CX, ANNOT_Y, "grouped_pool_attention", ha="center", va="center",
+    ax.text(CX - 8.0, ANNOT_Y, "grouped_pool_attention", ha="center", va="center",
             fontsize=7.0, color=INK, family="monospace", fontweight="bold",
             zorder=7,
             bbox=dict(boxstyle="round,pad=0.15", facecolor="white",
@@ -219,8 +237,8 @@ def draw_panel(ax):
             va="center", fontsize=5.8, color=MUTED)
 
     # takeaway
-    rrect(ax, X0, TAKEAWAY_Y, COL_W, TAKEAWAY_H, edge=GREEN,
-          face=tint(GREEN, 0.88), lw=1.5, rounding=0.5, z=2)
+    rrect(ax, X0, TAKEAWAY_Y, COL_W, TAKEAWAY_H, edge=GHOST,
+          face=tint(GHOST, 0.90), lw=1.5, rounding=0.5, z=2)
     ax.text(CX, TAKEAWAY_Y + TAKEAWAY_H / 2,
             "One fused token per $(b,n)$ location;\n"
             "$O(B{\\cdot}N{\\cdot}D)$ memory — independent of $C$",
@@ -235,34 +253,35 @@ _GLOSSARY = [
     ("$B$", "batch size"),
     ("$C_b$", "channels in sample $b$ (order-free)"),
     ("$\\Sigma C$", "total channels in the batch"),
+    ("$H, W$", "image side (square)"),
     ("$N$", "patches per channel"),
     ("$D$", "token / embedding dim"),
     ("$M$", "memory tokens per sample"),
-    ("$V$", "visible channel-patches ($\\leq \\Sigma C{\\cdot}N$)"),
+    ("$P$", "canonical patch size"),
+    ("$p$", "runtime patch size"),
+    ("$V$", "visible channel-patches ($\\leq \\sum_b C_b{\\cdot}N_b$)"),
     ("$K_f$", "present $(b,n)$ locations ($\\leq B{\\cdot}N$)"),
     ("$z_c$", "channel identity (routing bias + skip)"),
-    ("PMA", "pooled multi-head attn, shared query"),
+    ("PE", "positional embedding"),
+    ("$D_{attn}$", "attention dimension (= 3D)"),
     ("RoPE", "2-D axial rotary position on $(row,col)$"),
-    ("DCP", "dynamic channel-patch masking (L5)"),
-    ("ghost", "dashed $[B,C_{\\max},N,D]$ — NEVER ALLOCATED; "
-              "no dense tensor is built"),
 ]
 
 
 def draw_glossary(ax):
     """Compact symbol glossary in the lower-left band."""
-    gx, gy, gw, gh = 3.0, 9.0, 38.0, 30.8
+    gx, gy, gw, gh = 3.0, 9.0, 38.0, 32.0
     rrect(ax, gx, gy, gw, gh, edge=MUTED, face="#FFFFFF", lw=1.0,
           rounding=0.6, z=1)
     ax.text(gx + 2.0, gy + gh - 1.6, "symbols / glossary", ha="left", va="center",
             fontsize=6.8, fontweight="bold", color=INK)
-    y = gy + gh - 3.6
+    y = gy + gh - 3.4
     for term, definition in _GLOSSARY:
         ax.text(gx + 2.0, y, term, ha="left", va="center", fontsize=5.9,
                 fontweight="bold", color=INK, zorder=4)
         ax.text(gx + 8.5, y, definition, ha="left", va="center", fontsize=5.7,
                 color=MUTED, zorder=4)
-        y -= 2.0
+        y -= 1.9
 
 
 # --------------------------------------------------------------------------- #
@@ -273,43 +292,47 @@ def draw_legends(ax):
         ax, 3.0, 70.5,
         [
             ("tokenizer: tied conv; carry $z_c$", TOKENIZER, "fill"),
+            ("visible channel-patch tokens $[V,D]$", FUSED, "cross"),
             ("channel fusion (grouped_pool_attention)", FUSION, "fill"),
             ("encoder: TransformerEncoder + RoPE", ENCODER, "fill"),
             ("fused vectors $[K_f,D]$", FUSED, "cross"),
         ],
         title="module roles", pitch=2.4, fontsize=6.3, sw=1.3,
     )
-    channel_legend(ax, 3.0, 50.0, n=3, title="channel identity",
+    channel_legend(ax, 3.0, 50.0, n=3, title="token colour = channel identity",
                    pitch=2.4, fontsize=6.3, sw=1.3)
     legend(
         ax, 88.0, 70.5,
         [
-            ("crossed cell = kept token (data tensor)", FUSED, "cross"),
-            ("dashed $[B,C_{\\max},N,D]$ = NEVER ALLOCATED;\n"
+            ("crossed cell = token row $[V,D]$ (channel colour)\n"
+             "or fused row $[K_f,D]$ (blue)", FUSED, "cross"),
+            ("dashed row = omitted (masked) token;\n"
+             "never zeroed / padded", LOSS, "omit"),
+            ("dashed ghost $[B,C_{\\max},N,D]$ = NEVER ALLOCATED;\n"
              "no dense tensor is built", MUTED, "ghost"),
         ],
-        title="visual key", pitch=2.4, fontsize=6.3, sw=1.3,
+        title="visual key", pitch=2.9, fontsize=6.3, sw=1.3,
     )
 
     # short notes fill the side bands with shipped-code facts only
-    rrect(ax, 88.0, 49.0, 37.0, 12.5, edge=MUTED, face="#FFFFFF", lw=1.0,
+    rrect(ax, 88.0, 50.2, 28.0, 6.4, edge=MUTED, face="#FFFFFF", lw=1.0,
           rounding=0.6, z=1)
-    ax.text(106.5, 60.0, "masking convention", ha="center", va="center",
-            fontsize=6.8, fontweight="bold", color=INK)
-    ax.text(106.5, 53.6,
-            "missing / masked channel-patches\nare absent from the token list;\n"
-            "only visible rows are used",
-            ha="center", va="center", fontsize=6.2, color=MUTED,
+    ax.text(102.0, 55.0, "masking convention", ha="center", va="center",
+            fontsize=6.6, fontweight="bold", color=INK)
+    ax.text(102.0, 52.2,
+            "masked rows are omitted\n(never zeroed or padded)",
+            ha="center", va="center", fontsize=6.0, color=MUTED,
             linespacing=1.4)
 
-    rrect(ax, 88.0, 33.0, 37.0, 13.0, edge=GREEN, face=tint(GREEN, 0.95),
+    rrect(ax, 88.0, 30.4, 28.0, 7.6, edge=GHOST, face=tint(GHOST, 0.95),
           lw=1.0, rounding=0.6, z=1)
-    ax.text(106.5, 44.0, "padding-free by construction", ha="center",
-            va="center", fontsize=6.8, fontweight="bold", color=INK)
-    ax.text(106.5, 37.7,
-            "fusion consumes the token list\ndirectly: $O(C{\\cdot}D)+D^2$ per $(b,n)$ —\n"
+    ax.text(102.0, 36.5, "padding-free by construction", ha="center",
+            va="center", fontsize=6.6, fontweight="bold", color=INK)
+    ax.text(102.0, 33.1,
+            "fusion consumes the token list directly:\n"
+            "$O(C{\\cdot}D{\\cdot}D_{attn})+O(D{\\cdot}D_{attn})$ per $(b,n)$ —\n"
             "$O(C)$ scaling, not dense $C{\\times}C$; output indep. of $C$",
-            ha="center", va="center", fontsize=6.2, color=MUTED,
+            ha="center", va="center", fontsize=6.0, color=MUTED,
             linespacing=1.4)
 
 

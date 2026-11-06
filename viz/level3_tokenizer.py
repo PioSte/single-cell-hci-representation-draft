@@ -6,12 +6,14 @@ content token instead of being added to it.  Emphasizes:
 
 - Tokenizer and fusion add **no** spatial table; the encoder supplies 2-D axial
   RoPE on normalized `(row, col)`, and the decoder a fractional absolute PE.
-- The Conv2d kernel is stored at a canonical `P` and **PI-resized** to each
-  sample's patch size `p_b`; each sample has `N_b = (H/p_b)^2` patches.
+- The Conv2d kernel is stored at a canonical `P` and **PI-resized** only when
+  `p_b != P` (identity at the shipped `P`); each sample has
+  `N_b = floor(H/p_b) * floor(W/p_b)` patches, the border smaller than `p_b`
+  being cropped.
 - `z_c` is indexed by the dataset-level `channel_id`, not the panel position.
 - DCP-omitted tokens are rejected at flatten as absent rows; they have no
   content token and no `z_c` entry.
-- The output is one concatenated token list `[V, D]` (`V <= sum C * N_b`).
+- The output is one concatenated token list `[V, D]` (`V <= sum_b C_b * N_b`).
 
 Usage::
 
@@ -70,8 +72,11 @@ def draw_identity_card(ax, x, y, w, h, color, label):
     """
     rrect(ax, x, y, w, h, edge=color, face=tint(color, 0.75), lw=1.5,
           rounding=0.4, crossed=True)
+    # white backing keeps the label legible where it crosses the diagonals
     ax.text(x + w / 2, y + h / 2, label, ha="center", va="center",
-            fontsize=8.0, fontweight="bold", color=INK, zorder=4)
+            fontsize=8.0, fontweight="bold", color=INK, zorder=5,
+            bbox=dict(boxstyle="round,pad=0.10", facecolor="white",
+                      edgecolor="none", alpha=0.88))
 
 
 def dashed_route(ax, pts, color=INK, lw=1.4):
@@ -100,19 +105,22 @@ def build() -> plt.Figure:
     ax.text(6.5, 77.5, "Tokenizer: channel-tied patch embed + channel identity (carried separately)",
             ha="left", va="center", fontsize=12.2, fontweight="bold", color=INK)
     ax.text(2, 73.8,
-            "Two channels share one PI-resized projection W; each looks up its own "
-            "z_c, carried alongside the content token (fusion routing bias + skip); "
-            "no spatial table.",
+            "Two channels share one projection kernel $\\theta$ (PI-resized only "
+            "when $p_b \\neq P$); "
+            "each looks up its own z_c, carried alongside the content token "
+            "(fusion routing bias + skip); no spatial table.",
             ha="left", va="center", fontsize=7.4, color=MUTED, style="italic")
     ax.text(2, 70.9,
-            "No spatial table in tokenizer or fusion  |  encoder = 2-D axial RoPE  "
-            "|  decoder = fractional abs PE  |  DCP-omitted rows are absent",
+            "No spatial table in tokenizer or fusion  |  encoder = 2-D axial RoPE "
+            "(rotary PE)  |  decoder = fractional absolute PE  |  "
+            "DCP-omitted rows are absent",
             ha="left", va="center", fontsize=7.2, color=RED, style="italic",
             fontweight="bold")
     ax.text(2, 67.9,
-            "Shapes:  $[1,H,W]$  \u2192  Conv2d($P \\to p_b$, PI-resized)  \u2192  "
-            "$[N_b, D]$ content  +  $z_c$ $[D]$ carried  \u2192  flat "
-            "$[V,D]$ tokens + $[V,D]$ channel_embed,  $V \\leq \\Sigma C \\cdot N_b$",
+            "Shapes:  $[1,H,W]$  \u2192  Conv2d($P \\to p_b$; PI-resized only if "
+            "$p_b \\neq P$)  \u2192  $[N_b, D]$ content  +  $z_c$ $[D]$ carried  \u2192  "
+            "flat $[V,D]$ tokens + $[V,D]$ channel_embed,  "
+            "$V \\leq \\Sigma_b C_b \\cdot N_b$",
             ha="left", va="center", fontsize=6.8, color=INK)
 
     # ---- Shared geometry: both lanes on one grid -------------------------- #
@@ -156,16 +164,19 @@ def build() -> plt.Figure:
         arrow(ax, (stack_x + stack_w, yc), (z_x, yc), color=color)
         ax.text((stack_x + stack_w + z_x) / 2, yc + 2.0, "content", ha="center",
                 va="center", fontsize=6.2, color=MUTED, style="italic")
-        z_cy = yc + (-6.0 if lane == 0 else -3.5)
+        # card sits ON the lane so the content arrow enters its left edge and
+        # leaves its right edge (no arrow stopping mid-air)
+        z_cy = yc
         draw_identity_card(ax, z_x, z_cy - z_h / 2, z_w, z_h, color,
                            f"$z_{{c_{lane}}}$")
-        label_dy = 0.8 if lane == 0 else -1.4
-        ax.text(z_x + z_w + 0.6, z_cy + label_dy,
+        ax.text(z_x + z_w + 0.6, z_cy + 3.2,
                 "carried, not added", ha="left", va="center",
                 fontsize=6.0, color=MUTED)
-        ax.text(z_x + z_w + 0.6, z_cy + label_dy - 2.6,
-                f"channel id  \u00b7  $[D]$", ha="left", va="center",
-                fontsize=6.0, color=MUTED)
+        ax.text(z_x + z_w + 0.6, z_cy + 1.4,
+                "channel_id $\\to z_c$ $[D]$", ha="left", va="center",
+                fontsize=6.0, color=MUTED, zorder=5,
+                bbox=dict(boxstyle="round,pad=0.10", facecolor="white",
+                          edgecolor="none", alpha=0.88))
 
         # -> per-channel content tokens: still N_b rows, still [N_b, D]
         arrow(ax, (z_x + z_w, yc), (out_x, yc), color=color)
@@ -178,7 +189,7 @@ def build() -> plt.Figure:
 
     # ---- Merged output object --------------------------------------------- #
     # The two per-channel [N_b, D] blocks concatenate into ONE token list
-    # ChannelSet.tokens [V, D] (V <= sum C * N_b) with omitted rows dropped.
+    # ChannelSet.tokens [V, D] (V <= sum_b C_b * N_b) with omitted rows dropped.
     br_x = out_x + stack_w + 1.4
     y_lo = lane_yc[1] - stack_htot / 2
     y_hi = lane_yc[0] + stack_htot / 2
@@ -191,9 +202,6 @@ def build() -> plt.Figure:
             va="center", fontsize=6.4, color=MUTED)
     ax.text(br_x + 1.4, (y_lo + y_hi) / 2 - 3.6,
             "+ channel_embed $[V,D]$ (parallel)", ha="left", va="center",
-            fontsize=6.2, color=MUTED)
-    ax.text(br_x + 1.4, (y_lo + y_hi) / 2 - 5.8,
-            "$V \\leq \\Sigma C \\cdot N_b$", ha="left", va="center",
             fontsize=6.2, color=MUTED)
 
     # annotate the omitted row on the (upper) projected stack of channel 1:
@@ -223,14 +231,15 @@ def build() -> plt.Figure:
             color=INK, zorder=4)
     ax.text(cx, 54.4, "canonical kernel P", ha="center", va="center",
             fontsize=6.6, color=MUTED, zorder=4)
-    ax.text(cx, 52.1, "stride $p_b$ (per sample)", ha="center", va="center",
+    ax.text(cx, 52.1, "stride $p_b$", ha="center", va="center",
             fontsize=6.6, color=MUTED, zorder=4)
     ax.plot([cx - 2.8, cx + 2.8], [49.5, 49.5], color=TOKENIZER, lw=1.0,
             linestyle=(0, (3, 2)), zorder=4)
-    ax.text(cx, 46.6, "PI-resize  $P \\to p_b$", ha="center", va="center",
-            fontsize=6.8, fontweight="bold", color=TOKENIZER, zorder=4)
-    ax.text(cx, 42.8, "shared W", ha="center", va="center", fontsize=7.6,
-            fontweight="bold", color=TOKENIZER, zorder=4)
+    ax.text(cx, 46.6, "PI-resize if $p_b \\neq P$", ha="center",
+            va="center", fontsize=6.6, fontweight="bold", color=TOKENIZER,
+            zorder=4)
+    ax.text(cx, 42.8, "shared kernel $\\theta$", ha="center", va="center",
+            fontsize=7.0, fontweight="bold", color=TOKENIZER, zorder=4)
     ax.text(cx, 38.4, "one kernel for\nevery channel", ha="center", va="center",
             fontsize=6.3, color=MUTED, zorder=4, linespacing=1.5)
     ax.text(cx, 33.6, "(tied across\nchannels)", ha="center", va="center",
@@ -249,24 +258,25 @@ def build() -> plt.Figure:
     dashed_route(ax, [(emb_x + emb_w * 0.5, emb_y + emb_h),
                       (emb_x + emb_w * 0.5, 64.0),
                       (z_x + 3.0, 64.0),
-                      (z_x + 3.0, lane_yc[0] - 6.0 + z_h / 2)],
+                      (z_x + 3.0, lane_yc[0] + z_h / 2)],
                  color=lane_color[0])
     dashed_route(ax, [(emb_x + emb_w * 0.12, emb_y),
                       (emb_x + emb_w * 0.12, 20.0),
                       (z_x + 3.0, 20.0),
-                      (z_x + 3.0, lane_yc[1] - 3.5 - z_h / 2)],
+                      (z_x + 3.0, lane_yc[1] - z_h / 2)],
                  color=lane_color[1])
 
     # ---- Identity handling (centre band, clear of everything) ------------- #
-    rrect(ax, 29.0, 38.5, 12.0, 9.0, edge=MUTED, face=tint(MUTED, 0.97),
+    rrect(ax, 28.3, 37.0, 14.4, 11.0, edge=MUTED, face=tint(MUTED, 0.97),
           lw=1.1, dashed=True, rounding=0.5, z=2)
-    ax.text(35.0, 45.4, "identity", ha="center", va="center",
+    ax.text(35.5, 46.0, "identity", ha="center", va="center",
             fontsize=6.4, fontweight="bold", color=INK, zorder=4)
-    ax.text(35.0, 42.9, "(per channel)", ha="center", va="center",
+    ax.text(35.5, 43.3, "(per channel)", ha="center", va="center",
             fontsize=6.4, fontweight="bold", color=INK, zorder=4)
-    ax.text(35.0, 40.1, "not summed into token\nfusion: logits $+=$ bias\n"
-            "fused $+=$ skip",
-            ha="center", va="center", fontsize=5.4, color=MUTED, zorder=4,
+    ax.text(35.5, 40.2, "not summed into token content\n"
+            "routing bias: logits $+=$ bias\n"
+            "output skip: fused $+=$ skip",
+            ha="center", va="center", fontsize=5.2, color=MUTED, zorder=4,
             linespacing=1.4)
 
     # ---- DCP omission strip (full width) ---------------------------------- #
@@ -284,17 +294,17 @@ def build() -> plt.Figure:
     ax.text(strip_x + 2.0, strip_y + 2.6, "omitted\nrow", ha="left", va="center",
             fontsize=5.7, color=RED, style="italic", zorder=4, linespacing=1.4)
 
-    ax.text(strip_x + 12.5, strip_y + 11.2,
-            "Masked channel-patch tokens are removed from the token list "
-            "$[V, D]$.", ha="left", va="center", fontsize=6.4, color=INK,
+    ax.text(strip_x + 12.5, strip_y + 11.6,
+            "Conv2d runs on every patch; the visible mask then selects which "
+            "rows survive.", ha="left", va="center", fontsize=6.4, color=INK,
             zorder=4)
-    ax.text(strip_x + 12.5, strip_y + 8.4,
-            "Omission happens at flatten: masked rows have no content token "
-            "and no $z_c$ entry.", ha="left", va="center", fontsize=6.4,
-            color=INK, zorder=4)
-    ax.text(strip_x + 12.5, strip_y + 5.6,
-            "$V \\leq \\Sigma C \\cdot N_b$  \u00b7  omitted rows are absent, "
-            "never zeroed.", ha="left", va="center", fontsize=6.4,
+    ax.text(strip_x + 12.5, strip_y + 8.8,
+            "Omission = row selection after the conv: a dropped row is never "
+            "zeroed, and owns no $z_c$.", ha="left", va="center",
+            fontsize=6.4, color=INK, zorder=4)
+    ax.text(strip_x + 12.5, strip_y + 6.0,
+            "Absent rows are not concatenated into the flat token list "
+            "$[V, D]$.", ha="left", va="center", fontsize=6.4,
             color=MUTED, zorder=4)
 
     # ---- symbols / glossary (bottom strip, right centre) ------------------ #
@@ -303,21 +313,39 @@ def build() -> plt.Figure:
           rounding=0.5, z=3)
     ax.text(nx + 1.5, ny + nh - 1.9, "symbols / glossary", ha="left",
             va="center", fontsize=6.6, fontweight="bold", color=INK, zorder=4)
-    notes = [
-        "$B$=samples, $C_b$=channels/sample, $\\Sigma C=\\sum_b C_b$, "
-        "$C_{\\max}=\\max_b C_b$",
-        "$N_b=(H/p_b)^2$, $N=\\max_b N_b$, $D$=token dim, "
-        "$V$=visible channel-patch tokens",
-        "$P$=canonical kernel, $p_b$=per-sample patch; "
-        "PI-resize = pseudoinverse $P\\to p_b$",
-        "$z_c$=channel identity (routing bias + output skip); "
-        "DCP omission = drop rows (never zero)",
+    glossary = [
+        (59.5, [
+            ("$B$", "batch (samples)"),
+            ("$C_b$ / $C$", "channels, sample $b$ / count"),
+            ("$C_{\\max}$", "max$_b\\,C_b$"),
+            ("$D$", "token / embedding dim"),
+            ("$H,\\,W$", "image side (square)"),
+        ]),
+        (80.0, [
+            ("$N_b$", "$\\lfloor H/p_b\\rfloor\\cdot\\lfloor W/p_b\\rfloor$; "
+                     "border cropped"),
+            ("$N$", "max$_b\\,N_b$"),
+            ("$V$", "visible channel-patch tokens"),
+            ("$P$", "canonical kernel size"),
+            ("$p_b$", "per-sample patch size"),
+        ]),
+        (100.5, [
+            ("$\\theta$", "shared Conv2d kernel"),
+            ("$z_c$", "channel identity (bias + skip)"),
+            ("PI-resize", "FlexiViT kernel resize if $p_b\\neq P$"),
+            ("PE", "positional embedding"),
+            ("RoPE", "2-D axial rotary PE"),
+            ("DCP", "omission = omit rows, never zero"),
+        ]),
     ]
-    note_y = ny + nh - 4.2
-    for note in notes:
-        ax.text(nx + 1.5, note_y, note, ha="left", va="center",
-                fontsize=5.8, color=MUTED, zorder=4)
-        note_y -= 2.2
+    y0, pitch, off = ny + nh - 3.7, 1.72, 6.6
+    for col_x, entries in glossary:
+        for i, (sym, meaning) in enumerate(entries):
+            yy = y0 - i * pitch
+            ax.text(col_x, yy, sym, ha="left", va="center", fontsize=5.4,
+                    fontweight="bold", color=INK, zorder=4)
+            ax.text(col_x + off, yy, meaning, ha="left", va="center",
+                    fontsize=5.2, color=MUTED, zorder=4)
 
     # dashed ghost of the padded tensor that is never allocated/built
     # dashed ghost: the padded tensor is never allocated nor built
@@ -326,21 +354,22 @@ def build() -> plt.Figure:
 
     # ---- Right column ----------------------------------------------------- #
     # Key design points
-    leg_x, leg_y, leg_w, leg_h = 110.0, 52.0, 38.0, 26.0
+    leg_x, leg_y, leg_w, leg_h = 110.0, 54.0, 38.0, 23.5
     rrect(ax, leg_x, leg_y, leg_w, leg_h, edge=INK, face=tint(INK, 0.97),
           lw=1.3, rounding=0.6, z=2)
-    ax.text(leg_x + leg_w / 2, leg_y + leg_h - 2.8, "Key design points",
+    ax.text(leg_x + leg_w / 2, leg_y + leg_h - 2.7, "Key design points",
             ha="center", va="center", fontsize=8.6, fontweight="bold", color=INK)
 
     bullets = [
-        "\u2022 One shared Conv2d kernel W; PI-resized $P \\to p_b$ per sample",
+        "\u2022 One shared Conv2d kernel $\\theta$; PI-resized $P \\to p_b$ when "
+        "$p_b \\neq P$",
         "\u2022 No spatial table here: encoder = 2-D axial RoPE",
         "\u2022 Decoder = fractional absolute PE (no grid table)",
         "\u2022 $z_c$ = Embedding(channel_id), not panel position",
         "\u2022 DCP omission \u2192 row absent from the list",
-        "\u2022 $C$ lives only in the list length $V \\leq \\Sigma C \\cdot N_b$",
+        "\u2022 $C$ enters only as the list length $V$ (visible rows)",
     ]
-    bullet_y = leg_y + leg_h - 6.0
+    bullet_y = leg_y + leg_h - 5.9
     for bullet in bullets:
         ax.text(leg_x + 1.8, bullet_y, bullet, ha="left", va="center",
                 fontsize=6.5, color=INK)
@@ -357,15 +386,15 @@ def build() -> plt.Figure:
                    pitch=2.4, sw=1.4, fontsize=6.2)
 
     # Output-object note (fills the lower-right quadrant, reinforces [V, D])
-    rrect(ax, 110.0, 26.0, 38.0, 14.0, edge=INK, face=tint(INK, 0.97),
+    rrect(ax, 110.0, 28.0, 38.0, 12.0, edge=INK, face=tint(INK, 0.97),
           lw=1.3, rounding=0.6, z=2)
     ax.text(129.0, 37.4, "One flat token list", ha="center", va="center",
             fontsize=8.0, fontweight="bold", color=INK)
-    ax.text(112.0, 34.4, "one concatenated ChannelSet.tokens list",
+    ax.text(112.0, 34.7, "one concatenated ChannelSet.tokens list",
             ha="left", va="center", fontsize=6.3, color=INK)
-    ax.text(112.0, 31.9, "$[V, D]$,  $V \\leq \\Sigma C \\cdot N_b$ after masking",
+    ax.text(112.0, 32.2, "content tokens $[V, D]$  ++  parallel channel_embed $[V, D]$",
             ha="left", va="center", fontsize=6.3, color=INK)
-    ax.text(112.0, 29.4, "masked rows absent (no content, no $z_c$)",
+    ax.text(112.0, 29.7, "masked rows absent (no content, no $z_c$)",
             ha="left", va="center", fontsize=6.3, color=MUTED)
 
     return fig
