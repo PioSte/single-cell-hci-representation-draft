@@ -467,9 +467,22 @@ class ChannelFusionMAE(nn.Module):
         return torch.stack([log_p, log_pixel_size], dim=-1)
 
     def _prepare(
-        self, images, channel_ids, visible, generator, patch_sizes, pixel_sizes=None, valid=None
+        self,
+        images,
+        channel_ids,
+        visible,
+        generator,
+        patch_sizes,
+        pixel_sizes=None,
+        valid=None,
+        tokenizer=None,
     ):
-        """Resolve sizes, draw the DCP mask, and apply the off-cell token mask.
+        """Resolve sizes, draw/accept the visibility mask, and apply the cell mask.
+
+        ``visible=None`` draws the DCP mask through ``self.masker``; callers
+        with an explicit mask (the JEPA target encoder passes an all-ones mask)
+        bypass that draw.  ``tokenizer`` overrides the student tokenizer, which
+        is how the JEPA target encoder gets its own copy of the embedding table.
 
         ``valid`` is an optional per-sample ``[N_b]`` boolean mask in full-grid
         row-major order (cell-token mask, *not* an MAE visibility mask).  It
@@ -523,7 +536,8 @@ class ChannelFusionMAE(nn.Module):
             )
             self._warned_nonmetric = True
 
-        cs = self.tokenizer(
+        tokenizer = self.tokenizer if tokenizer is None else tokenizer
+        cs = tokenizer(
             images,
             channel_ids,
             visible=visible,
@@ -532,9 +546,17 @@ class ChannelFusionMAE(nn.Module):
         )
         return cs, ps, ns, visible, target_valid, pixel_sizes
 
-    def _encode(self, cs, ps, scale_emb=None):
+    def _fuse_and_encode(self, cs, scale_emb=None, *, fusion=None, encoder=None):
+        """Fuse channels and run one encoder pass over present locations.
+
+        The student and the JEPA target encoder share this path; only the
+        modules differ.  It returns the per-token sequence (before spatial
+        pooling), which is the JEPA target.
+        """
+        fusion = self.fusion if fusion is None else fusion
+        encoder = self.encoder if encoder is None else encoder
         # fusion already returns one vector per present location: [Kf, D]
-        enc_tokens, present = self.fusion(cs)
+        enc_tokens, present = fusion(cs)
         B = cs.n_samples
         present_bi = present.nonzero(as_tuple=False)  # [Kf, 2]
         # ``present`` indexes ``enc_tokens`` by construction (both count the
@@ -559,7 +581,7 @@ class ChannelFusionMAE(nn.Module):
                 cols,
                 gh,
                 gw,
-                self.encoder.dim // self.encoder.n_heads,
+                encoder.dim // encoder.n_heads,
                 base=self.rope_base,
                 ref_extent=self.rope_ref_extent,
                 shared_extent=self.rope_shared_extent,
@@ -575,7 +597,14 @@ class ChannelFusionMAE(nn.Module):
             cond_enc = scale_emb[present_bi[:, 0]]
 
         enc_group_id = present_bi[:, 0]
-        mem_out, tok_out = self.encoder(enc_tokens, enc_group_id, B, rope=rope, cond=cond_enc)
+        mem_out, tok_out = encoder(enc_tokens, enc_group_id, B, rope=rope, cond=cond_enc)
+        return enc_tokens, present, mem_out, tok_out, enc_group_id, present_bi
+
+    def _encode(self, cs, ps, scale_emb=None):
+        enc_tokens, present, mem_out, tok_out, enc_group_id, present_bi = self._fuse_and_encode(
+            cs, scale_emb
+        )
+        B = cs.n_samples
         # Spatial pooling to fixed size latent.  ``tok_out`` is not part of the
         # decoder KV; only the pooled latents (and the memory tokens) are.
         latents = self.latent_pooler(tok_out, enc_group_id, B).reshape(
@@ -590,6 +619,27 @@ class ChannelFusionMAE(nn.Module):
             enc_group_id,
             present_bi,
         )
+
+    def _decoder_kv(self, mem_out, latents):
+        """Assemble the selectable decoder KV from memory and pooled latents."""
+        B = latents.shape[0]
+        device = latents.device
+        kv_parts, kv_groups = [], []
+        samples = torch.arange(B, device=device)
+        if "memory" in self.decoder_kv_components:
+            kv_parts.append(mem_out)
+            kv_groups.append(samples.repeat_interleave(self.encoder.n_memory))
+        if "latents" in self.decoder_kv_components:
+            kv_parts.append(latents.reshape(-1, latents.shape[-1]))
+            kv_groups.append(samples.repeat_interleave(self.n_latents))
+        D = latents.shape[-1]
+        enc_all = torch.cat(kv_parts, dim=0) if kv_parts else latents.new_zeros(0, D)
+        enc_all_group_id = (
+            torch.cat(kv_groups, dim=0)
+            if kv_groups
+            else torch.empty(0, dtype=torch.long, device=device)
+        )
+        return enc_all, enc_all_group_id
 
     def _target_step_um(self, cs, tgt_group_id, tgt_p, pixel_sizes):
         """``patch_size * µm_per_px`` per decoder target, or ``None``.
@@ -668,21 +718,7 @@ class ChannelFusionMAE(nn.Module):
         # (``self.decoder_kv_components``).  Each component is appended with its own
         # per-sample group ids; the default (both) is the shipped KV
         # ``[B·(n_memory + n_latents), D]``.
-        kv_parts, kv_groups = [], []
-        samples = torch.arange(B, device=device)
-        if "memory" in self.decoder_kv_components:
-            kv_parts.append(mem_out)
-            kv_groups.append(samples.repeat_interleave(self.encoder.n_memory))
-        if "latents" in self.decoder_kv_components:
-            kv_parts.append(latents.reshape(-1, latents.shape[-1]))
-            kv_groups.append(samples.repeat_interleave(self.n_latents))
-        D = latents.shape[-1]
-        enc_all = torch.cat(kv_parts, dim=0) if kv_parts else latents.new_zeros(0, D)
-        enc_all_group_id = (
-            torch.cat(kv_groups, dim=0)
-            if kv_groups
-            else torch.empty(0, dtype=torch.long, device=device)
-        )
+        enc_all, enc_all_group_id = self._decoder_kv(mem_out, latents)
 
         # -- decoder targets: the masked channel-patches ------------------ #
         counts = torch.tensor([im.shape[0] for im in images], device=device)

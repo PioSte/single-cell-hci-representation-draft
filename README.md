@@ -2,7 +2,8 @@
 
 A PyTorch implementation of the **padding-free channel-fusion tokenizer** for a
 high-content-imaging (HCI) foundation model, plus a channel-aware Masked
-Autoencoder (MAE) built on top of it.
+Autoencoder (MAE) and a joint-embedding predictive (JEPA) objective built on
+the same backbone.
 
 The tokenizer supports the variable-patch-size target described in
 [`FLEXIVIT.md`](FLEXIVIT.md). FlexiViT (Beyer et al., *One Model for All Patch
@@ -267,6 +268,46 @@ per-channel tied Conv2d(1 -> D) patch embed, PI-resized to the current p
   `loss="cha_maevit"` selects the ChA-MAEViT ablation: raw-pixel L2 plus
   Fourier-amplitude L1 (`lambda_f=0.01`).
 
+## JEPA objective
+
+`ChannelFusionJEPA` keeps this backbone and changes the objective from pixel
+reconstruction to feature prediction. The target is the **EMA target encoder's
+per-location, channel-fused token feature**, computed from the fully observed
+input (all channels, all patches); the student sees a multi-block spatial
+context, optionally with whole-channel dropout, and the existing decoder blocks
+predict the removed target features from the pooled latents + memory. The
+target is stop-grad, the target encoder is EMA-updated, and the loss is L1
+(default) or L2 in feature space.
+
+Collapse prevention is a config choice: the shipped recipe is an EMA target
+encoder with stop-gradient, but the JEPA path also supports `use_ema=False`
+with a **SIGReg** (LeJEPA Epps-Pulley) or **VICReg** variance/covariance
+regularizer. Both regularizers act on the pooled `latents.mean(dim=1)` and are
+returned as separate `jepa_loss` / `reg_loss` terms.
+
+This keeps the JEPA target channel-permutation invariant and padding-free, and
+it keeps the predictor's fractional positional PE load-bearing. It also means
+the target is a *location* representation, not a per-channel one: after channel
+fusion there is no per-channel feature to predict. DCP's per-channel patch mask
+is therefore not reused as the JEPA mask; a multi-block location sampler and
+optional HCS channel dropout replace it. The overview, the EMA/no-EMA and
+regularizer matrix, and the training-loop contract are in
+**[`docs/jepa.md`](docs/jepa.md)**.
+
+```python
+from fuse_channels import JEPAConfig, build_jepa
+
+model = build_jepa(jepa=JEPAConfig(channel_dropout=True))
+# Regularizer ablation:
+# model = build_jepa(jepa=JEPAConfig(regularizer="sigreg", reg_weight=0.1))
+# No-EMA ablation (requires a non-zero regularizer weight):
+# model = build_jepa(jepa=JEPAConfig(use_ema=False, regularizer="sigreg", reg_weight=0.1))
+out = model(images, ids, pixel_sizes=pixel_sizes)
+out["loss"].backward()
+opt.step()
+model.update_target_encoder()   # no-op when use_ema=False
+```
+
 ### Why a learned channel-embedding table
 
 A learned table is the width-efficient parameterization of the same additive
@@ -376,6 +417,11 @@ Backbone invariants (`dim`, `n_heads`, `dropout`, `adaln`) live once in
 cannot drift between modules. See `docs/design.md` §10 for the split and the
 ablation policy.
 
+The JEPA path uses the same `ModelConfig` backbone and a separate `JEPAConfig`
+for objective-specific knobs (feature loss, EMA momentum, block-mask geometry,
+channel dropout). `build_jepa(base, jepa, **overrides)` combines them; see
+[`docs/jepa.md`](docs/jepa.md).
+
 ### Just the fusion module
 
 ```python
@@ -461,15 +507,19 @@ keys).
 | `src/fuse_channels/pos_embed.py` | fractional absolute PE plus legacy learned/sincos tables |
 | `src/fuse_channels/encoder.py` | `TransformerEncoder` / `TransformerBlock` with memory tokens |
 | `src/fuse_channels/decoder.py` | `ChannelAwareDecoder` / `DecoderBlock` |
-| `src/fuse_channels/masking.py` | `DCPVisibilitySampler` (Eq. 1) and `HierarchicalChannelSampler` (HCS) |
-| `src/fuse_channels/losses.py` | `normalized_patch_mse`, `cha_maevit_recon_loss`, flat-layout `patch_offsets` / `patch_row_terms` |
+| `src/fuse_channels/masking.py` | `DCPVisibilitySampler` (Eq. 1), `HierarchicalChannelSampler` (HCS), and the JEPA `MultiBlockTargetSampler` |
+| `src/fuse_channels/losses.py` | `normalized_patch_mse`, `cha_maevit_recon_loss`, `feature_prediction_loss`, flat-layout `patch_offsets` / `patch_row_terms` |
 | `src/fuse_channels/mae.py` | `ChannelFusionMAE` end-to-end |
-| `src/fuse_channels/config.py` | `SharedCore` / `EncoderConfig` / `DecoderConfig` / `ModelConfig`, the ablation registry, and the shared-core split contract |
+| `src/fuse_channels/jepa.py` | `ChannelFusionJEPA` and `build_jepa` |
+| `src/fuse_channels/regularizers.py` | JEPA collapse regularizers: `SIGReg`, `VICReg`, `NoReg` |
+| `src/fuse_channels/config.py` | `SharedCore` / `EncoderConfig` / `DecoderConfig` / `JEPAConfig` / `ModelConfig`, the ablation registry, and the shared-core split contract |
 | `src/fuse_channels/data.py` | `SyntheticChannelDataset` and `collate_fn` for examples/tests |
 | `examples/linear_probe.py` | frozen-encoder linear probe on a synthetic channel-presence label |
 | `examples/train_mae.py` | synthetic variable-channel MAE training loop |
+| `examples/train_jepa.py` | synthetic variable-channel JEPA training loop (incl. EMA update) |
 | `examples/benchmark_fusion.py` | fusion throughput comparison at `C = 60` |
 | `docs/design.md` | design rationale, reference corrections, deviations |
+| `docs/jepa.md` | JEPA target/predictor overview and ablation matrix |
 
 `_dense_fusion_reference` is a test/viz-only dense-padded reference used to
 prove the padding-free math; it is not part of the model path or the public API.
@@ -521,6 +571,16 @@ Covered by `tests/`:
 - loss variants (`test_losses.py`) and the frozen linear-probe smoke test
   (`test_linear_probe.py`)
 - single-batch MAE loss decreases (`test_overfit_single_batch`)
+- JEPA path (`tests/test_jepa.py`): feature target is stop-grad, the target
+  encoder sees every location, the target is channel-permutation invariant and
+  independent of `C`, the EMA update matches the student weights, optional
+  channel dropout runs, the feature loss reduction is exact, no-EMA +
+  SIGReg/VICReg runs, and a fixed batch overfits; the MAE path still trains in
+  the same suite
+- regularizers (`tests/test_regularizers.py`): SIGReg is differentiable and
+  prefers a Gaussian batch over a collapsed one; VICReg matches the paper
+  formula and penalizes collapse; the registry and `JEPAConfig` validation are
+  covered
 
 The cost comparison is an example, not a test:
 `examples/benchmark_fusion.py` reports wall-clock for attention vs.
@@ -530,6 +590,11 @@ identity-gated fusion at `C = 60`.
 
 * `examples/train_mae.py` trains on a synthetic variable-channel dataset; it
   does not assert an overfit threshold.
+* `ChannelFusionJEPA` holds its target encoder out of the optimizer
+  (`requires_grad=False`) and keeps it in eval mode. Call
+  `update_target_encoder()` after `optimizer.step()`; the helper is in
+  `src/fuse_channels/jepa.py` and the training contract is summarised in
+  `docs/jepa.md`.
 * The default `head_mode="per_p"` changes decoder state-dict keys from
   `decoder.head.head.*` to `decoder.head.heads.<p>.*`. Load an older
   checkpoint with `head_mode="canonical"`, or remap the output head.

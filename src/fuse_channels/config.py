@@ -53,6 +53,7 @@ flat constructor call.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any
@@ -120,6 +121,68 @@ class DecoderConfig:
     head_mode: str = "per_p"
     head_resample: str = "area"
     head_patch_size: int | None = None
+
+
+@dataclass(frozen=True)
+class JEPAConfig:
+    """Objective-specific knobs for :class:`~fuse_channels.jepa.ChannelFusionJEPA`.
+
+    These deliberately do not live in :class:`ModelConfig`: they parameterise
+    the JEPA predictor/target pair and its multi-block mask, not the shared
+    channel-fusion backbone.  The backbone is still authored by
+    :class:`ModelConfig`; :func:`fuse_channels.jepa.build_jepa` combines the
+    two.  ``target_scale`` is a *fraction of the grid*, not a physical extent,
+    so it is independent of the realized patch size and pixel size.
+
+    ``use_ema=False`` removes the target-encoder copy and requires a non-zero
+    ``reg_weight`` for ``sigreg`` or ``vicreg``; ``reg_kwargs`` is forwarded to
+    the regularizer constructor.  With ``use_ema=True`` the regularizer is an
+    optional auxiliary term on the pooled latents.
+    """
+
+    loss: str = "l1"
+    use_ema: bool = True
+    ema_momentum: float = 0.996
+    regularizer: str = "none"
+    reg_weight: float = 0.0
+    reg_kwargs: dict[str, Any] = field(default_factory=dict)
+    target_blocks: int = 4
+    target_scale: tuple[float, float] = (0.15, 0.2)
+    target_aspect: tuple[float, float] = (0.75, 1.5)
+    context_scale: tuple[float, float] = (0.85, 1.0)
+    channel_dropout: bool = False
+    min_visible_channels: int = 1
+
+    def __post_init__(self) -> None:
+        if self.loss not in ("l1", "l2"):
+            raise ValueError(f"unknown JEPA loss '{self.loss}'; expected 'l1' or 'l2'")
+        if not 0.0 <= self.ema_momentum < 1.0:
+            raise ValueError(f"ema_momentum must be in [0, 1), got {self.ema_momentum}")
+        if self.regularizer not in ("none", "sigreg", "vicreg"):
+            raise ValueError(
+                f"unknown regularizer '{self.regularizer}'; expected 'none', 'sigreg' or 'vicreg'"
+            )
+        if not math.isfinite(self.reg_weight) or self.reg_weight < 0:
+            raise ValueError(f"reg_weight must be finite and non-negative, got {self.reg_weight}")
+        if not self.use_ema and (self.regularizer == "none" or self.reg_weight <= 0):
+            raise ValueError(
+                "use_ema=False needs a non-zero regularizer weight "
+                "('sigreg' or 'vicreg'); EMA is otherwise the only "
+                "collapse-prevention mechanism"
+            )
+        if self.target_blocks < 1:
+            raise ValueError(f"target_blocks must be >= 1, got {self.target_blocks}")
+        for name, (lo, hi) in (
+            ("target_scale", self.target_scale),
+            ("context_scale", self.context_scale),
+        ):
+            if not 0.0 < lo <= hi <= 1.0:
+                raise ValueError(f"{name} must satisfy 0 < lo <= hi <= 1, got {(lo, hi)}")
+        alo, ahi = self.target_aspect
+        if not 0.0 < alo <= ahi:
+            raise ValueError(f"target_aspect must satisfy 0 < lo <= hi, got {self.target_aspect}")
+        if self.min_visible_channels < 1:
+            raise ValueError(f"min_visible_channels must be >= 1, got {self.min_visible_channels}")
 
 
 @dataclass(frozen=True)

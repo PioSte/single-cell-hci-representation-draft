@@ -483,6 +483,49 @@ class ChannelAwareDecoder(nn.Module):
             return self.mask_token.new_zeros(target_patch.shape[0], self.mask_token.shape[0])
         return self.spatial_pos[target_patch]
 
+    def predict_features(
+        self,
+        enc_tokens: torch.Tensor,
+        enc_group_id: torch.Tensor,
+        n_samples: int,
+        target_group_id: torch.Tensor,
+        target_patch: torch.Tensor,
+        *,
+        target_row=None,
+        target_col=None,
+        target_grid_h=None,
+        target_grid_w=None,
+        target_step_um=None,
+        target_condition: torch.Tensor | None = None,
+        cond: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Predict a feature vector per target location (JEPA predictor).
+
+        This is the feature-space counterpart of :meth:`forward`: the query is
+        ``mask_token + target PE + target_condition``, with no per-channel
+        identity term because the JEPA target is the channel-fused location
+        representation.  The final LayerNorm makes the prediction comparable to
+        the target encoder's final token output; no reconstruction head is
+        applied.
+        """
+        q = self.mask_token + self._target_pe(
+            target_patch,
+            target_row,
+            target_col,
+            target_grid_h,
+            target_grid_w,
+            target_step_um=target_step_um,
+        )
+        if target_condition is not None:
+            q = q + target_condition
+        for blk in self.blocks:
+            q = blk(q, target_group_id, enc_tokens, enc_group_id, n_samples, cond=cond)
+        h = self.norm(q)
+        if self.adaln and cond is not None:
+            gamma, beta = self.mod_out(cond).chunk(2, dim=-1)
+            h = h * (1.0 + gamma) + beta
+        return h
+
     def forward(
         self,
         enc_tokens: torch.Tensor,

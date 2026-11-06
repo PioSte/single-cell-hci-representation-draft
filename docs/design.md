@@ -295,6 +295,9 @@ Other details:
 * Masking omits rows from the flattened `[ΣC·N, D]` tensor. No mask tokens and
   no attention masks are used. The encoder receives one token per present
   location; fully dropped locations disappear from its input.
+* The JEPA path does not use DCP. `MultiBlockTargetSampler` samples large
+  location targets and removes them for every channel; optional HCS channel
+  dropout is applied to the context only. See §7.1 and `docs/jepa.md`.
 
 ## 6. Decoder target identity and self-attention
 
@@ -354,6 +357,32 @@ channel-patches only (the reconstruction targets) and neither applies
 per-channel normalization. The ablation is selectable rather than default so
 the reference objective can be compared without changing the baseline MAE
 recipe.
+
+### 7.1 JEPA: feature prediction instead of pixel reconstruction
+
+`ChannelFusionJEPA` (`src/fuse_channels/jepa.py`) keeps the same tokenizer,
+fusion, encoder, spatial pooler, and decoder blocks but predicts a learned
+target instead of pixels. The target is the **EMA target encoder's final
+per-location token feature** from the fully observed input; the student sees a
+multi-block spatial context and optionally a reduced channel set, and the
+decoder blocks predict the removed features from the pooled latents + memory.
+The target is stop-grad and the target encoder is EMA-updated. The EMA can be
+replaced by a no-EMA path with a SIGReg or VICReg regularizer on the pooled
+latents; SIGReg follows LeJEPA's Epps-Pulley implementation (256 slices, 17
+trapezoid knots on `[-5, 5]`, Gaussian window, all-reduced sufficient
+statistic). `docs/jepa.md` is the overview and the normative contract for the
+target, predictor, mask and collapse control; `src/fuse_channels/jepa.py`,
+`src/fuse_channels/regularizers.py`, and
+`src/fuse_channels/masking.py::MultiBlockTargetSampler` are the code.
+
+The target must be per-location and channel-fused. After `ChannelFusion` there
+is no per-channel feature, and the pooled `[B, L, D]` latents are a global
+summary that is already the predictor's KV; using them as the target would
+remove the local error signal that makes the predictor's fractional PE useful.
+DCP's per-channel patch mask is likewise not reused: a JEPA target set is a set
+of *locations*, so the multi-block sampler removes a location for all channels
+and the optional HCS channel dropout creates the channel-completion signal. The
+MAE path is unchanged and remains the pixel-reconstruction reference.
 
 ## 8. `IdentityGatedSum`: naming and the ablation
 
@@ -422,6 +451,10 @@ hoisted:
 `adaln` is derived from `scale_conditioning`; it travels in `SharedCore` so the
 encoder and decoder cannot disagree, but it is not a flat keyword. Prefer
 changing `scale_conditioning`, not `SharedCore.adaln` directly.
+`JEPAConfig` is deliberately separate: its EMA momentum, feature loss, block
+mask geometry and channel dropout parameterise the JEPA target/predictor pair,
+not the shared backbone. `ModelConfig` still authors the backbone, and
+`build_jepa` combines the two.
 
 **Why not inheritance or a full flat mirror.** Dataclass inheritance would make
 each subconfig a complete recipe but duplicates the core values in every leaf

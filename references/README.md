@@ -36,6 +36,9 @@ commands below are enough to reproduce the conversion.
 | Revisiting Feature Prediction for Learning Visual Representations from Video (V-JEPA) | [2404.08471](https://arxiv.org/abs/2404.08471) | [`v-jepa/paper.md`](v-jepa/paper.md) | 16 | `doc:fb84f79` |
 | V-JEPA 2: Self-Supervised Video Models Enable Understanding, Prediction and Planning | [2506.09985](https://arxiv.org/abs/2506.09985) | [`v-jepa-2/paper.md`](v-jepa-2/paper.md) | 35 | `doc:9cfcfde` |
 | scMorphJEPA: Self-Supervised Cell Morphology Learning via Spatial Joint-Embedding Predictive Architecture | [GitHub](https://github.com/simo1946/scMorphJEPA) | [`scmorphjepa/README.md`](scmorphjepa/README.md) | — | — |
+| LeJEPA: Provable and Scalable Self-Supervised Learning Without the Heuristics | [2511.08544](https://arxiv.org/abs/2511.08544) | [`lejepa/paper.md`](lejepa/paper.md) | 47 | `doc:fe06b54` |
+| VICReg: Variance-Invariance-Covariance Regularization for Self-Supervised Learning | [2105.04906](https://arxiv.org/abs/2105.04906) | [`vicreg/paper.md`](vicreg/paper.md) | 10 | `doc:c227c29` |
+| VISReg: Variance-Invariance-Sketching Regularization for JEPA training | [2606.02572](https://arxiv.org/abs/2606.02572) | [`visreg/paper.md`](visreg/paper.md) | 10 | `doc:0f0b3e3` |
 
 Tables are inline in each `paper.md` (markdown and/or HTML). Figure blocks that
 MinerU marked as images/charts are exported as PNG from the PDF, and the
@@ -45,6 +48,8 @@ scMorphJEPA has no paper or PDF; its reference implementation is checked out
 in place (commit `a0e028c`, 2026-07-17), with `README.md` as the entry point.
 SCJEPA is an LMRL workshop submission at ICLR 2026 and should be treated as
 provisional. The CR-DINO PDF is the publisher's Crossref text-mining copy.
+LeJEPA also ships the official compact reference implementation, saved
+verbatim at [`lejepa/MINIMAL.md`](lejepa/MINIMAL.md).
 
 ## Reproduce
 
@@ -78,7 +83,14 @@ done <<'IDS'
 2301.08243 i-jepa
 2404.08471 v-jepa
 2506.09985 v-jepa-2
+2511.08544 lejepa
+2105.04906 vicreg
+2606.02572 visreg
 IDS
+# LeJEPA also ships an official compact reference implementation:
+curl -L --fail -o references/lejepa/MINIMAL.md \
+  'https://raw.githubusercontent.com/galilai-group/lejepa/main/MINIMAL.md'
+
 # ESM-2 is a bioRxiv preprint, not arXiv:
 curl -L --fail -o references/esm-2/esm-2.pdf \
   'https://www.biorxiv.org/content/10.1101/2022.07.20.500902v3.full.pdf'
@@ -138,6 +150,9 @@ done <<'IDS'
 eddbdc0 i-jepa
 fb84f79 v-jepa
 9cfcfde v-jepa-2
+fe06b54 lejepa
+c227c29 vicreg
+0f0b3e3 visreg
 IDS
 ```
 

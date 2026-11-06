@@ -5,6 +5,7 @@ from .config import (
     DEFAULT_CONFIG,
     DecoderConfig,
     EncoderConfig,
+    JEPAConfig,
     ModelConfig,
     SharedCore,
     ablated_config,
@@ -46,14 +47,20 @@ from .fusion import (
     MultiheadAttentionPooling,
 )
 from .identity import ChannelEmbedding
+from .jepa import ChannelFusionJEPA, build_jepa
 from .losses import (
     cha_maevit_recon_loss,
+    feature_prediction_loss,
     normalized_patch_mse,
     patch_offsets,
     patch_row_terms,
 )
 from .mae import ChannelFusionMAE
-from .masking import DCPVisibilitySampler, HierarchicalChannelSampler
+from .masking import (
+    DCPVisibilitySampler,
+    HierarchicalChannelSampler,
+    MultiBlockTargetSampler,
+)
 from .ops import (
     grouped_attention,
     grouped_cross_attention,
@@ -72,6 +79,7 @@ from .pos_embed import (
     get_2d_sincos_pos_embed,
     get_fractional_sincos_pos_embed,
 )
+from .regularizers import NoReg, SIGReg, VICReg, build_regularizer
 from .rope import (
     apply_rope,
     axial_rope_cache,
@@ -91,6 +99,7 @@ __all__ = [
     "ChannelAwareDecoder",
     "ChannelEmbedding",
     "ChannelFusion",
+    "ChannelFusionJEPA",
     "ChannelFusionMAE",
     "ChannelFusionTokenizer",
     "ChannelSet",
@@ -104,17 +113,24 @@ __all__ = [
     "FractionalSpatialPE",
     "HierarchicalChannelSampler",
     "IdentityGatedSum",
+    "JEPAConfig",
     "ModelConfig",
+    "MultiBlockTargetSampler",
     "MultiheadAttentionPooling",
+    "NoReg",
+    "SIGReg",
     "SharedCore",
     "TiffStack",
     "TransformerBlock",
     "TransformerEncoder",
+    "VICReg",
     "ablated_config",
     "add_spatial_pos",
     "apply_rope",
     "axial_rope_cache",
+    "build_jepa",
     "build_model",
+    "build_regularizer",
     "build_spatial_pos",
     "canonical_fleet_pixel_size",
     "canonical_patch_size_for",
@@ -122,6 +138,7 @@ __all__ = [
     "cha_maevit_recon_loss",
     "collate_crops",
     "describe_ablations",
+    "feature_prediction_loss",
     "fleet_patch_sizes",
     "fractional_1d_sincos",
     "get_2d_sincos_pos_embed",

@@ -16,6 +16,54 @@ import torch
 import torch.nn.functional as F
 
 
+def feature_prediction_loss(
+    pred: torch.Tensor,
+    target: torch.Tensor,
+    group_id: torch.Tensor | None = None,
+    *,
+    kind: str = "l1",
+    reduce: str = "sample",
+) -> torch.Tensor:
+    """JEPA feature-prediction loss over real rows (no padding).
+
+    ``pred`` and ``target`` are ``[K, D]`` predicted and stop-grad target
+    features.  The target encoder's final LayerNorm already normalises each
+    row, so no per-patch normalisation is applied here.  ``kind='l1'`` follows
+    V-JEPA's more stable regression; ``kind='l2'`` is the I-JEPA reference.
+
+    ``reduce='sample'`` gives every sample one vote: rows are averaged within
+    each group in ``group_id`` and the group means are averaged.  This is the
+    same deployment-unit argument as the MAE loss (a cell-sized crop is one
+    sample), and it stops large crops with more target locations from
+    dominating the gradient.  ``reduce='token'`` weights every target row
+    equally.
+    """
+    if pred.shape != target.shape:
+        raise ValueError(
+            f"pred and target must have the same shape, got {tuple(pred.shape)} "
+            f"and {tuple(target.shape)}"
+        )
+    if pred.ndim != 2:
+        raise ValueError(f"feature predictions must be [K, D], got {tuple(pred.shape)}")
+    if kind not in ("l1", "l2"):
+        raise ValueError(f"unknown feature loss kind '{kind}'; expected 'l1' or 'l2'")
+    if reduce not in ("sample", "token"):
+        raise ValueError(f"unknown feature loss reduce '{reduce}'; expected 'sample' or 'token'")
+    if pred.numel() == 0:
+        return pred.new_zeros(())
+
+    err = (pred - target).abs() if kind == "l1" else (pred - target) ** 2
+    row_err = err.mean(dim=-1)
+    if reduce == "token" or group_id is None:
+        return row_err.mean()
+    if group_id.numel() != row_err.numel():
+        raise ValueError(f"group_id must have {row_err.numel()} entries, got {group_id.numel()}")
+    groups, inverse = torch.unique(group_id, return_inverse=True)
+    per_group = pred.new_zeros(groups.numel()).index_add_(0, inverse, row_err)
+    counts = pred.new_zeros(groups.numel()).index_add_(0, inverse, torch.ones_like(row_err))
+    return (per_group / counts.clamp_min(1.0)).mean()
+
+
 def patch_offsets(patch_sizes) -> torch.Tensor:
     """Row boundaries of the flat pixel layout: ``[K + 1]`` cumulative offsets.
 

@@ -328,3 +328,110 @@ class DCPVisibilitySampler:
             out.append(visible)
 
         return out
+
+
+class MultiBlockTargetSampler:
+    """I-JEPA/V-JEPA-style multi-block target locations for a JEPA objective.
+
+    Unlike :class:`DCPVisibilitySampler`, this samples **locations** rather than
+    per-channel channel-patches.  A target location is removed from the context
+    for *all* channels, so the predictor cannot read a partially visible token
+    at the target position.  The complement is the spatial context; an optional
+    context rectangle (``context_scale``) can leave a border that is neither
+    target nor context.
+
+    The target is a union of ``n_blocks`` rectangles with scale sampled from
+    ``target_scale`` and aspect ratio from ``target_aspect``.  That follows
+    I-JEPA's finding that a few large, semantic blocks are better than random
+    patch masking.  The context is the remaining locations (optionally inside a
+    sampled context rectangle), with a guard that both target and context are
+    non-empty even on very small grids.
+
+    Channel selection is deliberately *not* part of this sampler:
+    :class:`~fuse_channels.jepa.ChannelFusionJEPA` applies optional whole-channel
+    dropout to the context with :class:`HierarchicalChannelSampler`.
+    """
+
+    def __init__(
+        self,
+        n_blocks: int = 4,
+        target_scale: tuple[float, float] = (0.15, 0.2),
+        target_aspect: tuple[float, float] = (0.75, 1.5),
+        context_scale: tuple[float, float] = (0.85, 1.0),
+    ) -> None:
+        if n_blocks < 1:
+            raise ValueError(f"n_blocks must be >= 1, got {n_blocks}")
+        for name, (lo, hi) in (
+            ("target_scale", target_scale),
+            ("context_scale", context_scale),
+        ):
+            if not 0.0 < lo <= hi <= 1.0:
+                raise ValueError(f"{name} must satisfy 0 < lo <= hi <= 1, got {(lo, hi)}")
+        alo, ahi = target_aspect
+        if not 0.0 < alo <= ahi:
+            raise ValueError(f"target_aspect must satisfy 0 < lo <= hi, got {target_aspect}")
+        self.n_blocks = int(n_blocks)
+        self.target_scale = (float(target_scale[0]), float(target_scale[1]))
+        self.target_aspect = (float(target_aspect[0]), float(target_aspect[1]))
+        self.context_scale = (float(context_scale[0]), float(context_scale[1]))
+
+    def _uniform(self, lo: float, hi: float, device, generator) -> float:
+        u = float(torch.rand((), device=device, generator=generator).item())
+        return lo + (hi - lo) * u
+
+    def _rect(self, gh: int, gw: int, scale: float, aspect: float, device, generator):
+        """Return integer ``(r0, r1, c0, c1)`` for one rectangle."""
+        h = max(1, min(gh, round(math.sqrt(scale / aspect) * gh)))
+        w = max(1, min(gw, round(math.sqrt(scale * aspect) * gw)))
+        r0 = int(torch.randint(0, gh - h + 1, (1,), device=device, generator=generator).item())
+        c0 = int(torch.randint(0, gw - w + 1, (1,), device=device, generator=generator).item())
+        return r0, r0 + h, c0, c0 + w
+
+    def __call__(self, grid_hw: Sequence[tuple[int, int]], generator=None):
+        """Return ``(target, context)`` lists of ``[N_b]`` boolean location masks.
+
+        ``grid_hw`` is one ``(grid_h, grid_w)`` pair per sample.  ``target``
+        marks locations to predict; ``context`` marks locations the student
+        encoder may see.  The two are disjoint by construction.
+        """
+        device = generator.device if generator is not None else torch.device("cpu")
+        out_target: list[torch.Tensor] = []
+        out_context: list[torch.Tensor] = []
+        for gh, gw in grid_hw:
+            gh, gw = int(gh), int(gw)
+            N = gh * gw
+            if N < 1:
+                raise ValueError(f"grid {(gh, gw)} leaves no locations")
+            target = torch.zeros(gh, gw, dtype=torch.bool, device=device)
+            for _ in range(self.n_blocks):
+                scale = self._uniform(*self.target_scale, device, generator)
+                aspect = self._uniform(*self.target_aspect, device, generator)
+                r0, r1, c0, c1 = self._rect(gh, gw, scale, aspect, device, generator)
+                target[r0:r1, c0:c1] = True
+
+            scale = self._uniform(*self.context_scale, device, generator)
+            context = torch.zeros(gh, gw, dtype=torch.bool, device=device)
+            if scale >= 1.0:
+                context[:] = True
+            else:
+                r0, r1, c0, c1 = self._rect(gh, gw, scale, 1.0, device, generator)
+                context[r0:r1, c0:c1] = True
+
+            # Guards: target non-empty, context non-empty, and disjoint.
+            if not bool(target.any()):
+                target.view(-1)[0] = True
+            context = context & ~target
+            if not bool(context.any()):
+                free = (~target).nonzero(as_tuple=False)
+                if free.numel() == 0:
+                    # Tiny grid covered by target blocks: release one location.
+                    target.view(-1)[-1] = False
+                    free = (~target).nonzero(as_tuple=False)
+                pick = int(
+                    torch.randint(free.shape[0], (1,), device=device, generator=generator).item()
+                )
+                context[tuple(free[pick].tolist())] = True
+
+            out_target.append(target.reshape(-1))
+            out_context.append(context.reshape(-1))
+        return out_target, out_context
