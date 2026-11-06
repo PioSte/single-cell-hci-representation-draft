@@ -37,8 +37,10 @@ tokens to `L` latents per sample, `[B, L, D]` (`n_latents = L` is a
 hyperparameter), so the model-level encoder output and the decoder KV are
 independent of both `C` and `N`. The decoder
 still emits one prediction row per requested reconstruction target (the DCP mask
-complement), not per encoder token. See “Naming this stage” below for the
-nuances of the phrase.
+complement), not per encoder token. The name is literal: it pools *spatially*,
+over patches within a sample, after channel fusion already ran over `C`, and
+“size” is the fixed cardinality `L` and width `D`, not the flattened `L·D`
+(unpacked in [`docs/design.md`](docs/design.md#4-spatial-pooling-to-fixed-size-latent)).
 
 ## Variable pixel size: `p` is a pixel count, not a physical size
 
@@ -320,25 +322,6 @@ parameters. Identity is not optional: ChannelViT's mean-embedding ablation
 (Table 10) collapses accuracy from 57.60/68.09 to 1.26/2.49 on JUMP-CP. The
 full derivation, the Table 11 caveat, and the corrected reference claims are in
 [`docs/design.md`](docs/design.md).
-
-## Naming this stage
-
-The stage is called **spatial pooling to fixed size latent**. The name is
-literal, but each word carries weight:
-
-* **spatial** — it pools the per-`(sample, patch)` tokens produced after
-  channel fusion. It is not a second channel fusion: channel fusion already
-  ran over `C` at each patch, and this runs over patches for each sample.
-- **size** — the output is `[B, L, D]`: `L = n_latents` locations of width
-  `D`. The *cardinality* `L` and the *width* `D` are both fixed, so the stage
-  is called fixed size even though the encoder input length (`Kf`) varies.
-- **latent** — used in the singular as the name of the stage, but the tensor
-  is a set of `L` latents. `L = 1` gives one latent vector `[B, D]`; `L > 1`
-  gives `[B, L, D]`.
-* It is a **pooling step**, not a second encoder: the encoder still runs
-  token-level attention over every present location. It is also not the
-  Perceiver's pool-before-processing latent bottleneck, and the Perceiver paper
-  does not ablate this placement.
 
 ## Install
 

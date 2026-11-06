@@ -228,11 +228,16 @@ latent_pooler(tok_out, group_id) -> [B, L, D]`, with `L = n_latents` learned
 queries. `L` is a hyperparameter, so the encoder output and the decoder KV are
 independent of both the channel count `C` and the patch count `N`.
 
-**Terminology.** The phrase is unpacked word by word in
-[`README.md`](../README.md#naming-this-stage). One point is a design decision
-rather than naming: “size” means the index dimension, not the flattened `L·D`;
-fixed cardinality `L` and fixed width `D` are separate invariants, and the
-pooling stage is not the Perceiver's pool-before-processing latent bottleneck.
+**Terminology.** Each word of the name is load-bearing. *Spatial*: it pools
+the per-`(sample, patch)` tokens over patches for each sample; it is not a
+second channel fusion, which already ran over `C` at each patch. *Size*: the
+index dimension — cardinality `L` and width `D` are both fixed, so the stage is
+fixed size even though the encoder input length `Kf` varies. This is a design
+decision rather than naming: “size” is not the flattened `L·D`, and fixed `L`
+and fixed `D` are separate invariants. *Latent*: singular as the stage name,
+a set as the tensor, so `L = 1` gives `[B, D]` and `L > 1` gives `[B, L, D]`.
+And it is a *pooling* step, not a second encoder: the encoder still runs
+token-level attention over every present location.
 
 This is deliberately a hybrid: token-level encoder attention followed by
 spatial pooling to fixed size latent ("Option 1"). It is **not** the Perceiver's
