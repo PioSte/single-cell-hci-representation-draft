@@ -5,7 +5,7 @@ One hand-authored, vector-first figure (PDF/SVG/PNG) with two panels:
 * **A** -- the end-to-end padding-free channel-fusion MAE: channel-tied
   tokenizer -> ChannelFusion -> transformer encoder -> spatial pooling to a
   fixed size latent -> channel-aware decoder + head.  The decoder KV is drawn
-  as ``[mem_out; latents]``; ``tok_out`` is deliberately absent.
+  as the pooled ``latents``; ``tok_out`` is deliberately absent.
 * **B** -- the set-native token layout, the **default** ``ChannelFusion``
   (single-query PMA with identity bias + skip), DCP masking, the ragged/padded
   visual rules, and a symbol/role legend.
@@ -33,7 +33,7 @@ import matplotlib.pyplot as plt
 
 from figure_style import (  # noqa: E402
     INK, MUTED, CHANNEL_COLORS,
-    TOKENIZER, FUSION, ENCODER, DECODER, MEMORY, LOSS, FUSED, POOL, GHOST,
+    TOKENIZER, FUSION, ENCODER, DECODER, LOSS, FUSED, POOL, GHOST,
     tint, rrect, box, arrow, token_rows, sq_bracket, panel_header,
     legend, padded_ghost, install_rcparams, save_figure,
 )
@@ -42,7 +42,7 @@ OUT = Path(__file__).resolve().parent / "out"
 
 # NOTE: role colours come from ``figure_style`` and are the L0-L9 palette:
 #   TOKENIZER green, FUSION orange, ENCODER pink, DECODER violet,
-#   MEMORY gold, LOSS red, FUSED blue, POOL sky, GHOST muted.
+#   LOSS red, FUSED blue, POOL sky, GHOST muted.
 
 
 # --------------------------------------------------------------------------- #
@@ -79,26 +79,27 @@ def route(ax, pts, color=INK, lw=1.5, ms=9):
 # Panel A -- end-to-end pipeline
 # --------------------------------------------------------------------------- #
 def _draw_kv(ax, x, y, w, h):
-    """Decoder KV ``enc_all = [mem_out; latents]`` (fixed length)."""
-    rows = [("mem_out", MEMORY), ("latents", POOL)]
-    rh, pitch = 2.9, 3.25
+    """Decoder KV ``enc_all = latents`` (fixed length)."""
+    rows = [("latents", POOL)] * 4
+    rh, pitch = 2.2, 3.25
     y0 = y + h / 2 - (len(rows) - 1) * pitch / 2 - rh / 2
     for i, (name, color) in enumerate(rows):
-        yy = y0 + (len(rows) - 1 - i) * pitch  # mem_out at the top
+        yy = y0 + (len(rows) - 1 - i) * pitch
         rrect(ax, x, yy, w, rh, edge=color, face=tint(color, 0.78), lw=1.2,
               rounding=0.3, z=3, crossed=True)
-        ax.text(x + w / 2, yy + rh / 2, name, ha="center", va="center",
-                fontsize=6.0, color=INK, fontweight="bold", zorder=5)
+        if i == 0:  # one label for the whole latent stack
+            ax.text(x + w / 2, yy + rh / 2, name, ha="center", va="center",
+                    fontsize=6.0, color=INK, fontweight="bold", zorder=5)
     top = y0 + (len(rows) - 1) * pitch + rh
     sq_bracket(ax, x - 1.0, y0, top, color=MUTED, lw=1.1, tick=0.55)
     # Left-aligned so the routed encoder/pool arrow (at the stack centre)
     # drops past the text instead of through it.
     lx = x - 4.5
     ax.text(lx, top + 3.3,
-            "$enc\\_all=[\\,mem\\_out;\\ latents\\,]$", ha="left",
+            "$enc\\_all=latents$", ha="left",
             va="center", fontsize=5.7, color=INK, fontweight="bold")
     ax.text(lx, top + 1.6,
-            "$[B(M{+}L),D]$ fixed, independent of $C,N$;\n"
+            "$[B{\\cdot}L,D]$ fixed, independent of $C,N$;\n"
             "raw $tok\\_out\\notin$ KV",
             ha="left", va="center", fontsize=5.1, color=MUTED,
             linespacing=1.3)
@@ -129,8 +130,8 @@ def draw_pipeline(ax):
          "single-query PMA at each $(b,n)$\nidentity bias $+$ skip, no PE\n"
          "$\\to[K_f,\\ D]$", FUSION),
         ("Transformer encoder",
-         "$+M$ memory tokens, depth 4\n2-D axial RoPE, metric $p_b\\mu$\n"
-         "$\\to tok\\_out[K_f,D],\\ mem\\_out[B{\\cdot}M,D]$", ENCODER),
+         "no memory tokens, depth 4\n2-D axial RoPE, metric $p_b\\mu$\n"
+         "$\\to tok\\_out[K_f,D]$", ENCODER),
         ("Spatial pool (PMA)",
          "$L$ learned queries pool $tok\\_out$:\n"
          "$\\to latents\\ [B,L,D]$\n"
@@ -333,7 +334,6 @@ def draw_legends(ax):
          ("channel fusion", FUSION, "fill"),
          ("encoder (TransformerEncoder)", ENCODER, "fill"),
          ("decoder $+$ head", DECODER, "fill"),
-         ("memory tokens", MEMORY, "cross"),
          ("fused $[K_f,D]$", FUSED, "cross"),
          ("latent pool", POOL, "cross"),
          ("masked row (omitted)", LOSS, "omit"),
@@ -365,7 +365,7 @@ def draw_legends(ax):
         ]),
         (94.0, [
             ("$K_t$", "decoder targets (masked)"),
-            ("$M$", "memory tokens / sample"),
+            ("$M$", "memory tokens (memory arm)"),
             ("$L$", "latents / sample"),
             ("$n_q$", "PMA query count"),
             ("$z_c$", "channel identity vector"),

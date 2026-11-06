@@ -16,7 +16,7 @@ All shapes below are read from the code, not invented. Notation:
 | `c` | canonical reconstruction-head grid, `= head_patch_size or max(patch_sizes)` (only `head_mode="shared"`/`"canonical"`) | `PatchReconstructionHead.canonical_patch_size` |
 | `µ` | `pixel_size`, micrometres per pixel (required metadata) | `pixel_size` |
 | `D` | token/embedding dim | `dim` |
-| `M` | fixed memory/register tokens per sample | `n_memory` |
+| `M` | optional memory/register tokens per sample (the `memory` arm only) | `n_memory` |
 | `L` | latents per sample from spatial pooling to fixed size latent | `n_latents` |
 | `T` | real channel-patch tokens in a flattened token set (`T = V` after masking) | `cs.tokens.shape[0]` |
 | `V` | number of **visible** channel-patch tokens (`≤ Σ_b C_b·N_b`) | `keep.sum()` |
@@ -39,10 +39,10 @@ them from the config, do not hard-code a second copy in prose.
 |---|---|
 | `image_size`, `patch_size` | `16`, `8` (canonical kernel `P`) |
 | `dim`, `n_heads`, `dropout` | `192`, `6`, `0.0` |
-| `encoder.depth`, `n_memory` | `4`, `4` (`M`) |
+| `encoder.depth`, `n_memory` | `4`, `0` (`M` off) |
 | `decoder.depth` | `2` |
 | `n_latents` | `16` (`L`) |
-| `decoder_kv_components` | `("memory", "latents")` |
+| `decoder_kv_components` | `("latents",)` |
 | `pos_embed` (encoder / decoder / fusion) | `"rope"` / `"fractional"` / `"none"` |
 | `pe_space` | `"physical"` (µm coordinates) |
 | `fusion`, `fusion_attn_dim` | `"attention"`, `None` → `3D` |
@@ -214,7 +214,7 @@ attention mask. It is **not** in the model path.
   projections, and `grouped_pool_attention` over the real tokens of each
   **sample** group.
 - `ChannelFusionMAE` applies it once, to `tok_out` (the encoder's **content
-  tokens only**, not the memory tokens):
+  tokens only**, never the memory arm's tokens):
   `latents = latent_pooler(tok_out, enc_group_id, B)` with
   `n_queries = n_latents` and `readout="flat"` → `[B, L·D]`, reshaped to
   `[B, L, D]`. This is spatial pooling to fixed size latent, independent of
@@ -226,22 +226,26 @@ attention mask. It is **not** in the model path.
 - `enc_tokens` is the fusion output `[Kf, D]` directly (no gather);
   `enc_group_id` is one group per sample
   (`torch.arange(B).repeat_interleave(present.sum(1))`).
-- `memory: [1, M, D]` expanded `[B, M, D]` → `[B·M, D]`, with per-sample
-  group ids.
-- `x = cat([mem, tokens])` → `[B·M + Kf, D]`.
+- The shipped encoder has no memory row: `n_memory = 0`, the `memory`
+  parameter is `None`, and the sequence is the present patch tokens alone
+  (`x = enc_tokens`).
+- In the `memory` arm (`n_memory > 0`) a `[1, M, D]` parameter is expanded
+  `[B, M, D]` → `[B·M, D]` with per-sample group ids, and
+  `x = cat([mem, tokens])` → `[B·M + Kf, D]`.
 - `TransformerEncoder` is a stack of standard pre-norm `TransformerBlock`s:
   explicit Q/K/V/O projections + MLP, with
   `grouped_projected_self_attention` (bucketed equal-length groups) per
   sample. 2-D axial RoPE rotates q/k from metric `(row, col)` token-centre
-  coordinates (µm); memory tokens get zero rotation. Default
+  coordinates (µm); memory-arm tokens get zero rotation. Default
   `scale_conditioning="add"` adds a Fourier embedding of
   `[log(p), log(pixel_size)]` to the encoder tokens; `"adaln"` instead
   modulates the LayerNorms. Final `LayerNorm`.
-- Returns `mem_out [B·M, D]`, `tok_out [Kf, D]`; `tok_out` is then pooled
-  to `latents [B, L, D]`.
-- Final decoder KV is `enc_all = cat([mem_out, latents])` →
-  `[B·(M + L), D]`, with matching per-sample group ids. The KV length is
-  fixed for a given model and does not grow with the patch count.
+- Returns `mem_out [B·M, D]` (empty in the default) and `tok_out [Kf, D]`;
+  `tok_out` is then pooled to `latents [B, L, D]`.
+- Final decoder KV is the pooled latents alone → `[B·L, D]`; the `memory` arm
+  prepends `mem_out` (`enc_all = cat([mem_out, latents])` → `[B·(M + L), D]`).
+  Either way the KV length is fixed for a given model and does not grow with
+  the patch count.
 
 ## Decoder — `decoder.py` (L6)
 
@@ -260,8 +264,8 @@ attention mask. It is **not** in the model path.
 - Each `DecoderBlock`:
   1. **target self-attention** over the queries of each sample
      (`grouped_projected_self_attention`, bucketed);
-  2. **cross-attention** to the encoder representation
-     (`mem_out + latents`) using the general grouped primitive
+  2. **cross-attention** to the encoder representation (the pooled `latents`,
+     plus `mem_out` in the `memory` arm) using the general grouped primitive
      `grouped_attention`;
   3. MLP.
 - `norm` then the per-`p` head: `Linear(D, p²)` for configured `p`; an unseen
@@ -288,9 +292,9 @@ attention mask. It is **not** in the model path.
 ## Inference — `mae.py::encode` (L1, L2)
 
 - No masking (`visible = all True`); same tokenizer + fusion + encoder.
-- Returns `(mem_out [B·M, D], latents [B, L, D])`: the two components of the
-  decoder KV. `latents` is the fixed set from spatial pooling to fixed size
-  latent.
+- Returns `(mem_out [B·M, D], latents [B, L, D])`: the two possible decoder-KV
+  components, with `mem_out` empty in the default. `latents` is the fixed set
+  from spatial pooling to fixed size latent.
 
 ## The claim the figures must carry
 

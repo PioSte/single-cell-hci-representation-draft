@@ -21,16 +21,16 @@ Import from a figure script::
                               legend, role_legend, channel_legend, padded_ghost)
 
 Okabe-Ito core palette (colour-blind safe), extended with two role colours
-(the gold memory role and the violet decoder role).
+(the gold memory-arm role and the violet decoder role).
 
 Role palette -- the same *role* always gets the same colour in every figure,
 so the L0-L9 set reads as one authored system:
 
     TOKENIZER green   patch embed / tied Conv / channel identity z_c
     FUSION    orange  channel fusion (the default ChannelFusion)
-    ENCODER   pink    transformer encoder + its memory-augmented blocks
+    ENCODER   pink    transformer encoder (grouped attention over tokens)
     DECODER   violet  channel-aware decoder + reconstruction head
-    MEMORY    gold    fixed memory / register token rows
+    MEMORY    gold    fixed memory rows (memory ablation arm only)
     LOSS      red     objective / waste / -inf mask / omitted-row accent
     FUSED     blue    fused vectors, one [D] row per present location
     POOL      sky     pooling and its outputs: latents [B,L,D]
@@ -65,7 +65,7 @@ TOKENIZER = GREEN
 FUSION = ORANGE
 ENCODER = PURPLE
 DECODER = VIOLET
-MEMORY = "#B8860B"          # legible gold for the fixed memory / register rows
+MEMORY = "#B8860B"          # legible gold for the memory-arm token rows
 LOSS = RED
 FUSED = BLUE
 POOL = SKY

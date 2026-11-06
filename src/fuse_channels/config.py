@@ -45,7 +45,7 @@ next to the code that defines it; :func:`describe_ablations` renders that
 documentation as the Markdown table in ``README.md`` (a test keeps the two in
 sync), so the registry is the only hand-maintained inventory::
 
-    build_model("blind_decoder")    # no memory and no KV -> self-attention only
+    build_model("blind_decoder")    # empty KV -> self-attention only
 
 Prefer :func:`build_model` / :meth:`ModelConfig.to_kwargs` over hand-writing a
 flat constructor call.
@@ -90,10 +90,14 @@ class SharedCore:
 
 @dataclass(frozen=True)
 class EncoderConfig:
-    """Encoder-exclusive knobs (width/regularization live in :class:`SharedCore`)."""
+    """Encoder-exclusive knobs (width/regularization live in :class:`SharedCore`).
+
+    ``n_memory = 0`` (the shipped default) means no memory tokens; the
+    registered ``memory`` ablation raises it above zero.
+    """
 
     depth: int = 4
-    n_memory: int = 4
+    n_memory: int = 0
     mlp_ratio: float = 4.0
 
 
@@ -244,7 +248,7 @@ class ModelConfig:
 
     # --- pooling / decoder-KV wiring -----------------------------------------
     n_latents: int = 16
-    decoder_kv_components: tuple[str, ...] = ("memory", "latents")
+    decoder_kv_components: tuple[str, ...] = ("latents",)
 
     # --- masking (DCP / HCS) --------------------------------------------------
     p_patch: float = 0.5
@@ -447,22 +451,27 @@ def _ablate_full(cfg: ModelConfig) -> ModelConfig:
     return cfg
 
 
-def _ablate_no_memory(cfg: ModelConfig) -> ModelConfig:
-    """Drop encoder memory tokens: `encoder.n_memory = 0`.
+def _ablate_memory(cfg: ModelConfig) -> ModelConfig:
+    """Add encoder memory tokens: `encoder.n_memory = 4`.
 
-    Isolates what the memory/register tokens add to the representation (they
-    leave the decoder KV too).
+    Isolates what the memory/register tokens add to the representation; they
+    join the decoder KV in this arm too (`decoder_kv_components = ("memory",
+    "latents")`).
     """
-    return replace(cfg, encoder=replace(cfg.encoder, n_memory=0))
+    return replace(
+        cfg,
+        encoder=replace(cfg.encoder, n_memory=4),
+        decoder_kv_components=("memory", "latents"),
+    )
 
 
 def _ablate_blind_decoder(cfg: ModelConfig) -> ModelConfig:
-    """`no_memory` plus an empty decoder KV: `decoder_kv_components = ()`.
+    """Empty decoder KV: `decoder_kv_components = ()`.
 
     The decoder cross-attends to nothing, so it is self-attention over the
     reconstruction targets only.
     """
-    return replace(_ablate_no_memory(cfg), decoder_kv_components=())
+    return replace(cfg, decoder_kv_components=())
 
 
 def _ablate_no_scale_cond(cfg: ModelConfig) -> ModelConfig:
@@ -480,7 +489,7 @@ def _ablate_grid_pe(cfg: ModelConfig) -> ModelConfig:
 #: Each transform's docstring is the single source for the README table.
 ABLATIONS: dict[str, Callable[[ModelConfig], ModelConfig]] = {
     "full": _ablate_full,
-    "no_memory": _ablate_no_memory,
+    "memory": _ablate_memory,
     "blind_decoder": _ablate_blind_decoder,
     "no_scale_cond": _ablate_no_scale_cond,
     "grid_pe": _ablate_grid_pe,

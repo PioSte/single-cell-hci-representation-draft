@@ -8,7 +8,7 @@ A coherent set of hand-authored, vector-first figures (PDF/SVG/PNG) that walk
 from *where the model sits in the literature* down to *the attention primitive*.
 They share one design system so they read as one authored set:
 
-* `figure_style.py` — the role palette (Okabe-Ito core plus the gold memory
+* `figure_style.py` — the role palette (Okabe-Ito core plus the gold memory-arm
   and violet decoder roles), module-box / arrow / array-stack
   primitives, the channel colour table, and the `save_figure` helper. It also
   exposes a shared **role palette** so the same architecture role always gets
@@ -54,7 +54,7 @@ modules and paths in the **shipped default** of `src/fuse_channels/`; rejected
 baselines, hypothetical dense blocks, untied per-channel alternatives, test-only
 reference implementations, and named ablations (`IdentityGatedSum`, legacy
 learned/sincos PE tables, `attn_dim=D`, `head_mode="shared"`/`"canonical"`,
-`pe_space="grid"`, `no_memory`, `blind_decoder`) are not drawn.
+`pe_space="grid"`, `memory`, `blind_decoder`) are not drawn.
 
 ## 1. Interactive behaviour — `dashboard.py` (marimo)
 
@@ -136,7 +136,7 @@ number of channels. Written to `viz/out/cardinality.{pdf,svg,png}`.
 * **A** — a filmstrip of consecutive steps for one sample: input channel set →
   tied embed; identity `z_c` carried alongside (no pre-LN add) → per-location
   channel fusion (the `C` tokens at each `(b,n)` collapse to one `[D]` vector,
-  so the present locations form `[K_f,D]`) → encoder with `M` memory tokens →
+  so the present locations form `[K_f,D]`) → encoder (no memory tokens) →
   spatial pooling to fixed size latent: the `[B,L,D]` latent set. The
   variable-height channel axis is the thing you watch vanish.
 * **B** — the invariance itself: `C=1`, `C=3`, `C=5` token stacks (input length
@@ -156,17 +156,16 @@ axes (rows = channels grouped by sample, columns = spatial patches, `D` = depth)
 and the channel axis is the thing you watch collapse:
 
 `[C_b, 1, H, W]` → `[ΣC, 1, H, W]` → `[ΣC, N, D]` → `[Kf, D]` →
-`[B, L, D]` → decoder KV `[B·(M+L), D]` → targets `[Kt, D]` →
-`[Σ p²]`, with the DCP masking `[Kf, D]` and the encoder memory
-`[B·M + Kf, D]` in between. `B` is a batch of one in the scene, as marked. The
+`[B, L, D]` → decoder KV `[B·L, D]` → targets `[Kt, D]` →
+`[Σ p²]`, with the DCP masking `[Kf, D]` in between. `B` is a batch of one in the scene, as marked. The
 latent set is the pooled read of `tok_out` (content tokens only). The point the
 animation makes visually: `C` appears only in
 the input length and is **summed away** by the channel fusion, never padded to a
 `C_max`. One simplification: the DCP masking is drawn as location-level
 removal, whereas the real masker selects per channel-patch token *before* the
 fusion. `[B, L, D]` is the fixed `n_latents` output of spatial pooling to fixed
-size latent; it is trained and forms the decoder KV together with the memory
-tokens, whose length does not grow with `N`. `encode()` returns it.
+size latent; it is trained and *is* the decoder KV (the `memory` arm adds its
+tokens on top), whose length does not grow with `N`. `encode()` returns it.
 
 ```bash
 # check, preview in the browser, or render (MP4 / GIF / frames)

@@ -9,7 +9,7 @@ Produces (into ``viz/out/``):
 
 The schematic follows the shipped **default** path only: token list -> fusion ->
 encoder -> spatial pooling to fixed size latent (``latents [B, L, D]``) ->
-decoder KV ``mem_out + latents`` -> channel-aware decoder.
+decoder KV ``latents`` -> channel-aware decoder.
 The padded tensor ``[B, C_max, N, D]`` appears only as a dashed ghost, and DCP
 masking is drawn as row omission in the patch embed (before fusion).
 
@@ -66,7 +66,6 @@ def draw_torchview() -> None:
         encoder_depth=2,
         decoder_depth=2,
         n_heads=4,
-        n_memory=4,
         num_channel_ids=16,
         pixel_size=1.0,
     )
@@ -212,13 +211,13 @@ def draw_schematic(formats: tuple[str, ...] = ("png", "svg"),
     Y02 = Y2 - H2 / 2  # 47
 
     box(ax, 94, Y02, 23, H2, "TransformerEncoder",
-        "grouped self-attention\n$+\\,M$ memory tokens\n2-D axial RoPE (metric)\ndepth 4",
+        "grouped self-attention\n(no memory tokens)\n2-D axial RoPE (metric)\ndepth 4",
         edge=ENCODER, title_size=7.4, sub_size=5.5)
     box(ax, 121, Y02, 24, H2, "spatial pooling",
         "attention pooling on $tok_{out}$:\n$L$ learned queries $\\to$ latents $[B,L,D]$\n(trained by the loss)",
         edge=POOL, title_size=7.2, sub_size=5.4)
     box(ax, 149, Y02, 20, H2, "decoder KV",
-        "$enc_{all}=[mem_{out};$\n$latents]$\n$[\\,B\\cdot(M{+}L),D\\,]$",
+        "$latents\\;[B\\cdot L,D]$\n(from pooling; no memory tokens)",
         edge=POOL, title_size=7.6, sub_size=5.6)
     box(ax, 173, Y02, 20, H2, "channel-aware\ndecoder",
         "target self-attention\nover $K_t$ queries\ncross-attention to the KV",
@@ -311,7 +310,7 @@ def draw_schematic(formats: tuple[str, ...] = ("png", "svg"),
     col_b = [
         ("$K_f$", "present $(b,n)$ locations"),
         ("$K_t$", "masked ch-patches (targets)"),
-        ("$M$", "memory tokens (default 4)"),
+        ("$M$", "memory tokens (memory arm only)"),
         ("$L$", "latents from pooling (default 16)"),
         ("$z_c$", "channel identity (bias $+$ skip)"),
         ("DCP", "dynamic channel-patch masking"),

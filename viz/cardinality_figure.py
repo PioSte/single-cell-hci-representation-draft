@@ -6,7 +6,7 @@ filmstrip of consecutive steps and makes the cardinality argument spatial:
 * the channel axis is a variable-height axis that grows with ``C``;
 * channel fusion consumes that axis **once per spatial location**, producing a
   single ``[D]`` vector per present location;
-* the encoder mixes those location tokens with the fixed memory set;
+* the encoder processes those location tokens (no memory tokens by default);
 * spatial pooling to fixed size latent then produces a fixed ``[B, L, D]``
   latent set, independent of both ``C`` and the patch count ``N``.
 
@@ -30,7 +30,7 @@ import matplotlib.pyplot as plt
 
 from figure_style import (  # noqa: E402
     INK, MUTED, GREEN, CHANNEL_COLORS, channel_color,
-    TOKENIZER, FUSION, ENCODER, MEMORY, POOL, FUSED,
+    TOKENIZER, FUSION, ENCODER, POOL, FUSED,
     tint, rrect, arrow, panel_header, padded_ghost,
     install_rcparams, save_figure, legend,
 )
@@ -134,34 +134,24 @@ def step4(ax, x0):
     s, pitch, n = 2.4, 2.8, 4
     w = (n - 1) * pitch + s
     mx = x0 + (FRAME_W - w) / 2
-    my, ty = 64.5, 60.3
-    for i in range(n):
-        cell(ax, mx + i * pitch, my, s, MEMORY, crossed=True, lw=0.9)
-    label(ax, x0 + 10.5, my + s + 1.3,
-          "memory $[B,M,D]$ $\\cdot$ $M{=}4$",
-          size=6.0, color=MEMORY, weight="bold")
+    ty = 62.0
     for i in range(n):
         cell(ax, mx + i * pitch, ty, s, FUSED, crossed=True, lw=0.9)
-    label(ax, x0 + 10.5, ty - 1.5,
-          "$\\mathrm{tok}\\;[K_f,D]$ content", size=6.0, color=FUSED,
-          weight="bold")
-    # brace: memory + tokens are concatenated before the encoder
-    xb = x0 + FRAME_W - 2.6
-    ax.plot([xb, xb], [my + s / 2, ty + s / 2], color=ENCODER, lw=1.2, zorder=4)
-    for yy in (my + s / 2, ty + s / 2):
-        ax.plot([mx + w, xb], [yy, yy], color=ENCODER, lw=1.2, zorder=4)
-    # encoder box
-    bx, bw, by, bh = x0 + 1.5, FRAME_W - 3.0, 45.0, 8.0
+    label(ax, x0 + 10.5, ty + s + 1.3,
+          "$\\mathrm{tok}\\;[K_f,D]$ fused locations",
+          size=6.0, color=FUSED, weight="bold")
+    # encoder box; the fused location tokens are its whole input
+    bx, bw, by, bh = x0 + 1.5, FRAME_W - 3.0, 47.0, 8.0
     rrect(ax, bx, by, bw, bh, edge=ENCODER, face=tint(ENCODER), lw=1.5,
           rounding=0.7, z=3)
     label(ax, bx + bw / 2, by + bh * 0.68, "Transformer encoder",
           size=7.4, color=INK, weight="bold")
     label(ax, bx + bw / 2, by + bh * 0.30,
-          "cat$(\\mathrm{mem},\\mathrm{tok})$ $[B\\cdot M{+}K_f,D]$ $\\cdot$ RoPE",
+          "no memory tokens $\\cdot$ RoPE $\\cdot$ grouped self-attn",
           size=5.3, color=MUTED)
-    arrow(ax, (xb, (my + ty) / 2 + s / 2), (xb, by + bh + 0.3),
+    arrow(ax, (mx + w / 2, ty), (mx + w / 2, by + bh + 0.3),
           color=ENCODER, lw=1.3, ms=9)
-    label(ax, x0 + 10.5, 43.2, "$\\mathrm{mem}_{out}$ $+$ $\\mathrm{tok}_{out}$",
+    label(ax, x0 + 10.5, 43.2, "$\\mathrm{tok}_{out}$ $[K_f,D]$",
           size=6.2, color=ENCODER, weight="bold")
     label(ax, x0 + 10.5, 40.8,
           "$\\mathrm{tok}_{out}\\notin$ decoder KV", size=6.0, color=MUTED)
@@ -196,7 +186,7 @@ def step5(ax, x0):
     label(ax, x0 + 5.9, oy - 1.6, "$[B,L,D]$ latents", size=6.2,
           color=FUSED, weight="bold")
     label(ax, x0 + 10.5, 42.4,
-          "decoder KV $=$ $\\mathrm{mem}_{out}{+}$latents",
+          "decoder KV $=$ latents",
           size=5.4, color=MUTED)
     label(ax, x0 + 10.5, 40.4,
           "fixed size $\\cdot$ independent of $C$ and $N$",
@@ -211,8 +201,7 @@ def draw_filmstrip(ax):
         ("2 $\\cdot$ tied embed $\\cdot$ identity",
          "shared $1{\\to}D$ conv; carry $z_c$", step2),
         ("3 $\\cdot$ channel fusion", "pool over channels per location", step3),
-        ("4 $\\cdot$ encoder $+$ memory",
-         "memory $+$ locations through attention", step4),
+        ("4 $\\cdot$ encoder", "locations through grouped attention", step4),
         ("5 $\\cdot$ spatial pooling", "fixed latent set", step5),
     ]
     for x0, (title, sub, fn) in zip(FRAME_XS, frames):
@@ -300,7 +289,6 @@ def draw_glossary(ax):
                ("TOKENIZER  patch embed / $z_c$", TOKENIZER, "fill"),
                ("FUSION  channel fusion", FUSION, "fill"),
                ("ENCODER  transformer encoder", ENCODER, "fill"),
-               ("MEMORY  memory token set", MEMORY, "fill"),
                ("POOL  spatial pooling", POOL, "fill"),
                ("FUSED  fused $[D]$ vectors", FUSED, "fill"),
                ("CHANNEL  $c_i$ image / rows", channel_color(0), "cross"),
@@ -316,7 +304,6 @@ def draw_glossary(ax):
         ("$N$", "max patches / channel"),
         ("$D$", "token / embedding dim"),
         ("$K_f$", "present $(b,n)$ locations"),
-        ("$M$", "memory tokens / sample"),
         ("$L$", "latents / sample"),
         ("$z_c$", "channel identity vector"),
         ("PMA", "attention pooling readout"),

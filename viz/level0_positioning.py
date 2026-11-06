@@ -227,7 +227,7 @@ def draw_panel(ax):
     # encoder (TransformerEncoder)
     box(ax, X0, TRANS_BOX_Y, COL_W, TRANS_BOX_H,
         "encoder (TransformerEncoder)",
-        "grouped self-attention + $M$ memory\n"
+        "grouped self-attention\n"
         "2-D axial RoPE · scale conditioning", edge=ENCODER,
         title_size=7.4, sub_size=5.9)
     arrow(ax, (CX, FUSED_BOT - 0.2), (CX, TRANS_BOX_Y + TRANS_BOX_H), lw=1.4)
@@ -256,7 +256,6 @@ _GLOSSARY = [
     ("$H, W$", "image side (square)"),
     ("$N$", "patches per channel"),
     ("$D$", "token / embedding dim"),
-    ("$M$", "memory tokens per sample"),
     ("$P$", "canonical patch size"),
     ("$p$", "runtime patch size"),
     ("$V$", "visible channel-patches ($\\leq \\sum_b C_b{\\cdot}N_b$)"),

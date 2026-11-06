@@ -11,8 +11,9 @@ model:
 One simplification: DCP masking is shown as location-level removal although the
 real masker selects per channel-patch token before the fusion.  Spatial pooling
 to fixed size latent gives ``[B, L, D]`` (``L = n_latents``, independent of both
-``C`` and ``N``); together with the ``M`` memory tokens it forms the decoder KV,
-which therefore does not grow with ``N``.  The reconstruction target is the flat pixel layout ``[Σ p²]``: row
+``C`` and ``N``); in the shipped default it *is* the decoder KV, and in the
+``memory`` arm it is the KV's second component, so the KV never grows with
+``N``.  The reconstruction target is the flat pixel layout ``[Σ p²]``: row
 ``i`` owns ``p_i²`` contiguous pixels, never a padded ``[Kt, max p²]`` block.
 Fusion adds no post-fusion spatial PE (the legacy learned/sincos table is an
 ablation).
@@ -35,13 +36,12 @@ import kinemo as k
 # --------------------------------------------------------------------------- #
 # Toy input, chosen to mirror the module defaults in mae.py.
 #   B samples, channels C_b in {3, 2}, H = W = 32, patch P = 8 -> N = 16 patches,
-#   feature width D = 192, one learned fusion query, M = 4 memory tokens,
+#   feature width D = 192, one learned fusion query, no memory tokens,
 #   L = 16 latents.
 # --------------------------------------------------------------------------- #
 B = 2
 C = (3, 2)
 N = 16
-M = 4
 
 COLS = 4  # we draw 4 of the N = 16 patch columns
 CX = [-0.75, 0.05, 0.85, 1.65]
@@ -51,7 +51,6 @@ CS = 0.56
 
 CH = [k.BLUE, k.ORANGE, k.PURPLE, k.GREEN, k.TEAL]
 FUSED = k.YELLOW
-MEM = k.TEAL
 LAT = "#56B4E9"  # sky: fixed latents from spatial pooling (distinct from channels)
 
 
@@ -98,7 +97,7 @@ def shape_flow(s: k.Scene):
         "N_b patches/sample\n"
         "D  token width\n"
         "B  batch size\n"
-        "M  memory/sample\n"
+        "M  memory (arm only)\n"
         "L  latents/sample\n"
         "V  visible tokens\n"
         "Kf present locs\n"
@@ -257,22 +256,14 @@ def shape_flow(s: k.Scene):
     s.wait(0.5)
 
     # ===================================================================== #
-    # 6 -- memory-augmented spatial transformer; fixed memory count.
+    # 6 -- grouped spatial transformer over the fused location tokens.
     # ===================================================================== #
     nxt("6 / 10")
-    mem = [cell(CX[m], 2.05, MEM, size=0.4) for m in range(M)]
-    s.add(*mem)
-    mem_label = k.Text("× M memory tokens", size=0.26, color=MEM, x=3.25, y=2.05)
     arrow_enc = k.Arrow(start=(2.0, 0.35), end=(3.3, 0.35), stroke=k.GRAY, fill=k.GRAY)
-    s.play(
-        *[m.to(opacity=1.0) for m in mem],
-        k.fade_in(mem_label, shift=(0, 0.2)),
-        duration=0.5,
-    )
     s.play(k.draw(arrow_enc))
     cap(
-        "memory + visible tokens go through the transformer (per-sample groups)",
-        "[B·M + Kf, D] = [8 + Kf, 192]",
+        "visible location tokens go through the transformer (per-sample groups)",
+        "[Kf, D] = [Kf, 192]   (no memory tokens; the memory arm adds M)",
         k.TEAL,
     )
     s.wait(0.5)
@@ -303,7 +294,7 @@ def shape_flow(s: k.Scene):
     )
     cap(
         "spatial pooling → fixed latents [B,L,D], trained by the loss",
-        "[B, L, D] = [2, 16, 192]   →  decoder KV (with the M memory tokens)",
+        "[B, L, D] = [2, 16, 192]   →  decoder KV",
         k.PINK,
     )
     s.play(k.indicate(lat), duration=0.6)
@@ -317,7 +308,7 @@ def shape_flow(s: k.Scene):
     alive_fused = [f for key, f in fused.items() if key not in omitted]
     s.play(
         k.fade_out(
-            *patch.values(), *alive_fused, *mem, mem_label, arrow_enc,
+            *patch.values(), *alive_fused, arrow_enc,
             lat, lat_label,
         ),
         duration=0.5,
@@ -346,8 +337,8 @@ def shape_flow(s: k.Scene):
     )
     s.play(k.draw(arrow_dec))
     cap(
-        "shared decoder: target self-attn, then cross-attn to mem + latents",
-        "KV = mem + latents (fixed, does not grow with N)",
+        "shared decoder: target self-attn, then cross-attn to the latents",
+        "KV = latents (fixed, does not grow with N)",
         k.GREEN,
     )
     s.play(k.indicate(px, scale=1.15), k.indicate(tgt, scale=1.1), duration=0.7)
@@ -393,7 +384,7 @@ def shape_flow(s: k.Scene):
         duration=0.4,
     )
     # Two rows: the pooled outputs are parallel siblings of ``tok_out``, not a
-    # chain into each other; the decoder KV collects memory + latents.
+    # chain into each other; the decoder KV is the fixed latent set.
     pills = []
     arrows = []
 
@@ -415,12 +406,12 @@ def shape_flow(s: k.Scene):
         k.Arrow(start=(-1.43, y1), end=(-1.07, y1), stroke=k.GRAY, fill=k.GRAY),
     ]
 
-    # the decoder KV: memory tokens + the fixed latent set.
+    # the decoder KV: the fixed latent set (memory rows are the arm only).
     y2 = -1.1
     pill("[B, L, D]", LAT, -0.2, y2, w=1.9, h=1.45, size=0.20)
     arrows.append(k.Arrow(start=(-0.2, -0.18), end=(-0.2, -0.33), stroke=k.GRAY, fill=k.GRAY))
 
-    pill("[B·(M+L), D]", k.TEAL, 2.2, y2, w=2.3, size=0.20)
+    pill("[B·L, D]", k.TEAL, 2.2, y2, w=1.6, size=0.20)
     pill("[Kt, D]", k.GREEN, 4.5, y2, w=1.5)
     pill("[Σ p²]", k.GREEN, 6.4, y2, w=1.6)
     arrows += [
@@ -433,7 +424,7 @@ def shape_flow(s: k.Scene):
     s.play(
         k.fade_in(
             k.Text("latent pooler\nreads tok_out", size=0.17, color=LAT, x=-2.45, y=y2),
-            k.Text("KV = mem + latents", size=0.18, color=k.TEAL, x=2.2, y=-0.5),
+            k.Text("KV = latents", size=0.18, color=k.TEAL, x=2.2, y=-0.5),
         ),
         duration=0.4,
     )

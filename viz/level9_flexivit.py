@@ -6,8 +6,8 @@ kernel is **PI-resized** -- ``W^(p) = pinv(B.T) @ W^(P)`` where ``B`` is the
 bilinear resize operator on the patch grid (drawn as ``R`` in the figure, so
 ``B`` can stay batch size) -- and the shared bias is kept.
 The layout modules need no resized table: the encoder uses 2-D axial RoPE on
-**metric token-centre** coordinates ``(index + 0.5) * p * pixel_size``, memory
-tokens get zero rotation, the decoder uses a factorized fractional absolute PE
+**metric token-centre** coordinates ``(index + 0.5) * p * pixel_size``, the
+decoder uses a factorized fractional absolute PE
 on the metric coordinate ``(r + 0.5) * p * pixel_size / pe_ref_um``, and
 ``ChannelFusion`` adds no spatial table.  The runtime ``p`` comes from the
 **acquisition fleet**: ``p_b = max(1, floor(target_um / pixel_size_b + 0.5))``

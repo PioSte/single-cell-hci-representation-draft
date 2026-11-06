@@ -40,12 +40,12 @@ teacher (eval, no grad; EMA copy or the student itself when use_ema=False):
 student:
     images (context locations; optional visible-channel subset)
     -> tokenizer -> fusion -> encoder -> tok_out[N_ctx, D]
-    -> spatial pooling (PMA) -> latents [B, L, D] (+ memory)
+    -> spatial pooling (PMA) -> latents [B, L, D] (+ memory in the memory arm)
 
 predictor:
     q = mask_token + fractional_pe(target row, col, grid, step_um[d])
         + optional scale condition
-    q -> decoder blocks cross-attending to memory + latents
+    q -> decoder blocks cross-attending to the latents
       -> LayerNorm -> predicted features [K_t, D] -> projector -> [K_t, D_proj]
 
 loss:
@@ -100,8 +100,9 @@ checked in as a reference but is not yet exposed by `JEPAConfig`; SIGReg and
 VICReg are the supported regularizer ablations.
 
 `encode()` is inherited unchanged: it returns the student's no-mask
-`(memory, latents)`. The latent pooler is the predictor's key/value, so it is
-trained by the JEPA loss even though the target itself is per-location.
+`(memory, latents)`, where `memory` is empty unless the memory arm is on. The
+latent pooler is the predictor's key/value, so it is trained by the JEPA loss
+even though the target itself is per-location.
 
 ## Target set
 
@@ -143,7 +144,7 @@ leaks the context token at the same position.
 | Decoder output | flattened `p²` pixels per target row | `D`-wide feature per target location |
 | Target identity | target channel embedding in the query | none; the target is channel-fused |
 | Collapse control | reconstruction objective | EMA or no-EMA + SIGReg/VICReg on projected rows |
-| Inference representation | `encode() -> memory, latents` | same |
+| Inference representation | `encode() -> (memory, latents)` | same |
 
 ## Usage
 

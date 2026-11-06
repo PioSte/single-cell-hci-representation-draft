@@ -24,7 +24,7 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, Dataset, Subset
 
-from fuse_channels import ChannelFusionMAE
+from fuse_channels import DEFAULT_CONFIG, ChannelFusionMAE
 from fuse_channels.data import SyntheticChannelDataset, collate_fn
 
 
@@ -212,7 +212,7 @@ def main() -> None:
     p.add_argument("--dim", type=int, default=64)
     p.add_argument("--depth", type=int, default=2)
     p.add_argument("--n-heads", type=int, default=4)
-    p.add_argument("--n-memory", type=int, default=4)
+    p.add_argument("--n-memory", type=int, default=DEFAULT_CONFIG.encoder.n_memory)
     p.add_argument("--n-latents", type=int, default=16)
     p.add_argument(
         "--fusion-attn-dim",

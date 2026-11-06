@@ -222,10 +222,11 @@ class ChannelFusionMAE(nn.Module):
                 f"unknown head_mode '{head_mode}'; expected 'per_p', 'canonical' or 'shared'"
             )
         # Which components reach the decoder as cross-attention key/value.
-        # Default is both (the shipped architecture).  Dropping entries is an
-        # ablation: it isolates what the decoder needs, and an empty set gives a
-        # blind decoder (self-attention only).  ``encode()`` is unaffected -- it
-        # always returns the representation.
+        # The shipped KV is the pooled latents alone; ``"memory"`` is only
+        # meaningful once the ``memory`` ablation enables memory tokens.
+        # Dropping entries is an ablation: an empty set gives a blind decoder
+        # (self-attention only).  ``encode()`` is unaffected -- it always
+        # returns the representation.
         allowed_kv = {"memory", "latents"}
         if isinstance(decoder_kv_components, str):
             decoder_kv_components = (decoder_kv_components,)
@@ -606,7 +607,8 @@ class ChannelFusionMAE(nn.Module):
         )
         B = cs.n_samples
         # Spatial pooling to fixed size latent.  ``tok_out`` is not part of the
-        # decoder KV; only the pooled latents (and the memory tokens) are.
+        # decoder KV; only the pooled latents (and the memory tokens, when the
+        # memory arm is on) are.
         latents = self.latent_pooler(tok_out, enc_group_id, B).reshape(
             B, self.n_latents, self.encoder.dim
         )
@@ -717,7 +719,8 @@ class ChannelFusionMAE(nn.Module):
         # Decoder KV = the selected components of the encoder representation
         # (``self.decoder_kv_components``).  Each component is appended with its own
         # per-sample group ids; the default (both) is the shipped KV
-        # ``[B·(n_memory + n_latents), D]``.
+        # ``[B·(n_memory + n_latents), D]`` when memory is enabled, and
+        # ``[B·n_latents, D]`` by default.
         enc_all, enc_all_group_id = self._decoder_kv(mem_out, latents)
 
         # -- decoder targets: the masked channel-patches ------------------ #
@@ -942,11 +945,12 @@ class ChannelFusionMAE(nn.Module):
     ):
         """Inference-time representation (no masking), ``(memory, latents)``.
 
-        ``memory`` is ``[B * n_memory, D]`` (the fixed memory/register tokens);
-        ``latents`` is the ``[B, n_latents, D]`` output of spatial pooling to
-        fixed size latent, independent of the channel count ``C`` and the patch
-        count ``N``.  Together they are the decoder KV, so this is the whole
-        inference representation.
+        ``memory`` is ``[B * n_memory, D]`` (the fixed memory/register tokens;
+        empty in the shipped default, where ``n_memory = 0``); ``latents`` is
+        the ``[B, n_latents, D]`` output of spatial pooling to fixed size
+        latent, independent of the channel count ``C`` and the patch count
+        ``N``.  Together they are the decoder KV, so this is the whole inference
+        representation.
 
         ``valid`` (per-sample ``[N_b]`` cell-token mask) drops off-cell patches
         from the encoder exactly as in :meth:`forward`.

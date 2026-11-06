@@ -8,15 +8,15 @@ Shows the two-branch objective with:
   A PMA pooler over ``tok_out`` (content tokens only) produces the fixed
   latent set [B, L, D] (``L = n_latents``) by spatial pooling to fixed size
   latent.
-* Decoder KV: ``enc_all = [mem_out; latents]`` -> [B*(M + L), D].
-  ``tok_out`` itself is *not* in the KV.
+* Decoder KV: ``enc_all = latents`` -> [B*L, D] (the ``memory`` arm would
+  prepend ``mem_out``). ``tok_out`` itself is *not* in the KV.
 * Decoder branch: target queries conditioned on the target channel embedding;
   each block runs target self-attention over a sample's queries, then
   cross-attention to ``enc_all``.
 * One shared decoder for all channels.
 * Asymmetry: V visible channel-patches + Kt masked channel-patches <=
   Sigma_b C_b·N_b (equality without the off-cell mask); the encoder sees Kf
-  fused locations (+ M memory).
+  fused locations.
 * Default loss: standardise each target patch (mean/std), then MSE, averaged
   with ``loss_reduce="sample"`` (one vote per crop), masked rows only.
 * The head emits the flat [Sigma p^2] pixel array (row i contiguous p_i^2);
@@ -40,7 +40,7 @@ import matplotlib.pyplot as plt
 
 from figure_style import (  # noqa: E402
     BLUE, GREEN, ORANGE, RED, PURPLE, VIOLET, INK, MUTED, CHANNEL_COLORS,
-    TOKENIZER, FUSION, ENCODER, DECODER, MEMORY, LOSS, FUSED, POOL, GHOST,
+    TOKENIZER, FUSION, ENCODER, DECODER, LOSS, FUSED, POOL, GHOST,
     tint, rrect, box, arrow, edge_label, sq_bracket_mirror, token_rows,
     channel_color, install_rcparams, save_figure, legend, channel_legend,
 )
@@ -103,38 +103,20 @@ def draw_fused_locations(ax, x=23.0, y0=51.3, w=9.0):
     return top
 
 
-def draw_memory(ax, x=6.5, y0=35.5, w=9.0):
-    """Fixed memory tokens [B·M, D] (MEMORY gold)."""
-    specs = [(MEMORY, False), (MEMORY, False)]
-    top = token_rows(ax, x, y0, w, H, PITCH, specs)
-    sq_bracket_mirror(ax, x + w + 1.0, y0, top)
-    ax.text(x + w / 2, y0 - 2.7, "$[B{\\cdot}M, D]$ memory", ha="center",
-            va="center", fontsize=7.4, color=INK, fontweight="bold")
-    return top
-
-
 def draw_enc_all(ax, x=57.0, y0=41.0, w=10.0):
-    """Decoder KV: ``enc_all = cat([mem_out, latents])``.
+    """Decoder KV: the fixed latent set from spatial pooling to fixed size latent.
 
-    ``token_rows`` draws bottom-up, so the specs are listed bottom-to-top to
-    give the same top-to-bottom order as the code: memory-out on top, then the
-    latent set from spatial pooling to fixed size latent (POOL). ``tok_out`` is
-    not part of this KV.
+    The ``memory`` arm would prepend ``[B·M, D]`` ``mem_out`` rows on top;
+    ``tok_out`` is not part of this KV.
     """
-    specs = [
-        (POOL, False), (POOL, False), (POOL, False), (POOL, False),     # latents [B, L, D]
-        (MEMORY, False), (MEMORY, False),                               # mem_out [B·M, D]
-    ]
+    specs = [(POOL, False)] * 6                                      # latents [B, L, D]
     top = token_rows(ax, x, y0, w, H, PITCH, specs)
     sq_bracket_mirror(ax, x + w + 1.0, y0, top)
-    ax.text(x + w / 2, top + 2.4, "$[B{\\cdot}(M{+}L),\\,D]$",
+    ax.text(x + w / 2, top + 2.4, "$[B{\\cdot}L,\\,D]$",
             ha="center", va="center", fontsize=6.9, color=INK,
             fontweight="bold")
-    # Row-group labels on the right, centred on their actual row bands.
-    # Top band = memory-out, bottom band = pooled latents.
-    ax.text(x + w + 1.2, y0 + 3.5 * PITCH + H / 2, "mem ($M$)", ha="left",
-            va="center", fontsize=6.1, color=MEMORY, zorder=5)
-    ax.text(x + w + 1.2, y0 + 1.5 * PITCH + H / 2, "latents ($L$)", ha="left",
+    # Row-group label on the right, centred on the latent band.
+    ax.text(x + w + 1.2, y0 + 2.5 * PITCH + H / 2, "latents ($L$)", ha="left",
             va="center", fontsize=6.1, color=POOL, zorder=5)
     return top
 
@@ -219,7 +201,6 @@ def build() -> plt.Figure:
 
     # ---- encoder pathway -------------------------------------------------- #
     draw_channel_patches(ax, x=5.0, y0=47.5)
-    draw_memory(ax, x=5.0, y0=35.5)
     draw_fused_locations(ax, x=23.2, y0=51.3)
     draw_enc_all(ax, x=56.2, y0=41.0, w=9.0)
 
@@ -235,13 +216,12 @@ def build() -> plt.Figure:
         "grouped self-attn $\\times L_e$\n"
         "2-D axial RoPE on metric\n"
         "token centres $(i{+}0.5)\\cdot p\\cdot\\mu$\n"
-        "mem 0 rot; $+M$ memory\n"
+        "no memory tokens (default)\n"
         "add scale Fourier($\\log p,\\log\\mu$)",
         edge=ENCODER, sub_size=5.7)
 
-    # Visible fused tokens + memory feed the encoder; encoder -> enc_all.
+    # Visible fused tokens feed the encoder; encoder -> enc_all.
     arrow(ax, (32.8, 53.5), (34.0, 53.5), color=FUSED, lw=1.5)
-    arrow(ax, (14.0, 42.0), (34.0, 48.0), color=MEMORY, lw=1.5)
     arrow(ax, (55.0, 53.85), (56.2, 53.85), color=ENCODER, lw=1.5)
 
     # Pooled-latent provenance, inside the encoder frame.
@@ -269,7 +249,7 @@ def build() -> plt.Figure:
             linestyle="--", zorder=4)
     arrow(ax, (98.0, 48.0), (101.0, 48.0), color=ENCODER, lw=1.2, dashed=True)
     # KV label clear of the bus line and of the decoder frame border.
-    ax.text(81.5, 41.5, "keys / values: mem + latents",
+    ax.text(81.5, 41.5, "keys / values: latents",
             ha="left", va="center", fontsize=6.0, color=ENCODER, zorder=7)
 
     # decoder -> head -> predictions.
@@ -328,7 +308,6 @@ def build() -> plt.Figure:
             ("channel fusion ($D_{attn}=3D$)", FUSION, "fill"),
             ("encoder (TransformerEncoder)", ENCODER, "fill"),
             ("channel-aware decoder", DECODER, "fill"),
-            ("memory tokens", MEMORY, "cross"),
             ("reconstruction loss", LOSS, "fill"),
             ("omitted row (absent, never zeroed)", LOSS, "omit"),
             ("fused tokens $[K_f,D]$", FUSED, "cross"),
@@ -351,7 +330,7 @@ def build() -> plt.Figure:
             "$C_b$  channels of sample $b$\n"
             "$\\Sigma C$  total channels\n"
             "$N$  patches / channel\n"
-            "$M$  memory tokens (4)\n"
+            "$M$  memory tokens (arm)\n"
             "$L$  latents (pooled, 16)\n"
             "$V$  visible patches\n"
             "pred / tgt  prediction / target",
@@ -365,7 +344,7 @@ def build() -> plt.Figure:
             "$\\mu$  pixel size ($\\mu$m/px)\n"
             "$z_c$  channel identity\n"
             "$D_{attn}$  fusion attn dim\n"
-            "$enc_{all}$  decoder KV ($mem{+}lat$)",
+            "$enc_{all}$  decoder KV ($lat$)",
             ha="left", va="top", fontsize=5.0, color=INK,
             linespacing=1.5, zorder=4)
     ax.text(108.0, 23.4,
@@ -380,7 +359,7 @@ def build() -> plt.Figure:
             ha="left", va="top", fontsize=5.0, color=INK,
             linespacing=1.5, zorder=4)
     ax.text(78.5, 12.4,
-            "drawn row counts are schematic (defaults $M{=}4$, $L{=}16$)",
+            "drawn row counts are schematic (default $L{=}16$)",
             ha="left", va="center", fontsize=5.2, color=MUTED,
             style="italic", zorder=4)
 
@@ -388,7 +367,7 @@ def build() -> plt.Figure:
     rrect(ax, FRAME_X0, 2.0, FRAME_X1 - FRAME_X0, 5.0, edge=ENCODER,
           face=tint(ENCODER, 0.88), lw=1.3, rounding=0.5, z=2)
     ax.text((FRAME_X0 + FRAME_X1) / 2, 5.2,
-            r"Asymmetry: encoder sees $K_f$ fused locations (+ $M$ memory); "
+            r"Asymmetry: encoder sees $K_f$ fused locations; "
             r"decoder reconstructs $K_t$ masked channel-patches",
             ha="center", va="center", fontsize=6.4, color=INK,
             fontweight="bold")
@@ -401,7 +380,7 @@ def build() -> plt.Figure:
     rrect(ax, DFRAME_X0, 2.0, DFRAME_X1 - DFRAME_X0, 5.0, edge=DECODER,
           face=tint(DECODER, 0.88), lw=1.3, rounding=0.5, z=2)
     ax.text((DFRAME_X0 + DFRAME_X1) / 2, 4.5,
-            r"One shared decoder: target self-attn, then cross-attn to mem/latents",
+            r"One shared decoder: target self-attn, then cross-attn to the latents",
             ha="center", va="center", fontsize=7.6, color=INK,
             fontweight="bold")
 

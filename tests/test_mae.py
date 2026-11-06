@@ -122,7 +122,7 @@ def test_encoder_input_length_is_present_locations():
 
 def test_encoder_output_is_fixed_size_across_patch_counts():
     """The decoder KV is the spatial-pooled latent set, not the token sequence."""
-    model = _model(p_patch=1.0, p_channel=0.0)
+    model = _model(p_patch=1.0, p_channel=0.0, decoder_kv_components=("memory", "latents"))
     model.eval()
     B = 2
     kv_lengths = []
@@ -185,11 +185,13 @@ def test_overfit_single_batch():
 
 def test_memory_tokens_optional():
     model = _model(n_memory=0)
+    assert model.encoder.memory is None
     images, ids = _batch()
     out = model(images, ids, generator=torch.Generator().manual_seed(1))
     assert torch.isfinite(out["loss"])
 
     model2 = _model(n_memory=4)
+    assert model2.encoder.memory.shape == (1, 4, 32)
     out2 = model2(images, ids, generator=torch.Generator().manual_seed(1))
     assert torch.isfinite(out2["loss"])
 

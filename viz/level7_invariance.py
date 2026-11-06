@@ -83,7 +83,8 @@ def measure_cardinality_invariance(model, device, Cs=(1, 3, 6, 20, 60)):
     """Measure input size growth vs. the constant fixed latent set.
 
     ``encode`` returns the encoder representation that becomes the decoder KV:
-    memory tokens plus the ``[B, L, D]`` latent set from spatial pooling.  The
+    the ``[B, L, D]`` latent set from spatial pooling (the memory arm would add
+    memory tokens on top).  The
     weights are random here: this measures shape invariance, not
     representation quality.
     """
@@ -241,7 +242,7 @@ def build_figure(card_results, perm_results, Cs_cost, cost_attn, run):
     ax_a.text(0.98, 0.02,
               f"fixed latents $[B,\\,L,\\,D]=[{B},\\,{L_A},\\,{D_A}]$ "
               "(measured, constant)\n"
-              "so the decoder KV $[B\\cdot(M{+}L),\\,D]$ does not grow "
+              "so the decoder KV $[B\\cdot L,\\,D]$ does not grow "
               "with $N$",
               transform=ax_a.transAxes, ha="right", va="bottom",
               fontsize=8.2, color=INK,
@@ -339,7 +340,6 @@ def build_figure(card_results, perm_results, Cs_cost, cost_attn, run):
         (r"$N$", f"patches / channel $=(H/P)^2={N}$"),
         (r"$H$", f"image side $={H}$ px"),
         (r"$P$", f"patch size $={P}$ px"),
-        (r"$M$", "memory / register tokens per sample ($=4$)"),
         (r"$C_{\max}$", "per-sample max channel count (ghost only)"),
     ]
     col2 = [
@@ -355,7 +355,7 @@ def build_figure(card_results, perm_results, Cs_cost, cost_attn, run):
         ("PMA", "multi-head attention pooling; $L$ queries → latents $[B,L,D]$"),
         ("tolerance", "chosen $10^{-6}$"),
         (r"$\Delta$", "latent-mean change under shuffle (max|$\\Delta$|)"),
-        ("decoder KV", "memory + latents $[B(M{+}L),D]$"),
+        ("decoder KV", "latents $[B\\cdot L,D]$"),
         ("ragged token list",
          "solid primary object $[\\Sigma C{\\cdot}N,\\ D]$"),
         ("padded tensor",

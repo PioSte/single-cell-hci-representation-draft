@@ -14,9 +14,9 @@ Pipeline::
              -> projector̄ -> stop-grad target [K_t, D_proj]
     student: images (context locations, optional visible channels)
              -> tokenizer -> fusion -> encoder -> tok_out
-             -> spatial pooling -> latents [B, L, D] (+ memory)
+             -> spatial pooling -> latents [B, L, D] (+ memory, arm only)
     predictor: mask_token + fractional PE(target position) + scale condition
-             -> decoder blocks cross-attending to latents/memory
+             -> decoder blocks cross-attending to the latents
              -> predicted target features [K_t, D] -> projector [K_t, D_proj]
 
 The loss is L1 (V-JEPA) or L2 (I-JEPA) between predicted and stop-grad target
@@ -87,7 +87,8 @@ class ChannelFusionJEPA(ChannelFusionMAE):
     the context block*.  ``forward`` takes ``target_locations=``; there is no
     ``visible=`` alias, because a DCP-style ``[C, N]`` channel-patch mask is not
     a valid JEPA target set.  ``encode()`` is inherited and returns the
-    student's no-mask ``(memory, latents)``.
+    student's no-mask ``(memory, latents)`` (``memory`` is empty unless the
+    memory arm is on).
 
     The prediction loss and the anti-collapse regularizer act on the **same**
     tensor: :meth:`_project` maps the predicted and target locations through

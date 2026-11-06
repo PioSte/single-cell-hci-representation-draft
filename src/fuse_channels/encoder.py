@@ -1,9 +1,11 @@
-"""Transformer encoder over fused tokens, with fixed-count memory tokens.
+"""Transformer encoder over fused tokens, with optional fixed-count memory tokens.
 
-Memory / register tokens are carried through the encoder (and handed to the
-decoder) as a cardinality-independent long-term memory.  Attention is again
-padding-free: the sequence is flattened over real tokens with per-sample group
-ids.
+Memory / register tokens are an off-by-default arm: the shipped model carries
+none (``n_memory = 0``), and the ``memory`` ablation in :mod:`fuse_channels.
+config` turns them on.  When enabled they are carried through the encoder (and
+handed to the decoder) as a cardinality-independent long-term memory.
+Attention is again padding-free: the sequence is flattened over real tokens
+with per-sample group ids.
 
 The mechanism follows ChA-MAEViT §3.2
 (``references/cha-maevit/paper.md:109-113``): ``n_memory`` learnable embeddings
@@ -135,8 +137,7 @@ class TransformerEncoder(nn.Module):
     given -- and only the encoder-exclusive knobs (``depth``, ``n_memory``,
     ``mlp_ratio``) come from :class:`~fuse_channels.config.EncoderConfig`.  This
     is the "shared core passed explicitly" split (option *b*): no invariant is
-    duplicated across modules, and the memory ablation is
-    ``EncoderConfig(n_memory=0)``.
+    duplicated across modules, and the memory arm is ``EncoderConfig(n_memory>0)``.
     """
 
     def __init__(self, core, cfg) -> None:
@@ -147,8 +148,11 @@ class TransformerEncoder(nn.Module):
         self.dim = dim
         self.n_heads = n_heads
         self.adaln = adaln
-        self.memory = nn.Parameter(torch.zeros(1, cfg.n_memory, dim))
-        nn.init.trunc_normal_(self.memory, std=0.02)
+        if cfg.n_memory:
+            self.memory = nn.Parameter(torch.zeros(1, cfg.n_memory, dim))
+            nn.init.trunc_normal_(self.memory, std=0.02)
+        else:
+            self.register_parameter("memory", None)
         self.blocks = nn.ModuleList(
             [
                 TransformerBlock(dim, n_heads, cfg.mlp_ratio, dropout, adaln=adaln)
@@ -178,7 +182,13 @@ class TransformerEncoder(nn.Module):
         that pooled latent set rather than this raw token sequence.
         """
         device = tokens.device
-        mem = self.memory.expand(n_samples, -1, -1).reshape(-1, self.memory.shape[-1])
+        # ``memory`` is ``None`` when the arm is off, so the sequence is the
+        # present patch tokens alone and ``n_mem == 0`` below.
+        mem = (
+            self.memory.expand(n_samples, -1, -1).reshape(-1, self.memory.shape[-1])
+            if self.memory is not None
+            else tokens.new_empty(0, self.dim)
+        )
         mem_group_id = torch.arange(n_samples, device=device).repeat_interleave(self.n_memory)
 
         x = torch.cat([mem, tokens], dim=0)

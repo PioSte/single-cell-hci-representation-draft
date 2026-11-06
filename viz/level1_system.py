@@ -28,7 +28,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 from figure_style import (  # noqa: E402  (sibling module, run from viz/)
-    TOKENIZER, FUSION, ENCODER, DECODER, MEMORY, LOSS, FUSED, POOL,
+    TOKENIZER, FUSION, ENCODER, DECODER, LOSS, FUSED, POOL,
     INK, MUTED, CHANNEL_COLORS,
     tint, rrect, box, arrow, edge_label, sq_bracket, sq_bracket_mirror,
     install_rcparams, save_figure, legend, channel_legend, padded_ghost, GHOST,
@@ -161,47 +161,32 @@ def draw_fused_grid(ax, x0=79.0):
 
 
 def draw_decoder_kv(ax, x=124.0):
-    """``[B . (M + L), D]`` decoder KV.
-
-    ``mae.py`` builds ``enc_all = cat([mem_out, latents])``: fixed memory rows
-    produced by the encoder, plus the ``[B, L, D]`` latent set produced by
-    spatial pooling.
-    """
+    """``[B . L, D]`` decoder KV (the memory arm would prepend ``mem_out``)."""
     w, h, pitch = 10.5, 2.0, 2.2
-    n_mem, n_lat = 3, 6
-    n_rows = n_mem + n_lat
-    total = (n_rows - 1) * pitch + h
+    n_lat = 9
+    total = (n_lat - 1) * pitch + h
     y0 = YMID - total / 2
     top = y0 + total
 
-    # bottom-up: the L latent rows, then the M memory rows
     lat_y0 = y0
     for i in range(n_lat):
         rrect(ax, x, lat_y0 + i * pitch, w, h, edge=POOL,
               face=tint(POOL, 0.8), lw=1.2, crossed=True)
     lat_top = lat_y0 + (n_lat - 1) * pitch + h
-    mem_y0 = lat_y0 + n_lat * pitch
-    for i in range(n_mem):
-        rrect(ax, x, mem_y0 + i * pitch, w, h, edge=MEMORY,
-              face=tint(MEMORY, 0.8), lw=1.2, crossed=True)
-    mem_top = mem_y0 + (n_mem - 1) * pitch + h
 
     sq_bracket_mirror(ax, x + w + 1.0, y0, top)
 
-    # group labels fit in the 5-unit gap left of the stack
-    ax.text(x - 0.7, (mem_y0 + mem_top) / 2, "$M$", ha="right", va="center",
-            fontsize=6.2, color=MEMORY, zorder=5)
     ax.text(x - 0.7, (lat_y0 + lat_top) / 2, "$L$", ha="right", va="center",
             fontsize=6.2, color=POOL, zorder=5)
 
     ax.text(x + w / 2, top + 1.9,
-            "$[\\,B\\cdot(M + L),\\; D\\,]$", ha="center", va="center",
+            "$[\\,B\\cdot L,\\; D\\,]$", ha="center", va="center",
             fontsize=7.4, color=INK)
-    ax.text(x + w / 2, top + 3.3, "rows illustrative $\\cdot$ default $M{=}4$, $L{=}16$",
+    ax.text(x + w / 2, top + 3.3, "rows illustrative $\\cdot$ default $L{=}16$",
             ha="center", va="center", fontsize=5.7, color=MUTED, style="italic")
     ax.text(x + w / 2, top + 5.1, "decoder KV ($enc_{all}$)", ha="center",
             va="center", fontsize=8.4, fontweight="bold", color=INK)
-    return x, y0, top, mem_y0, lat_y0
+    return x, y0, top, lat_y0
 
 
 def draw_output(ax, x, top, w=21.0):
@@ -231,7 +216,7 @@ def draw_glossary(ax):
             ("$D$", "token / embedding dim"),
         ]),
         (42.0, [
-            ("$M$", "memory tokens (default 4)"),
+            ("$M$", "memory tokens (memory arm)"),
             ("$L$", "latents (default 16)"),
             ("$V$", "visible tokens ($\\leq\\sum_b C_b N_b$)"),
             ("$K_f$", "present $(b,n)$ locations"),
@@ -243,7 +228,7 @@ def draw_glossary(ax):
             ("pixel_size", "$\\mu$m/px (fleet table)"),
             ("target_um", "target patch extent"),
             ("$z_c$", "channel identity (bias+skip)"),
-            ("$enc_{all}$", "decoder KV $[\\,mem;lat\\,]$"),
+            ("$enc_{all}$", "decoder KV $[\\,B\\cdot L, D\\,]$"),
         ]),
         (120.0, [
             ("PMA", "pooled multi-head attention"),
@@ -294,7 +279,7 @@ def build() -> plt.Figure:
     draw_input_set(ax)
     draw_token_list(ax)
     grid_right = draw_fused_grid(ax)
-    kv_x, _kv_y0, kv_top, kv_mem_y0, kv_lat_y0 = draw_decoder_kv(ax)
+    kv_x, _kv_y0, kv_top, kv_lat_y0 = draw_decoder_kv(ax)
 
     # ---- module boxes (all centred on YMID) ------------------------------- #
     box(ax, 15, YMID - 7.5, 22, 15, "Channel-tied patch embed",
@@ -309,7 +294,7 @@ def build() -> plt.Figure:
         edge=FUSION, sub_size=5.4)
     box(ax, 95, YMID - 7.5, 24, 15, "TransformerEncoder",
         "grouped self-attention $\\cdot$ 2-D axial RoPE\n"
-        "norm $(r,c)$ $\\cdot$ mem 0 rot $\\cdot$ $+M$ memory\n"
+        "RoPE on metric $(r,c)$ $\\cdot$ no memory tokens\n"
         "depth blocks (default 4)\n"
         "scale cond (add): $\\log p,\\ \\log\\mu$m/px",
         edge=ENCODER, sub_size=5.5)
@@ -317,7 +302,7 @@ def build() -> plt.Figure:
         "target self-attn\n"
         "$q=\\mathrm{mask}+\\mathrm{fracPE}(r,c)$\n"
         "$\\quad+\\,\\mathrm{target\\_proj}(z_c+\\mathrm{scale})$\n"
-        "cross-attn: mem $+$ latents", edge=DECODER, sub_size=5.2)
+        "cross-attn: latents $[B,L,D]$", edge=DECODER, sub_size=5.2)
 
     # ---- arrows along the main track ------------------------------------- #
     arrow(ax, (9.8, YMID), (15.0, YMID))
@@ -327,7 +312,6 @@ def build() -> plt.Figure:
     arrow(ax, (52.5, YMID), (56.0, YMID))
     arrow(ax, (75.0, YMID), (79.0, YMID))
     arrow(ax, (grid_right, YMID), (95.0, YMID))
-    arrow(ax, (119.0, YMID + 6.0), (kv_x, YMID + 6.0), color=MEMORY, lw=1.5)
     arrow(ax, (kv_x + 11.5, YMID), (138.0, YMID))
 
     # ---- DCP masker chip feeds the visible token list --------------------- #
@@ -361,7 +345,7 @@ def build() -> plt.Figure:
                       edgecolor="none", alpha=0.95))
     ax.text(106.0, 9.0,
             "training path: this pooler builds the decoder KV;\n"
-            "encode() returns these latents plus the memory rows",
+            "encode() returns these latents",
             ha="center", va="center", fontsize=6.0, color=POOL, zorder=7,
             linespacing=1.35,
             bbox=dict(boxstyle="round,pad=0.16", facecolor="white",
@@ -381,7 +365,6 @@ def build() -> plt.Figure:
          ("fusion", FUSION, "fill"),
          ("encoder", ENCODER, "fill"),
          ("decoder", DECODER, "fill"),
-         ("memory rows $[B{\\cdot}M,D]$", MEMORY, "cross"),
          ("fused tokens $[K_f,D]$", FUSED, "cross"),
          ("latents $[B,L,D]$", POOL, "cross"),
          ("omitted row / loss", LOSS, "omit"),

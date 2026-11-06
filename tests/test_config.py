@@ -112,15 +112,27 @@ def test_submodules_construct_from_core_and_cfg():
     assert len(dec.blocks) == 3 and dec.canonical_patch_size == 4
 
 
+def test_default_carries_no_memory_tokens():
+    """The shipped model has no encoder memory tokens and a latents-only KV."""
+    assert DEFAULT_CONFIG.encoder.n_memory == 0
+    assert DEFAULT_CONFIG.decoder_kv_components == ("latents",)
+    model = build_model(pixel_size=1.0).eval()
+    assert model.encoder.memory is None
+    images, ids = _batch()
+    mem, latents = model.encode(images, ids)
+    assert mem.shape == (0, model.encoder.dim)
+    assert latents.shape == (len(images), model.n_latents, model.encoder.dim)
+
+
 def test_ablated_config_changes_the_named_subconfig():
     base = _tiny_base()
-    assert base.encoder.n_memory == 4  # default
-    no_mem = ablated_config("no_memory", base)
-    assert no_mem.encoder.n_memory == 0
-    assert no_mem.decoder_kv_components == base.decoder_kv_components  # only the encoder changed
+    assert base.encoder.n_memory == 0  # default
+    with_mem = ablated_config("memory", base)
+    assert with_mem.encoder.n_memory > 0
+    assert with_mem.decoder_kv_components == ("memory", "latents")
 
     blind = ablated_config("blind_decoder", base)
-    assert blind.encoder.n_memory == 0 and blind.decoder_kv_components == ()
+    assert blind.decoder_kv_components == ()
 
 
 def test_every_ablation_builds_and_runs():

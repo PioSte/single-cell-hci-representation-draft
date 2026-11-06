@@ -144,11 +144,11 @@ per-channel tied Conv2d(1 -> D) patch embed, PI-resized to the current p
        logits += identity routing bias;  fused += identity skip
        + optional scale embedding
     -> padding-free transformer encoder over [present locations, D]
-       with fixed-count memory tokens and 2-D axial RoPE on q/k
+       with 2-D axial RoPE on q/k
     -> spatial pooling to fixed size latent (PMA) [B, L, D]
        (L independent of C and N; trained through the loss)
     -> channel-aware shared decoder: target-identity + fractional target-position
-       queries, target self-attention, cross-attention to memory + latents
+       queries, target self-attention, cross-attention to the fixed latent set
 ```
 
 * **Channel-tied projection.** One canonical `Conv2d(1, D, kernel_size=p0,
@@ -223,8 +223,7 @@ per-channel tied Conv2d(1 -> D) patch embed, PI-resized to the current p
   all-ones/mean component is removed from the normalized branch.
 * **Spatial pooling to fixed size latent.** Standard pre-norm Q/K/V/O
   transformer blocks run over the flattened real tokens
-  (`[present locations, D]`, the fusion output as-is) with fixed-count memory
-  tokens. A second PMA
+  (`[present locations, D]`, the fusion output as-is). A second PMA
   pooler then applies **spatial pooling to fixed size latent**: `L =
   n_latents` learned queries pool the per-location tokens to `[B, L, D]`.
   `L` is a hyperparameter, so the encoder output and the decoder
@@ -233,15 +232,15 @@ per-channel tied Conv2d(1 -> D) patch embed, PI-resized to the current p
   encoder attention followed by spatial pooling to fixed size latent — not the
   Perceiver's pool-before-processing architecture; the Perceiver paper does not
   ablate this placement (`references/perceiver/paper.md:531-558`).
-* **Encoder and decoder KV.** The decoder KV is the fixed set of `n_memory`
-  memory tokens plus the `n_latents` pooled latents, `[B·(n_memory +
-  n_latents), D]` and fixed for a given model; which of those components reach
-  the decoder is selectable via `decoder_kv_components` (default: both; empty =
-  blind decoder, no cross-attention).
+* **Encoder and decoder KV.** The decoder KV is the `n_latents` pooled
+  latents, `[B·n_latents, D]`, fixed for a given model. `decoder_kv_components`
+  selects which representation components reach the decoder: the memory arm
+  adds `n_memory` memory tokens as a second component, and an empty set is a
+  blind decoder (self-attention over the targets only).
 * **Decoder.** One decoder is shared across all channels. Each target query is
   `mask token + target spatial PE + target channel embedding`; queries
-  self-attend within each sample, then cross-attend to the encoder's
-  memory + the fixed latent set. A fully dropped channel has no encoder
+  self-attend within each sample, then cross-attend to the fixed latent set.
+  A fully dropped channel has no encoder
   evidence, only its identity query, so identity acts as a **target
   specification** as well as an input feature. The reconstruction head has
   three modes. `head_mode="per_p"` (default) keeps a separate linear
@@ -275,7 +274,7 @@ reconstruction to feature prediction. The target is the **EMA target encoder's
 per-location, channel-fused token feature**, computed from the fully observed
 input (all channels, all patches); the student sees a multi-block spatial
 context, optionally with whole-channel dropout, and the existing decoder blocks
-predict the removed target features from the pooled latents + memory. The
+predict the removed target features from the pooled latents. The
 target is stop-grad, the target encoder is EMA-updated, and the loss is L1
 (default) or L2 in feature space.
 
@@ -359,7 +358,7 @@ from fuse_channels import ChannelFusionMAE
 model = ChannelFusionMAE(
     image_size=16, patch_size=8, dim=192,
     encoder_depth=4, decoder_depth=2, n_heads=6,
-    n_memory=4, n_latents=16,         # spatial pooling to fixed size latent
+    n_latents=16,                     # spatial pooling to fixed size latent
     num_channel_ids=32,               # size of the learnable identity table
     fusion="attention",               # or "identity_gated" (ablation)
     loss="mae",                       # or "cha_maevit" (ablation)
@@ -380,9 +379,9 @@ ids = [torch.randint(0, 32, (3,)), torch.randint(0, 32, (7,))]
 out = model(images, ids)
 out["loss"].backward()
 
-# inference representation (no masking): memory tokens + the fixed latent set
+# inference representation (no masking): the fixed latent set
 mem, latents = model.encode(images, ids)
-# memory: [B*n_memory, D], latents: [B, n_latents, D]
+# memory: [B*n_memory, D], empty unless the memory arm is on; latents: [B, n_latents, D]
 ```
 
 ### Configuration and ablations
@@ -398,7 +397,7 @@ cfg = ModelConfig(image_size=16, patch_size=8, core=SharedCore(dim=192, n_heads=
 model = ChannelFusionMAE.from_config(cfg)   # == ChannelFusionMAE(**cfg.to_kwargs())
 
 build_model("blind_decoder")                  # a named arm
-build_model("no_memory", encoder_depth=6)     # an arm plus a flat override
+build_model("memory", encoder_depth=6)        # an arm plus a flat override
 ```
 
 The registered ablations, rendered by `describe_ablations()` (a test keeps
@@ -407,8 +406,8 @@ this table in sync with `config.ABLATIONS`):
 | name | diff |
 | --- | --- |
 | `full` | The shipped model; the identity transform. |
-| `no_memory` | Drop encoder memory tokens: `encoder.n_memory = 0`. |
-| `blind_decoder` | `no_memory` plus an empty decoder KV: `decoder_kv_components = ()`. |
+| `memory` | Add encoder memory tokens: `encoder.n_memory = 4`. |
+| `blind_decoder` | Empty decoder KV: `decoder_kv_components = ()`. |
 | `no_scale_cond` | Drop scale conditioning: `scale_conditioning = "none"`. |
 | `grid_pe` | Use normalized grid coordinates: `pe_space = "grid"`. |
 
@@ -505,7 +504,7 @@ keys).
 | `src/fuse_channels/rope.py` | 2-D axial RoPE; metric coordinates by default, normalized-grid ablation |
 | `src/fuse_channels/flexi.py` | FlexiViT PI- (pseudoinverse-) resize for the patch-embedding kernel |
 | `src/fuse_channels/pos_embed.py` | fractional absolute PE plus legacy learned/sincos tables |
-| `src/fuse_channels/encoder.py` | `TransformerEncoder` / `TransformerBlock` with memory tokens |
+| `src/fuse_channels/encoder.py` | `TransformerEncoder` / `TransformerBlock` with optional memory tokens |
 | `src/fuse_channels/decoder.py` | `ChannelAwareDecoder` / `DecoderBlock` |
 | `src/fuse_channels/masking.py` | `DCPVisibilitySampler` (Eq. 1), `HierarchicalChannelSampler` (HCS), and the JEPA `MultiBlockTargetSampler` |
 | `src/fuse_channels/losses.py` | `normalized_patch_mse`, `cha_maevit_recon_loss`, `feature_prediction_loss`, flat-layout `patch_offsets` / `patch_row_terms` |
@@ -564,7 +563,7 @@ Covered by `tests/`:
 - DCP Eq. 1 regions and HCS counts (`test_masking.py`); channels dropped by DCP
   are reconstruction targets (`test_dcp_dropped_channel_is_a_reconstruction_target`)
 - the `n_latents` pooler is trained through the MAE loss and its output is the
-  decoder KV alongside the memory tokens; `encode()` matches the forward latents
+  decoder KV; `encode()` matches the forward latents
   (`test_latent_pooler_is_trained_by_the_mae_loss`,
   `test_forward_and_encode_share_the_latents`,
   `test_encode_returns_the_decoder_kv`)
@@ -640,7 +639,7 @@ uv run python viz/cardinality_figure.py      # -> viz/out/cardinality.{pdf,svg,p
 
 The implementation differs from the earlier reference designs in several
 specifics: HCS and DCP's channel region are unified into one channel-subset
-sampler; the decoder consumes the pooled latent set + memory and conditions on
+sampler; the decoder consumes the pooled latent set and conditions on
 the target channel embedding, not "unmasked channel tokens"; the latent pooler
 is trained rather than inference-only; the default loss is patch-normalized MSE with ChA-MAEViT as an ablation;
 `IdentityGatedSum` replaces the misleading `HypernetworkWeightedSum` name;

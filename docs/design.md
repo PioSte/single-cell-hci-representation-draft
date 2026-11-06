@@ -253,14 +253,16 @@ PMA is a multi-head attention block over `rFF(Z)` with optional post-SAB,
 attention block; it does not claim to be the fully canonical PMA.
 
 In `ChannelFusionMAE.forward` the pooler reads the encoder's **patch tokens**
-(`tok_out`, not the memory tokens), and the resulting latent set is appended to
+(`tok_out`, not any other encoder token), and the resulting latent set is appended to
 the decoder KV and trained by the reconstruction loss. Those tokens carry the
 fusion identity skip, so the latents can encode panel composition as well as
 content — and, unlike a single pooled vector, they keep per-location detail.
 `encode()` returns the same latent set.
 
-**Memory tokens: provenance.** The fixed-count memory tokens are ChA-MAEViT
-§3.2 (`references/cha-maevit/paper.md:109-113`), which credits register tokens
+**Memory tokens: an optional arm, and its provenance.** The shipped encoder
+carries no memory tokens: they are a fixed-count set that joins the decoder KV
+only in the registered `memory` ablation. They come from ChA-MAEViT §3.2
+(`references/cha-maevit/paper.md:109-113`), which credits register tokens
 (Darcet et al., *Vision Transformers Need Registers*; not in `references/`, so
 this repo cites the second-hand source). The padding-free layout, zero RoPE,
 zero scale condition, and separate-tensor return are this repo's divergences;
@@ -338,13 +340,12 @@ an oversight.
 Decoder blocks add grouped self-attention over the target queries of each
 sample before cross-attention. Targets of the same sample can therefore
 coordinate (e.g. correlated masked channel-patches) before attending to the
-encoder representation + memory. The decoder never receives raw
-per-channel tokens; its KV is the fixed latent set `[B, L, D]` produced by
-spatial pooling to fixed size latent, plus memory, i.e.
-`[B·(n_memory + n_latents), D]` for a given model. Which of those two
-components reach the decoder is selectable via `decoder_kv_components`; the
-default is both, and an empty set gives a blind decoder that skips
-cross-attention.
+encoder representation. The decoder never receives raw per-channel tokens;
+its KV is the fixed latent set `[B, L, D]` produced by spatial pooling to
+fixed size latent. Which representation components reach the decoder is
+selectable via `decoder_kv_components`: the shipped default is the latents
+alone, the `memory` ablation adds the memory-token component, and an empty set
+gives a blind decoder that skips cross-attention.
 
 ## 7. Losses
 
@@ -365,7 +366,7 @@ fusion, encoder, spatial pooler, and decoder blocks but predicts a learned
 target instead of pixels. The target is the **EMA target encoder's final
 per-location token feature** from the fully observed input; the student sees a
 multi-block spatial context and optionally a reduced channel set, and the
-decoder blocks predict the removed features from the pooled latents + memory.
+decoder blocks predict the removed features from the pooled latents.
 The target is stop-grad and the target encoder is EMA-updated. The EMA can be
 replaced by a no-EMA path with a SIGReg or VICReg regularizer on the pooled
 latents; SIGReg follows LeJEPA's Epps-Pulley implementation (256 slices, 17

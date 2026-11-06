@@ -13,10 +13,11 @@ Shows:
    callout
 3. the per-patch grouping highlighted: one row per channel at the same ``n``
 4. the fused vectors on the ``[B, N]`` location grid, after channel fusion
-5. encoder module ``[B·M, D]`` memory (gold) + ``[K_f, D]`` visible tokens
+5. encoder module: the ``[K_f, D]`` visible tokens (no memory tokens; the
+   ``memory`` arm would prepend ``[B·M, D]`` gold rows)
 6. spatial pooling of ``tok_out`` to ``latents [B, L, D]``; the decoder KV is
-   ``enc_all = cat([mem_out, latents])`` with fixed length ``[B·(M + L), D]``
-   and does **not** contain the raw ``tok_out``
+   ``enc_all = latents`` with fixed length ``[B·L, D]`` and does **not**
+   contain the raw ``tok_out``
 7. decoder target queries ``[K_t, D]`` -> flat ``[Σ p²]`` predicted pixels
 8. the ghost ``[B, C_max, N, D]`` tensor (dashed, struck) that is never
    materialised, plus role / channel legends and a faithful symbol glossary.
@@ -38,7 +39,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 from figure_style import (  # noqa: E402
-    GREEN, FUSION, ENCODER, MEMORY, LOSS, FUSED, POOL, VIOLET, INK, MUTED,
+    GREEN, FUSION, ENCODER, LOSS, FUSED, POOL, VIOLET, INK, MUTED,
     CHANNEL_COLORS,
     tint, rrect, arrow, edge_label, sq_bracket, token_rows, grid_cells,
     legend, channel_legend, padded_ghost,
@@ -243,21 +244,16 @@ def draw_fusion(ax):
             linespacing=1.3, zorder=7)
 
 
-def draw_encoder_memory(ax):
-    """Encoder module: [B·M, D] gold memory on top + [K_f, D] fused tokens."""
+def draw_encoder(ax):
+    """Encoder module: the ``[K_f, D]`` fused tokens (no memory tokens)."""
     x, w, h, pitch = ENC_X, ENC_W, 1.9, 2.2
-    n_mem, n_vis = 3, 4
-    n = n_mem + n_vis
-    y0 = YMID - ((n - 1) * pitch + h) / 2.0
+    n_vis = 6
+    y0 = YMID - ((n_vis - 1) * pitch + h) / 2.0
 
-    # fused content on the bottom, memory prepended on top
     for i in range(n_vis):
         rrect(ax, x, y0 + i * pitch, w, h, edge=FUSED,
               face=tint(FUSED, 0.80), lw=1.2, rounding=0.3, z=3, crossed=True)
-    for i in range(n_mem):
-        rrect(ax, x, y0 + (n_vis + i) * pitch, w, h, edge=MEMORY,
-              face=tint(MEMORY, 0.80), lw=1.2, rounding=0.3, z=3, crossed=True)
-    top = y0 + (n - 1) * pitch + h
+    top = y0 + (n_vis - 1) * pitch + h
 
     # ENCODER-tinted dashed module frame so the role colour reads.
     rrect(ax, x - 0.4, y0 - 0.6, w + 0.9, (top - y0) + 1.2, edge=ENCODER,
@@ -271,41 +267,33 @@ def draw_encoder_memory(ax):
             ha="center", va="center", fontsize=7.8, fontweight="bold",
             color=INK)
     ax.text(x + w / 2, top + 3.0,
-            "$+M$ memory tokens $\\cdot$ depth$=$4 blocks $\\cdot$ "
-            "2-D axial RoPE (metric token centres; memory $=$ 0 rot)",
+            "no memory tokens $\\cdot$ depth$=$4 blocks $\\cdot$ "
+            "2-D axial RoPE (metric token centres)",
             ha="center", va="center", fontsize=5.9, color=ENCODER)
     ax.text(x + w / 2, top + 1.9,
             "scale: Fourier$(\\log p_b,\\ \\log\\,\\mu m/px)$ "
             "added to encoder tokens",
             ha="center", va="center", fontsize=5.9, color=MUTED)
 
-    content_top = y0 + (n_vis - 1) * pitch + h
     content_c = y0 + ((n_vis - 1) * pitch + h) / 2
-    mem_y0 = y0 + n_vis * pitch
-    mem_c = y0 + n_vis * pitch + ((n_mem - 1) * pitch + h) / 2
 
-    sq_bracket(ax, x - 1.0, y0, content_top, color=FUSED, lw=1.1, tick=0.55)
+    sq_bracket(ax, x - 1.0, y0, top, color=FUSED, lw=1.1, tick=0.55)
     axis_text(ax, x - 2.1, content_c, "$K_f$", color=FUSED, rotation=90,
               size=7.0)
-    sq_bracket(ax, x - 1.0, mem_y0, top, color=MEMORY, lw=1.1, tick=0.55)
-    axis_text(ax, x - 2.1, mem_c, "$B{\\cdot}M$", color=MEMORY, rotation=90,
-              size=7.0)
 
-    return {"right": x + w + 0.5, "content_c": content_c, "mem_c": mem_c}
+    return {"right": x + w + 0.5, "content_c": content_c}
 
 
 def draw_kv(ax):
-    """Decoder KV ``enc_all``: one stack, sections mem / latents.
+    """Decoder KV ``enc_all``: the fixed latent set.
 
-    The KV is a single fixed-length tensor ``[B·(M+L), D]``.  Its sections are
-    colour-coded; ``tok_out`` is deliberately absent.
+    The KV is a single fixed-length tensor ``[B·L, D]``; the ``memory`` arm
+    would prepend ``[B·M, D]`` ``mem_out`` rows.  ``tok_out`` is deliberately
+    absent.
     """
     x, w, h, pitch = KV_X, KV_W, 1.8, 2.1
-    # listed bottom-to-top so ``mem_out`` (KV row index 0) sits on top, matching
-    # the encoder's prepended memory; ``latents`` occupy the rows below it.
     sections = [
-        ("latents", 3, POOL, 0.72),
-        ("mem_out", 3, MEMORY, 0.80),
+        ("latents", 6, POOL, 0.72),
     ]
     n = sum(count for _, count, _, _ in sections)
     y0 = YMID - ((n - 1) * pitch + h) / 2.0
@@ -329,18 +317,16 @@ def draw_kv(ax):
     sq_bracket(ax, x - 1.0, y0, top, color=MUTED, lw=1.1, tick=0.55)
     h_bracket(ax, x, x + w, top + 0.6, color=MUTED, down=True)
     axis_text(ax, x + w / 2, top + 1.7,
-              "$[B(M{+}L),\\,D]$", size=7.2)
+              "$[B\\cdot L,\\,D]$", size=7.2)
 
-    # section labels on the right, kept clear of the dec arrow at YMID
-    ax.text(x + w + 0.8, centers["mem_out"] + 0.6, "mem_out", ha="left",
-            va="center", fontsize=5.4, color=MEMORY)
+    # section label on the right, kept clear of the dec arrow at YMID
     ax.text(x + w + 0.8, centers["latents"], "latents $[B,L,D]$",
             ha="left", va="center", fontsize=5.4, color=POOL)
 
     # The drawn stack is a schematic: it uses fewer rows than the shipped
-    # defaults (M=4, L=16), so say so next to the top of the stack.
+    # default (L=16), so say so next to the top of the stack.
     ax.text(x + w + 1.4, top + 0.2,
-            "rows illustrative\n(default $M{=}4$, $L{=}16$)",
+            "rows illustrative\n(default $L{=}16$)",
             ha="left", va="center", fontsize=4.8, color=MUTED, style="italic",
             linespacing=1.25, zorder=7,
             bbox=dict(boxstyle="round,pad=0.16", facecolor="white",
@@ -348,8 +334,8 @@ def draw_kv(ax):
 
     # the fixed-length / not-tok_out message, below the stack
     ax.text(x + w / 2, 21.6,
-            "$enc\\_all = [\\,mem\\_out;\\ latents\\,]$: fixed "
-            "$[B(M{+}L),D]$\n"
+            "$enc\\_all = latents$: fixed "
+            "$[B\\cdot L,D]$\n"
             "length independent of $C$ and of $N$; raw $tok\\_out\\,[K_f,D]$ "
             "is NOT in the KV",
             ha="center", va="center", fontsize=5.3, color=MUTED,
@@ -436,7 +422,6 @@ def draw_glossary(ax):
         ("$D$", "token / embedding dim"),
     ]
     col2 = [
-        ("$M$", "memory tokens / sample"),
         ("$L$", "latents / sample ($n_{latents}$)"),
         ("$K_f$", "present $(b,n)$ locations"),
         ("$K_t$", "decoder targets (masked)"),
@@ -447,7 +432,7 @@ def draw_glossary(ax):
         ("$D_{attn}$", "fusion attn dim ($=3D$)"),
     ]
     col3 = [
-        ("$enc\\_all$", "decoder KV $=mem{+}lat$"),
+        ("$enc\\_all$", "decoder KV $=$ latents $[B,L,D]$"),
         ("PMA", "multi-head attn pooling ($L$ queries)"),
         ("RoPE", "2-D axial rotary PE"),
         ("fractional PE", "metric decoder PE"),
@@ -473,7 +458,6 @@ def draw_legends(ax):
         [("tokenizer patch embed", GREEN, "fill"),
          ("channel fusion", FUSION, "fill"),
          ("encoder (TransformerEncoder)", ENCODER, "fill"),
-         ("memory / register tokens", MEMORY, "cross"),
          ("fused vectors $[K_f,D]$", FUSED, "cross"),
          ("latent pool", POOL, "cross"),
          ("decoder / targets", VIOLET, "fill"),
@@ -519,7 +503,7 @@ def build() -> plt.Figure:
             "Tensor layout: literal array stacks with axis labels (Perceiver-IO Fig 2 idiom)",
             ha="left", va="center", fontsize=12.2, fontweight="bold", color=INK)
     ax.text(1, 45.0,
-            "The fused vector is independent of the channel count $C$; the decoder KV length $B(M{+}L)$ is fixed and independent of $C$ and $N$. "
+            "The fused vector is independent of the channel count $C$; the decoder KV length $B\\cdot L$ is fixed and independent of $C$ and $N$. "
             "Omitted rows are absent from the token list (dashed); the token list is the only token container.",
             ha="left", va="center", fontsize=7.0, color=MUTED, style="italic")
 
@@ -530,7 +514,7 @@ def build() -> plt.Figure:
     draw_channel_grouping(ax)
     draw_fusion(ax)
     draw_fused_grid(ax)
-    enc = draw_encoder_memory(ax)
+    enc = draw_encoder(ax)
     kv = draw_kv(ax)
     draw_decoder_targets(ax)
     draw_ghost_padded(ax)
@@ -555,10 +539,8 @@ def build() -> plt.Figure:
     edge_label(ax, 58.6, YMID + 1.4, "enc", size=6.5)
 
     # ---- encoder -> decoder KV -------------------------------------------- #
-    # mem_out feeds the KV directly; tok_out is pooled (PMA) to the latents.
-    arrow(ax, (enc["right"], enc["mem_c"]), (KV_X - 1.1, kv["mem_out"]),
-          color=MEMORY, lw=1.3)
-    arrow(ax, (enc["right"], enc["content_c"] + 0.8),
+    # tok_out is pooled (PMA) into the latent set, which is the whole decoder KV.
+    arrow(ax, (enc["right"], enc["content_c"]),
           (KV_X - 1.1, kv["latents"]), color=POOL, lw=1.3)
     ax.text(74.6, 24.6, "PMA($L$)", ha="center", va="center", fontsize=5.0,
             color=POOL)
